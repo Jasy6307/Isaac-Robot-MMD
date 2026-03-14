@@ -18,7 +18,56 @@ from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR, ISAAC_NUCLEUS_DIR
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
-from isaaclab_assets import G1_MINIMAL_CFG  # isort: skip
+from isaaclab_assets import G1_29DOF_CFG, G1_INSPIRE_FTP_CFG  # isort: skip
+
+# T-pose 初始姿态：手臂水平外展 90°，腿部直立，与 MMD 基准姿态对齐
+G1_TPOSE_INIT_STATE = ArticulationCfg.InitialStateCfg(
+    pos=(0.0, 0.0, 0.75),
+    rot=(0.7071, 0, 0, 0.7071),
+    joint_pos={
+        # 腿部：直立
+        ".*_hip_pitch_joint": 0.0,
+        ".*_knee_joint": 0.0,
+        ".*_ankle_pitch_joint": 0.0,
+        ".*_ankle_roll_joint": 0.0,
+        ".*_hip_roll_joint": 0.0,
+        ".*_hip_yaw_joint": 0.0,
+        # 躯干
+        "waist_.*_joint": 0.0,
+        # 手臂：T-pose，手臂水平外展 90°
+        "left_shoulder_pitch_joint": 0,
+        "left_shoulder_roll_joint": 1.5708,
+        "left_shoulder_yaw_joint": 0.0,
+        "left_elbow_joint": 1.5708,
+        "left_wrist_.*_joint": 0.0,
+        # 手臂：T-pose，手臂水平外展 90°
+        "right_shoulder_pitch_joint": 0,
+        "right_shoulder_roll_joint": -1.5708,
+        "right_shoulder_yaw_joint": 0.0,
+        "right_elbow_joint": 1.5708,
+        "right_wrist_.*_joint": 0.0,
+        # 手部：保持默认（G1 仅有 index/middle/thumb，无 ring/pinky）
+        ".*_index_.*": 0.0,
+        ".*_middle_.*": 0.0,
+        ".*_thumb_.*": 0.0,
+    },
+    joint_vel={".*": 0.0},
+)
+
+
+def get_robot_cfg_for_motion_playback() -> ArticulationCfg:
+    """获取适用于动作回放的机器人配置：不固定根链接、禁用重力、增加阻尼，便于观察动作细节且不摔倒。"""
+    cfg = G1_29DOF_CFG.copy()
+    cfg.init_state = G1_TPOSE_INIT_STATE
+    new_spawn = cfg.spawn.replace(
+        articulation_props=cfg.spawn.articulation_props.replace(fix_root_link=False),
+        rigid_props=cfg.spawn.rigid_props.replace(
+            disable_gravity=True,
+            linear_damping=2.0,
+            angular_damping=2.0,
+        ),
+    )
+    return cfg.replace(spawn=new_spawn)
 
 
 ##
@@ -49,8 +98,11 @@ class G1StandSceneCfg(InteractiveSceneCfg):
         ),
         debug_vis=False,
     )
-    # G1 机器人 - 位于场景正中间
-    robot: ArticulationCfg = G1_MINIMAL_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    # G1 机器人 - 位于场景正中间，T-pose 初始姿态
+    robot: ArticulationCfg = G1_29DOF_CFG.replace(
+        prim_path="{ENV_REGEX_NS}/Robot",
+        init_state=G1_TPOSE_INIT_STATE,
+    )
     # 光照
     sky_light = AssetBaseCfg(
         prim_path="/World/skyLight",
