@@ -1,0 +1,74 @@
+# ============ Isaac 工作空间（必须忽略，体积巨大） ============
+isaac_workspace/
+
+# ============ Python ============
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ============ 虚拟环境 ============
+venv/
+.venv/
+env/
+.env/
+*.conda/
+
+# ============ 训练输出与检查点 ============
+logs/
+runs/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+output/
+outputs/
+results/
+wandb/
+
+# ============ Jupyter ============
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ============ IDE / 编辑器 ============
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ============ 操作系统 ============
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ============ 日志与临时文件 ============
+*.log
+*.tmp
+*.temp
+.cache/
+
+# ============ 环境变量（可能含敏感信息） ============
+.env
+.env.local
+.env.*.local
