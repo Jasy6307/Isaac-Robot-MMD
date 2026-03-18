@@ -22,7 +22,8 @@ from isaaclab_assets import G1_29DOF_CFG, G1_INSPIRE_FTP_CFG  # isort: skip
 
 # T-pose 初始姿态：手臂水平外展 90°，腿部直立，与 MMD 基准姿态对齐
 G1_TPOSE_INIT_STATE = ArticulationCfg.InitialStateCfg(
-    pos=(0.0, 0.0, 0.75),
+    # pos=(0.0, 0.0, 0.76),
+    pos=(0.0, 0.0, 1.0),
     rot=(0.7071, 0, 0, 0.7071),
     joint_pos={
         # 腿部：直立
@@ -36,14 +37,14 @@ G1_TPOSE_INIT_STATE = ArticulationCfg.InitialStateCfg(
         "waist_.*_joint": 0.0,
         # 手臂：T-pose，手臂水平外展 90°
         "left_shoulder_pitch_joint": 0,
-        "left_shoulder_roll_joint": 1.5708,
-        "left_shoulder_yaw_joint": 0.0,
+        "left_shoulder_roll_joint": 1.047,
+        "left_shoulder_yaw_joint": 0,
         "left_elbow_joint": 1.5708,
         "left_wrist_.*_joint": 0.0,
         # 手臂：T-pose，手臂水平外展 90°
         "right_shoulder_pitch_joint": 0,
-        "right_shoulder_roll_joint": -1.5708,
-        "right_shoulder_yaw_joint": 0.0,
+        "right_shoulder_roll_joint": -1.047,
+        "right_shoulder_yaw_joint": 0,
         "right_elbow_joint": 1.5708,
         "right_wrist_.*_joint": 0.0,
         # 手部：保持默认（G1 仅有 index/middle/thumb，无 ring/pinky）
@@ -60,12 +61,13 @@ def get_robot_cfg_for_motion_playback() -> ArticulationCfg:
     cfg = G1_29DOF_CFG.copy()
     cfg.init_state = G1_TPOSE_INIT_STATE
     new_spawn = cfg.spawn.replace(
-        articulation_props=cfg.spawn.articulation_props.replace(fix_root_link=False),
+        articulation_props=cfg.spawn.articulation_props.replace(fix_root_link=True),
         rigid_props=cfg.spawn.rigid_props.replace(
-            disable_gravity=True,
+            disable_gravity=False,
             linear_damping=2.0,
             angular_damping=2.0,
         ),
+        
     )
     return cfg.replace(spawn=new_spawn)
 

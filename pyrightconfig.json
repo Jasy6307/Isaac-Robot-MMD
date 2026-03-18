@@ -4,6 +4,10 @@
   "reportArgumentType": false,
   "reportCallIssue": false,
   "reportIncompatibleVariableOverride": false,
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false,
+  "venvPath": "C:/Users/Administrator/.conda/envs",
+  "venv": "env_isaaclab_mmd",
   "extraPaths": [
     "robot_mmd",
     "isaac_workspace/IsaacLab/source/isaaclab",
