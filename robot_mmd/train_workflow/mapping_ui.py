@@ -11,28 +11,77 @@ from robot_mmd.train_workflow.csv_motion_loader import (
 
 WINDOW_TITLE = "G1 Joint Mapping"
 
+# 外部注入：用于在 UI 中显示“当前环境下的关节值（度制）”
+# 返回值建议是: dict[joint_name] = angle_deg
+_joint_value_provider = None
+
+
+def set_joint_value_provider(provider) -> None:
+    """设置关节值提供器，用于 UI 实时显示当前角度（deg）。"""
+    global _joint_value_provider
+    _joint_value_provider = provider
+
+
+# MMD 骨骼日文 -> 短罗马音（R_/L_ 替代 migi_/hidari_，Isaac 中日文显示异常）
+MMD_BONE_TO_ROMAJI: dict[str, str] = {
+    "右ひざ": "R_KNEE",
+    "左ひざ": "L_KNEE",
+    "右足": "R_FOOT",
+    "左足": "L_FOOT",
+    "下半身": "LOWER_BODY",
+    "右足首": "R_ANKLE",
+    "左足首": "L_ANKLE",
+    "右肩": "R_SHOU",
+    "右腕": "R_WRIST",
+    "左肩": "L_SHOU",
+    "左腕": "L_WRIST",
+    "右ひじ": "R_ELBOW",
+    "左ひじ": "L_ELBOW",
+    "右手首": "R_WRIST",
+    "左手首": "L_WRIST",
+    "上半身": "UPPER_BODY",
+    "首": "HEAD",
+}
+
+# Joint categories: Upper Body / Lower Body / Waist (display order, left then right)
+JOINT_CATEGORIES: dict[str, list[str]] = {
+    "Upper Body": [
+        "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint",
+        "left_elbow_joint", 
+        "left_wrist_pitch_joint", "left_wrist_roll_joint", "left_wrist_yaw_joint",
+        "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint",
+        "right_elbow_joint",
+        "right_wrist_pitch_joint", "right_wrist_roll_joint", "right_wrist_yaw_joint",
+    ],
+    "Lower Body": [
+        "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
+        "left_knee_joint",
+        "left_ankle_pitch_joint", "left_ankle_roll_joint",
+        "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint",
+         "right_knee_joint",
+         "right_ankle_pitch_joint", "right_ankle_roll_joint",
+    ],
+    "Waist": [
+        "waist_pitch_joint", "waist_roll_joint", "waist_yaw_joint",
+    ],
+}
+
 
 def _build_mapping_window(ui):
     """构建映射编辑窗口内容。
 
-    布局结构（自上而下）：
-    ┌─────────────────────────────────────────────────────────┐
-    │ Euler: 0=roll, 1=pitch, 2=yaw                           │
-    ├─────────────────────────────────────────────────────────┤
-    │ [可滚动] 关节名 | MMD骨骼 | 欧拉索引 | 缩放系数           │
-    │   right knee | 右ひざ   | [1]     | [1.0]               │
-    │   left knee  | 左ひざ   | [1]     | [1.0]               │
-    │   ...                                                   │
-    ├─────────────────────────────────────────────────────────┤
-    │                    [Reset to Default]                   │
-    └─────────────────────────────────────────────────────────┘
+    Layout (top to bottom): Upper Body, Lower Body, Waist. Left joints before right.
     """
     joint_models: dict[str, tuple] = {}
 
     def _bone_str(bones) -> str:
+        """将 MMD 骨骼名转为罗马音显示（Isaac 中日文显示异常）"""
+        def _to_romaji(s: str) -> str:
+            return MMD_BONE_TO_ROMAJI.get(s, s)
+
         if isinstance(bones, list):
-            return " + ".join(bones)
-        return str(bones)
+            return " + ".join(_to_romaji(b) for b in bones)
+        return _to_romaji(str(bones))
 
     def _on_euler_changed(joint_name: str, model):
         try:
@@ -52,9 +101,20 @@ def _build_mapping_window(ui):
         except Exception:
             pass
 
+    def _on_flip_scale(joint_name: str):
+        """将缩放系数取反（正负号切换）。"""
+        try:
+            euler_model, scale_model, _ = joint_models[joint_name]
+            new_scale = -float(scale_model.get_value_as_float())
+            scale_model.set_value(new_scale)
+            euler_idx = max(0, min(2, int(euler_model.get_value_as_int())))
+            update_mapping_entry(joint_name, euler_idx, new_scale)
+        except Exception:
+            pass
+
     def _on_reset():
         reset_mapping_to_default()
-        for jname, (euler_model, scale_model) in joint_models.items():
+        for jname, (euler_model, scale_model, _value_label) in joint_models.items():
             base = G1_JOINT_TO_MMD.get(jname)
             if base:
                 euler_model.set_value(base[1])
@@ -66,40 +126,61 @@ def _build_mapping_window(ui):
         ui.Label("Euler: 0=roll, 1=pitch, 2=yaw", height=20)
         ui.Spacer(height=4)
 
-        # ========== 可滚动区域：关节列表 ==========
+        # ========== 可滚动区域：按分类展示关节列表 ==========
         with ui.ScrollingFrame():
             with ui.VStack(spacing=2):
-                for joint_name in sorted(G1_JOINT_TO_MMD.keys()):
-                    bones, euler_idx, scale = G1_JOINT_TO_MMD[joint_name]
-                    # 每行：水平布局，包含 [关节名 | MMD骨骼 | 欧拉索引 | 缩放系数]
-                    with ui.HStack(height=28):
-                        # 列1：G1 关节名（去掉 _joint 和 _）
-                        ui.Label(
-                            joint_name.replace("_joint", "").replace("_", " "),
-                            width=180,
-                        )
-                        # 列2：对应的 MMD 骨骼名（可能为 "肩 + 腕" 组合）
-                        ui.Label(_bone_str(bones), width=120)
-                        # 列3：欧拉分量索引输入框（0/1/2）
-                        euler_model = ui.SimpleIntModel(euler_idx)
-                        ui.IntField(model=euler_model, width=50)
-                        euler_model.add_value_changed_fn(
-                            lambda m, j=joint_name: _on_euler_changed(j, m)
-                        )
-                        # 列4：缩放系数输入框
-                        scale_model = ui.SimpleFloatModel(scale)
-                        ui.FloatField(model=scale_model, width=80)
-                        scale_model.add_value_changed_fn(
-                            lambda m, j=joint_name: _on_scale_changed(j, m)
-                        )
-                        joint_models[joint_name] = (euler_model, scale_model)
+                for category_name, joint_names in JOINT_CATEGORIES.items():
+                    # 分类标题
+                    ui.Label(f"--- {category_name} ---", height=22)
+                    for joint_name in joint_names:
+                        if joint_name not in G1_JOINT_TO_MMD:
+                            continue
+                        bones, euler_idx, scale = G1_JOINT_TO_MMD[joint_name]
+                        # 每行：水平布局，包含 [关节名 | MMD骨骼 | 欧拉索引 | 缩放系数]
+                        with ui.HStack(height=28):
+                            # 列1：G1 关节名（去掉 _joint 和 _）
+                            ui.Label(
+                                joint_name.replace("_joint", ""),
+                                width=150,
+                            )
+                            # 列2：对应的 MMD 骨骼名（R_/L_ 短罗马音）
+                            ui.Label(_bone_str(bones), width=130)
+                            # 列3：欧拉分量索引输入框（0/1/2）
+                            euler_model = ui.SimpleIntModel(euler_idx)
+                            ui.IntField(model=euler_model, width=30)
+                            euler_model.add_value_changed_fn(
+                                lambda m, j=joint_name: _on_euler_changed(j, m)
+                            )
+                            ui.Spacer(width=8)  # 索引与系数输入框之间的间隔
+                            # 列4：缩放系数输入框
+                            scale_model = ui.SimpleFloatModel(scale)
+                            ui.FloatField(model=scale_model, width=50)
+                            scale_model.add_value_changed_fn(
+                                lambda m, j=joint_name: _on_scale_changed(j, m)
+                            )
+                            ui.Spacer(width=8)  # 系数与 Flip 之间的间隔
+                            # 列5：Flip — 缩放系数取反
+                            ui.Button(
+                                "Flip",
+                                width=44,
+                                height=22,
+                                clicked_fn=lambda j=joint_name: _on_flip_scale(j),
+                            )
+                            ui.Spacer(width=8)  # Flip 与关节值之间的间隔
+                            # 列6：当前关节值（deg，只读）
+                            value_label = ui.Label("N/A", width=80)
+                            joint_models[joint_name] = (euler_model, scale_model, value_label)
+                    ui.Spacer(height=4)  # 分类之间的间隔
 
         ui.Spacer(height=8)
 
-        # ========== 底部：右对齐的重置按钮 ==========
-        with ui.HStack():
-            ui.Spacer()  # 左侧弹性空白，将按钮推到右侧
-            ui.Button("Reset to Default", clicked_fn=_on_reset, width=120)
+        # ========== 底部：居中的重置按钮，高度 20 ==========
+        with ui.HStack(height=20):
+            ui.Spacer()
+            ui.Button("Reset to Default", clicked_fn=_on_reset, width=120, height=20)
+            ui.Spacer()
+
+    return joint_models
 
 
 def create_mapping_ui():
@@ -113,11 +194,14 @@ def create_mapping_ui():
         return None
 
     _window_ref = []
+    _joint_models_ref = None
+    _refresh_started = False
 
     def _create_window():
-        window = ui.Window(WINDOW_TITLE, width=500, height=600)
+        window = ui.Window(WINDOW_TITLE, width=560, height=600)
         with window.frame:
-            _build_mapping_window(ui)
+            nonlocal _joint_models_ref
+            _joint_models_ref = _build_mapping_window(ui)
         window.visible = True
         _window_ref.append(window)
         return window
@@ -139,6 +223,30 @@ def create_mapping_ui():
         _create_window()
 
     asyncio.ensure_future(_auto_open())
+
+    async def _refresh_loop():
+        nonlocal _refresh_started
+        if _refresh_started:
+            return
+        _refresh_started = True
+        while True:
+            await omni.kit.app.get_app().next_update_async()
+            if _joint_models_ref is None:
+                continue
+            if _joint_value_provider is None:
+                continue
+            try:
+                values = _joint_value_provider() or {}
+            except Exception:
+                values = {}
+            for jname, (_euler_model, _scale_model, value_label) in _joint_models_ref.items():
+                v = values.get(jname) if isinstance(values, dict) else None
+                if v is None:
+                    value_label.text = "N/A"
+                else:
+                    value_label.text = f"{float(v):.2f}deg"
+
+    asyncio.ensure_future(_refresh_loop())
 
     print("[INFO] G1 Joint Mapping window will open automatically (or use Window menu)")
     return True

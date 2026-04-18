@@ -5,7 +5,7 @@
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
-from isaaclab.envs import ManagerBasedRLEnvCfg
+from isaaclab.envs import ManagerBasedRLEnvCfg, ViewerCfg
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
@@ -177,6 +177,11 @@ class G1StandEnvCfg(ManagerBasedRLEnvCfg):
     actions: ActionsCfg = ActionsCfg()
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
+    # 初始默认视角：从斜上方看向机器人站立位置
+    viewer: ViewerCfg = ViewerCfg(
+        eye=(0.0, 3.0, 1.0),
+        lookat=(0.0, 0.0, 1.0),
+    )
 
     def __post_init__(self):
         super().__post_init__()

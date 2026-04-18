@@ -1,6 +1,12 @@
 """
-CSV 骨骼动作加载器 - 从欧拉角格式 CSV 加载并按帧提供数据
-支持帧间插值，以及 MMD 骨骼到 G1 关节的映射
+CSV 骨骼动作加载器。
+
+支持两类输入：
+1) 欧拉角 CSV: frame,bone,pos_x,pos_y,pos_z,roll,pitch,yaw(度)
+2) 四元数 CSV: frame,bone,pos_x,pos_y,pos_z,quat_x,quat_y,quat_z,quat_w
+
+内部统一保存为弧度欧拉角 + 归一化四元数，并使用 Swing-Twist 提取指定轴角度，
+用于 MMD -> G1 的 1DOF 关节重定向。
 """
 import bisect
 import csv
@@ -8,6 +14,10 @@ import math
 from typing import Iterator
 
 import numpy as np
+
+Axis3 = tuple[float, float, float]
+AxisMapEntry = tuple[str | list[str], Axis3, float]
+AxisMapRawEntry = tuple[str | list[str], int, float]
 
 
 def _euler_to_quat(roll: float, pitch: float, yaw: float) -> tuple[float, float, float, float]:
@@ -53,80 +63,160 @@ def _quat_to_euler(qx: float, qy: float, qz: float, qw: float) -> tuple[float, f
     return roll, pitch, yaw
 
 
-def _combine_shoulder_euler(euler_肩: tuple[float, float, float], euler_腕: tuple[float, float, float]) -> tuple[float, float, float]:
-    """将 肩+腕 的欧拉角组合为肩部真实 RPY。MMD 层级：肩 -> 腕，组合旋转 R_肩 * R_腕"""
-    q_肩 = _euler_to_quat(*euler_肩)
-    q_腕 = _euler_to_quat(*euler_腕)
-    q_combined = _quat_multiply(q_肩, q_腕)
-    return _quat_to_euler(*q_combined)
+def _quat_normalize(q: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    x, y, z, w = q
+    n = math.sqrt(x * x + y * y + z * z + w * w)
+    if n < 1e-12:
+        return (0.0, 0.0, 0.0, 1.0)
+    return (x / n, y / n, z / n, w / n)
 
 
-# G1 关节 -> (MMD 骨骼或 [肩, 腕] 列表, 欧拉分量索引, 缩放系数)
-# 肩部需组合 肩+腕 得到真实 RPY（肩带动腕，层级：肩->腕）
-# 欧拉分量: roll=0, pitch=1, yaw=2
-G1_JOINT_TO_MMD: dict[str, tuple[str | list[str], int, float]] = {
+def _quat_nlerp(
+    q0: tuple[float, float, float, float],
+    q1: tuple[float, float, float, float],
+    t: float,
+) -> tuple[float, float, float, float]:
+    """单位四元数线性插值（带短弧修正）+ 归一化。"""
+    x0, y0, z0, w0 = _quat_normalize(q0)
+    x1, y1, z1, w1 = _quat_normalize(q1)
+    dot = x0 * x1 + y0 * y1 + z0 * z1 + w0 * w1
+    if dot < 0.0:
+        x1, y1, z1, w1 = -x1, -y1, -z1, -w1
+    q = (
+        (1.0 - t) * x0 + t * x1,
+        (1.0 - t) * y0 + t * y1,
+        (1.0 - t) * z0 + t * z1,
+        (1.0 - t) * w0 + t * w1,
+    )
+    return _quat_normalize(q)
+
+
+def swing_twist_angle(qx: float, qy: float, qz: float, qw: float, axis_xyz: Axis3) -> float:
+    """提取四元数绕指定轴 axis_xyz 的扭转角（弧度）。"""
+    ax, ay, az = axis_xyz
+    n = math.sqrt(ax * ax + ay * ay + az * az)
+    if n < 1e-10:
+        return 0.0
+    ax, ay, az = ax / n, ay / n, az / n
+
+    qx, qy, qz, qw = _quat_normalize((qx, qy, qz, qw))
+    dot = ax * qx + ay * qy + az * qz
+    tx, ty, tz, tw = (ax * dot, ay * dot, az * dot, qw)
+    tx, ty, tz, tw = _quat_normalize((tx, ty, tz, tw))
+
+    sin_half = math.sqrt(tx * tx + ty * ty + tz * tz)
+    angle = 2.0 * math.atan2(sin_half, tw)
+    if dot < 0.0:
+        angle = -angle
+    if angle > math.pi:
+        angle -= 2.0 * math.pi
+    elif angle < -math.pi:
+        angle += 2.0 * math.pi
+    return angle
+
+
+# 轴索引定义：0=x, 1=y, 2=z
+_AXIS_INDEX_TO_VEC: dict[int, Axis3] = {
+    0: (1.0, 0.0, 0.0),
+    1: (0.0, 1.0, 0.0),
+    2: (0.0, 0.0, 1.0),
+}
+
+
+def _build_axis_map(raw_map: dict[str, AxisMapRawEntry]) -> dict[str, AxisMapEntry]:
+    out: dict[str, AxisMapEntry] = {}
+    for joint_name, (bones, axis_idx, scale) in raw_map.items():
+        axis = _AXIS_INDEX_TO_VEC.get(axis_idx)
+        if axis is None:
+            raise ValueError(f"invalid axis index {axis_idx} for joint {joint_name}")
+        out[joint_name] = (bones, axis, scale)
+    return out
+
+
+# G1 关节（紧凑写法） -> (MMD 骨骼或 [肩, 腕] 列表, 轴索引(0/1/2), 缩放系数)
+G1_JOINT_AXIS_MAP_RAW: dict[str, AxisMapRawEntry] = {
     # 腿部
-    "right_knee_joint": ("右ひざ", 1, 1.0),
-    "left_knee_joint": ("左ひざ", 1, 1.0),
-    "right_hip_pitch_joint": ("右足", 1, 0.8),
-    "left_hip_pitch_joint": ("左足", 1, 0.8),
-    "right_hip_roll_joint": ("下半身", 0, 0.3),
-    "left_hip_roll_joint": ("下半身", 0, 0.3),
-    "right_hip_yaw_joint": ("右足", 2, 0.5),
-    "left_hip_yaw_joint": ("左足", 2, 0.5),
-    "right_ankle_pitch_joint": ("右足首", 1, 0.6),
-    "left_ankle_pitch_joint": ("左足首", 1, 0.6),
-    "right_ankle_roll_joint": ("右足首", 0, 0.5),
-    "left_ankle_roll_joint": ("左足首", 0, 0.5),
-    # 手臂 - 肩部由 肩+腕 组合得到真实 RPY
-    # 102 X 012 021 120 210 201
-    "right_shoulder_pitch_joint": (["右肩", "右腕"], 0, -1.0),
-    "right_shoulder_roll_joint": (["右肩", "右腕"], 1, 1.0),
-    "right_shoulder_yaw_joint": (["右肩", "右腕"], 2, 1.0),
-    "left_shoulder_pitch_joint": (["左肩", "左腕"], 0, -1.0),
-    "left_shoulder_roll_joint": (["左肩", "左腕"], 1, -1.0),
-    "left_shoulder_yaw_joint": (["左肩", "左腕"], 2, -1.0),
+    "right_knee_joint": ("右ひざ", 0, 1.0),
+    "left_knee_joint": ("左ひざ", 0, 1.0),
+    "right_hip_pitch_joint": ("右足", 1, 1.0),
+    "left_hip_pitch_joint": ("左足", 1, 1.0),
+    "right_hip_roll_joint": ("右足", 0, 1.0),
+    "left_hip_roll_joint": ("左足", 0, 1.0),
+    "right_hip_yaw_joint": ("右足", 2, 1.0),
+    "left_hip_yaw_joint": ("左足", 2, 1.0),
+    "right_ankle_pitch_joint": ("右足首", 1, 1.0),
+    "left_ankle_pitch_joint": ("左足首", 1, 1.0),
+    "right_ankle_roll_joint": ("右足首", 0, 1.0),
+    "left_ankle_roll_joint": ("左足首", 0, 1.0),
+    # 手臂（肩部：先组合 肩+腕 四元数）
+    "right_shoulder_pitch_joint": (["右肩", "右腕"], 1, 1.0),
+    "right_shoulder_roll_joint": (["右肩", "右腕"], 2, 1.0),
+    "right_shoulder_yaw_joint": (["右肩", "右腕"], 0, -1.0),
+    "left_shoulder_pitch_joint": (["左肩", "左腕"], 1, 1.0),
+    "left_shoulder_roll_joint": (["左肩", "左腕"], 2, 1.0),
+    "left_shoulder_yaw_joint": (["左肩", "左腕"], 0, 1.0),
     "right_elbow_joint": ("右ひじ", 1, 1.0),
     "left_elbow_joint": ("左ひじ", 1, -1.0),
-    "right_wrist_pitch_joint": ("右手首", 0, -1.0),
-    "right_wrist_roll_joint": ("右手首", 1, -1.0),
-    "right_wrist_yaw_joint": ("右手首", 2, -1.0),
+    "right_wrist_pitch_joint": ("右手首", 0, 1.0),
+    "right_wrist_roll_joint": ("右手首", 1, 1.0),
+    "right_wrist_yaw_joint": ("右手首", 2, 1.0),
     "left_wrist_pitch_joint": ("左手首", 0, 1.0),
     "left_wrist_roll_joint": ("左手首", 1, 1.0),
     "left_wrist_yaw_joint": ("左手首", 2, 1.0),
     # 躯干
-    "waist_pitch_joint": ("上半身", 1, 1.0),
-    "waist_roll_joint": ("上半身", 0, 1.0),
+    "waist_pitch_joint": ("上半身", 0, 1.0),
+    "waist_roll_joint": ("上半身", 1, 1.0),
     "waist_yaw_joint": ("首", 2, 1.0),
 }
 
-# 运行时可编辑的映射（UI 修改后生效），None 时使用 G1_JOINT_TO_MMD
-_editable_mapping: dict[str, tuple[str | list[str], int, float]] | None = None
+# G1 关节 -> (MMD 骨骼或 [肩, 腕] 列表, Twist 轴(骨骼本地系), 缩放系数)
+G1_JOINT_AXIS_MAP: dict[str, AxisMapEntry] = _build_axis_map(G1_JOINT_AXIS_MAP_RAW)
 
 
-def get_mapping() -> dict[str, tuple[str | list[str], int, float]]:
+def _axis_to_index(axis: Axis3) -> int:
+    ax, ay, az = axis
+    vals = [abs(ax), abs(ay), abs(az)]
+    return int(vals.index(max(vals)))
+
+
+def _as_legacy_mapping(mapping: dict[str, AxisMapEntry]) -> dict[str, tuple[str | list[str], int, float]]:
+    out: dict[str, tuple[str | list[str], int, float]] = {}
+    for j, (bones, axis, scale) in mapping.items():
+        out[j] = (bones, _axis_to_index(axis), scale)
+    return out
+
+
+# 兼容 UI：仍保留旧名称（骨骼, 欧拉索引, 缩放）
+G1_JOINT_TO_MMD: dict[str, tuple[str | list[str], int, float]] = _as_legacy_mapping(G1_JOINT_AXIS_MAP)
+
+# 运行时可编辑的映射（UI 修改后生效），None 时使用 G1_JOINT_AXIS_MAP
+_editable_mapping: dict[str, AxisMapEntry] | None = None
+
+
+def get_mapping() -> dict[str, AxisMapEntry]:
     """获取当前生效的映射（优先使用 UI 编辑后的）"""
     if _editable_mapping is not None:
         return _editable_mapping
-    return G1_JOINT_TO_MMD
+    return G1_JOINT_AXIS_MAP
 
 
-def set_editable_mapping(mapping: dict[str, tuple[str | list[str], int, float]] | None) -> None:
+def set_editable_mapping(mapping: dict[str, AxisMapEntry] | None) -> None:
     """设置可编辑映射，None 时恢复默认"""
     global _editable_mapping
     _editable_mapping = mapping
 
 
 def update_mapping_entry(joint_name: str, euler_idx: int, scale: float) -> None:
-    """更新单个关节的映射（仅改 euler_idx 和 scale，骨骼名不变）"""
+    """兼容旧 UI：通过 0/1/2 选择主轴，并更新缩放系数。"""
     global _editable_mapping
-    base = G1_JOINT_TO_MMD.get(joint_name)
+    base = G1_JOINT_AXIS_MAP.get(joint_name)
     if base is None:
         return
     bones = base[0]
+    axis = _AXIS_INDEX_TO_VEC.get(int(euler_idx), (0.0, 0.0, 1.0))
     if _editable_mapping is None:
-        _editable_mapping = dict(G1_JOINT_TO_MMD)
-    _editable_mapping[joint_name] = (bones, euler_idx, scale)
+        _editable_mapping = dict(G1_JOINT_AXIS_MAP)
+    _editable_mapping[joint_name] = (bones, axis, scale)
 
 
 def reset_mapping_to_default() -> None:
@@ -137,9 +227,8 @@ def reset_mapping_to_default() -> None:
 
 def load_csv_motion(csv_path: str) -> dict[int, dict[str, dict]]:
     """
-    加载欧拉角格式 CSV 骨骼数据。
-    格式: frame, bone, pos_x, pos_y, pos_z, roll, pitch, yaw
-    返回 {frame_idx: {bone_name: {pos, euler}}}
+    加载 CSV 骨骼数据（自动识别四元数/欧拉角列）。
+    返回: {frame_idx: {bone_name: {"pos": tuple, "euler": tuple(rad), "quat": tuple(x,y,z,w)}}}
     """
     rows = None
     for enc in ("utf-8", "cp932", "shift_jis"):
@@ -152,8 +241,14 @@ def load_csv_motion(csv_path: str) -> dict[int, dict[str, dict]]:
             continue
     if rows is None:
         raise UnicodeDecodeError("", b"", 0, 0, "无法用 utf-8/cp932/shift_jis 解码 CSV")
-    if not rows or "roll" not in rows[0] or "pitch" not in rows[0] or "yaw" not in rows[0]:
-        raise ValueError("CSV 必须包含 roll, pitch, yaw 列（欧拉角格式）")
+    if not rows:
+        return {}
+
+    keys = set(rows[0].keys())
+    has_euler = {"roll", "pitch", "yaw"}.issubset(keys)
+    has_quat = {"quat_x", "quat_y", "quat_z", "quat_w"}.issubset(keys)
+    if not has_euler and not has_quat:
+        raise ValueError("CSV 必须包含 roll/pitch/yaw 或 quat_x/quat_y/quat_z/quat_w 列")
 
     frames: dict[int, dict[str, dict]] = {}
     for row in rows:
@@ -164,14 +259,28 @@ def load_csv_motion(csv_path: str) -> dict[int, dict[str, dict]]:
             float(row["pos_y"]),
             float(row["pos_z"]),
         )
-        euler = (
-            float(row["roll"]),
-            float(row["pitch"]),
-            float(row["yaw"]),
-        )
+        if has_quat:
+            quat = _quat_normalize(
+                (
+                    float(row["quat_x"]),
+                    float(row["quat_y"]),
+                    float(row["quat_z"]),
+                    float(row["quat_w"]),
+                )
+            )
+            euler = _quat_to_euler(*quat)
+        else:
+            # CSV 中欧拉角为角度，转为弧度供后续计算
+            euler = (
+                math.radians(float(row["roll"])),
+                math.radians(float(row["pitch"])),
+                math.radians(float(row["yaw"])),
+            )
+            quat = _euler_to_quat(*euler)
+            quat = _quat_normalize(quat)
         if frame not in frames:
             frames[frame] = {}
-        frames[frame][bone] = {"pos": pos, "euler": euler}
+        frames[frame][bone] = {"pos": pos, "euler": euler, "quat": quat}
     return frames
 
 
@@ -232,7 +341,7 @@ def interpolate_bone(
             return None
         return dict(frames[prev_f][bone])
 
-    # 欧拉角线性插值
+    # 欧拉角 / 四元数插值
     if bone not in frames.get(prev_f, {}) or bone not in frames.get(next_f, {}):
         return None
     d0, d1 = frames[prev_f][bone], frames[next_f][bone]
@@ -240,33 +349,43 @@ def interpolate_bone(
     pos = tuple((1 - t) * a + t * b for a, b in zip(d0["pos"], d1["pos"]))
     e0, e1 = d0["euler"], d1["euler"]
     euler = tuple((1 - t) * a + t * b for a, b in zip(e0, e1))
-    return {"pos": pos, "euler": euler}
+    q0 = d0.get("quat") or _euler_to_quat(*e0)
+    q1 = d1.get("quat") or _euler_to_quat(*e1)
+    quat = _quat_nlerp(q0, q1, t)
+    return {"pos": pos, "euler": euler, "quat": quat}
 
 
 def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> float | None:
     """
     从帧数据中获取指定 G1 关节的目标角度偏移（弧度）。
-    - 单骨骼：直接取对应欧拉分量
-    - 肩部 [肩, 腕]：组合两骨骼旋转后取 RPY 分量
+    - 单骨骼：对骨骼四元数做 Swing-Twist 提取
+    - 肩部 [肩, 腕]：先组合四元数再做 Swing-Twist
     - 使用 get_mapping()，支持 UI 编辑后的映射
     """
     mapping = get_mapping()
     if joint_name not in mapping:
         return None
-    bones, euler_idx, scale = mapping[joint_name]
+    bones, axis, scale = mapping[joint_name]
     if isinstance(bones, list):
-        # 肩部：组合 肩+腕 得到真实 RPY
         if len(bones) != 2 or bones[0] not in frame_data or bones[1] not in frame_data:
             return None
-        euler_肩 = frame_data[bones[0]]["euler"]
-        euler_腕 = frame_data[bones[1]]["euler"]
-        roll, pitch, yaw = _combine_shoulder_euler(euler_肩, euler_腕)
+        q_肩 = frame_data[bones[0]].get("quat")
+        q_腕 = frame_data[bones[1]].get("quat")
+        if q_肩 is None:
+            q_肩 = _euler_to_quat(*frame_data[bones[0]]["euler"])
+        if q_腕 is None:
+            q_腕 = _euler_to_quat(*frame_data[bones[1]]["euler"])
+        q = _quat_normalize(_quat_multiply(q_肩, q_腕))
     else:
         if bones not in frame_data:
             return None
-        roll, pitch, yaw = frame_data[bones]["euler"]
-    euler = (roll, pitch, yaw)
-    return euler[euler_idx] * scale
+        q = frame_data[bones].get("quat")
+        if q is None:
+            q = _euler_to_quat(*frame_data[bones]["euler"])
+        q = _quat_normalize(q)
+
+    base_val = swing_twist_angle(*q, axis)
+    return float(base_val * scale)
 
 
 def build_joint_positions_from_frame(

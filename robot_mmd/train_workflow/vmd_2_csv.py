@@ -2,8 +2,10 @@
 VMD 文件解析器 - 读取 MMD 骨骼动画数据
 支持按帧顺序输出骨骼数据，并导出为 CSV 文件
 支持将四元数 CSV 转换为 roll/pitch/yaw 欧拉角 CSV
+支持读取 VPD 单帧姿态数据
 """
 import math
+import re
 import struct
 import csv
 from pathlib import Path
@@ -48,6 +50,60 @@ def read_vmd_bones(file_path: str) -> list[dict]:
             })
 
         return bones_data
+
+
+def read_vpd_pose(file_path: str) -> list[dict]:
+    """
+    读取 VPD 文件中的单帧姿态数据，返回与 VMD 兼容的骨骼记录列表。
+    所有骨骼的 frame 均为 0，可直接用于 export_to_csv、iter_frames 等函数。
+    VPD 为 Shift-JIS 编码的文本格式。
+    """
+    for enc in ("shift_jis", "cp932", "utf-8"):
+        try:
+            with open(file_path, "r", encoding=enc) as f:
+                lines = f.readlines()
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        raise UnicodeDecodeError("", b"", 0, 0, "无法用 shift_jis/cp932/utf-8 解码 VPD")
+
+    bones_data: list[dict] = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        m = re.match(r"Bone\d+\{(.+)", line.strip())
+        if not m:
+            i += 1
+            continue
+
+        bone_name = m.group(1).strip()
+
+        # 下一行: trans x,y,z
+        i += 1
+        if i >= len(lines):
+            break
+        pos_str = lines[i].split(";")[0].strip()
+        pos = tuple(float(x.strip()) for x in pos_str.split(","))
+
+        # 再下一行: quaternion x,y,z,w
+        i += 1
+        if i >= len(lines):
+            break
+        quat_str = lines[i].split(";")[0].strip()
+        quat = tuple(float(x.strip()) for x in quat_str.split(","))
+
+        bones_data.append({
+            "bone": bone_name,
+            "frame": 0,
+            "position": pos,
+            "quaternion": quat,
+        })
+
+        i += 1  # 跳过 }
+
+    return bones_data
 
 
 def get_frames_sorted(bones_data: list[dict]) -> list[dict]:
@@ -97,7 +153,7 @@ def convert_csv_to_euler(csv_path: str) -> str:
     将四元数格式的骨骼 CSV 转换为 roll/pitch/yaw 欧拉角格式。
     输入 CSV 需包含: frame, bone, pos_x, pos_y, pos_z, quat_x, quat_y, quat_z, quat_w
     输出文件命名为: 原名_euler.csv，列变为: frame, bone, pos_x, pos_y, pos_z, roll, pitch, yaw
-    欧拉角单位为弧度。
+    欧拉角单位为度（便于人工查看和编辑）。
     """
     path = Path(csv_path)
     if path.suffix.lower() == ".vmd":
@@ -135,15 +191,19 @@ def convert_csv_to_euler(csv_path: str) -> str:
             qz = float(row["quat_z"])
             qw = float(row["quat_w"])
             roll, pitch, yaw = _quat_to_euler(qx, qy, qz, qw)
+            # 弧度 -> 角度
+            roll_deg = math.degrees(roll)
+            pitch_deg = math.degrees(pitch)
+            yaw_deg = math.degrees(yaw)
             writer.writerow({
                 "frame": row["frame"],
                 "bone": row["bone"],
                 "pos_x": row["pos_x"],
                 "pos_y": row["pos_y"],
                 "pos_z": row["pos_z"],
-                "roll": f"{roll:.6f}",
-                "pitch": f"{pitch:.6f}",
-                "yaw": f"{yaw:.6f}",
+                "roll": f"{roll_deg:.6f}",
+                "pitch": f"{pitch_deg:.6f}",
+                "yaw": f"{yaw_deg:.6f}",
             })
 
     print(f"已生成欧拉角 CSV: {out_path}")
@@ -228,23 +288,61 @@ def read_and_export(
     读取 VMD 文件并导出为 CSV。若未指定 output_path，则使用与 vmd 同名的 .csv 文件。
     bone_filter=True 时仅导出上半身、下半身、头、颈、腰、中心、手臂、手指、足。
     """
-    vmd_path = Path(vmd_path)
-    if output_path is None:
-        output_path = str(vmd_path.with_suffix('.csv'))
+    return read_motion_and_export(vmd_path, output_path=output_path, bone_filter=bone_filter)
 
-    bones_data = read_vmd_bones(str(vmd_path))
+
+def read_vpd_and_export(
+    vpd_path: str,
+    output_path: str | None = None,
+    *,
+    bone_filter: bool = True,
+) -> str:
+    """
+    读取 VPD 文件并导出为 CSV。若未指定 output_path，则使用与 vpd 同名的 .csv 文件。
+    bone_filter=True 时仅导出上半身、下半身、头、颈、腰、中心、手臂、手指、足。
+    """
+    return read_motion_and_export(vpd_path, output_path=output_path, bone_filter=bone_filter)
+
+
+def read_motion(input_path: str) -> list[dict]:
+    """
+    统一读取入口：根据后缀自动分发 VMD / VPD 读取逻辑。
+    支持 .vmd / .vpd（大小写不敏感）。
+    """
+    path = Path(input_path)
+    suffix = path.suffix.lower()
+    if suffix == ".vmd":
+        return read_vmd_bones(str(path))
+    if suffix == ".vpd":
+        return read_vpd_pose(str(path))
+    raise ValueError(f"不支持的文件类型: {path.suffix}，仅支持 .vmd / .vpd")
+
+
+def read_motion_and_export(
+    input_path: str,
+    output_path: str | None = None,
+    *,
+    bone_filter: bool = True,
+) -> str:
+    """
+    统一转换入口：VMD/VPD -> CSV。
+    - 根据输入后缀自动选择解析器
+    - 未提供 output_path 时，默认输出为同名 .csv
+    """
+    path = Path(input_path)
+    if output_path is None:
+        output_path = str(path.with_suffix(".csv"))
+    bones_data = read_motion(str(path))
     return export_to_csv(bones_data, output_path, bone_filter=bone_filter)
 
 
 # 使用示例
 if __name__ == "__main__":
-    import sys
 
-    # vmd_file = Path("I:/robot_isaac/robot_mmd/media/333.vmd")
-    # output_csv = str(vmd_file.with_suffix(".csv"))
-    # bones_data = read_vmd_bones(vmd_file)
-    # out = export_to_csv(bones_data, output_csv)
-    # print(f"已导出到: {out}")
+    mmd_file = Path("I:/robot_isaac/robot_mmd/media/pose/test3.vpd")
+    output_csv = str(mmd_file.with_suffix(".csv"))
+    read_and_export(mmd_file, output_csv)
 
-    convert_csv_to_euler("robot_mmd/media/333.csv")
+
+    convert_csv_to_euler(output_csv)
 
