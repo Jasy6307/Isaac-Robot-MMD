@@ -1,5 +1,7 @@
 # ============ Isaac 工作空间（必须忽略，体积巨大） ============
 isaac_workspace/
+isaac_workspace/isaacLab
+isaac_workspace/IsaacSim
 
 # ============ MMD 媒体文件 ============
 robot_mmd/media/
