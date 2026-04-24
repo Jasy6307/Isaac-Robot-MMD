@@ -1,7 +1,13 @@
 """
-CSV 骨骼动作加载器。
+CSV 动作加载与 G1 关节重定向核心模块。
 
-支持两类输入：
+功能概览：
+1) 读取 MMD 骨骼 CSV（欧拉角或四元数）；
+2) 对缺失帧做插值并按骨骼查询；
+3) 基于可编辑映射将骨骼旋转转换为 G1 目标关节角；
+4) 为映射 UI 提供默认映射与运行时覆盖能力。
+
+支持两类输入格式：
 1) 欧拉角 CSV: frame,bone,pos_x,pos_y,pos_z,roll,pitch,yaw(度)
 2) 四元数 CSV: frame,bone,pos_x,pos_y,pos_z,quat_x,quat_y,quat_z,quat_w
 
@@ -135,34 +141,40 @@ def _build_axis_map(raw_map: dict[str, AxisMapRawEntry]) -> dict[str, AxisMapEnt
 
 # G1 关节（紧凑写法） -> (MMD 骨骼或 [肩, 腕] 列表, 轴索引(0/1/2), 缩放系数)
 G1_JOINT_AXIS_MAP_RAW: dict[str, AxisMapRawEntry] = {
-    # 腿部
-    "right_knee_joint": ("右ひざ", 0, 1.0),
-    "left_knee_joint": ("左ひざ", 0, 1.0),
-    "right_hip_pitch_joint": ("右足", 1, 1.0),
-    "left_hip_pitch_joint": ("左足", 1, 1.0),
-    "right_hip_roll_joint": ("右足", 0, 1.0),
-    "left_hip_roll_joint": ("左足", 0, 1.0),
-    "right_hip_yaw_joint": ("右足", 2, 1.0),
-    "left_hip_yaw_joint": ("左足", 2, 1.0),
-    "right_ankle_pitch_joint": ("右足首", 1, 1.0),
-    "left_ankle_pitch_joint": ("左足首", 1, 1.0),
-    "right_ankle_roll_joint": ("右足首", 0, 1.0),
-    "left_ankle_roll_joint": ("左足首", 0, 1.0),
+    
     # 手臂（肩部：先组合 肩+腕 四元数）
     "right_shoulder_pitch_joint": (["右肩", "右腕"], 1, 1.0),
     "right_shoulder_roll_joint": (["右肩", "右腕"], 2, 1.0),
     "right_shoulder_yaw_joint": (["右肩", "右腕"], 0, -1.0),
-    "left_shoulder_pitch_joint": (["左肩", "左腕"], 1, 1.0),
-    "left_shoulder_roll_joint": (["左肩", "左腕"], 2, 1.0),
-    "left_shoulder_yaw_joint": (["左肩", "左腕"], 0, 1.0),
     "right_elbow_joint": ("右ひじ", 1, 1.0),
-    "left_elbow_joint": ("左ひじ", 1, -1.0),
     "right_wrist_pitch_joint": ("右手首", 0, 1.0),
     "right_wrist_roll_joint": ("右手首", 1, 1.0),
     "right_wrist_yaw_joint": ("右手首", 2, 1.0),
+    
+    "left_shoulder_pitch_joint": (["左肩", "左腕"], 1, 1.0),
+    "left_shoulder_roll_joint": (["左肩", "左腕"], 2, 1.0),
+    "left_shoulder_yaw_joint": (["左肩", "左腕"], 0, 1.0),
+    "left_elbow_joint": ("左ひじ", 1, -1.0),
     "left_wrist_pitch_joint": ("左手首", 0, 1.0),
     "left_wrist_roll_joint": ("左手首", 1, 1.0),
     "left_wrist_yaw_joint": ("左手首", 2, 1.0),
+    
+    # 腿部
+    "right_hip_pitch_joint": ("右足", 1, 1.0),
+    "right_hip_roll_joint": ("右足", 2, 1.0),
+    "right_hip_yaw_joint": ("右足", 0, 1.0),
+    "right_knee_joint": ("右ひざ", 0, -1.0),
+    "right_ankle_pitch_joint": ("右足首", 1, 1.0),
+    "right_ankle_roll_joint": ("右足首", 0, 1.0),
+    
+    "left_hip_pitch_joint": ("左足", 1, 1.0),
+    "left_hip_roll_joint": ("左足", 2, 1.0),
+    "left_hip_yaw_joint": ("左足", 0, 1.0),
+    "left_knee_joint": ("左ひざ", 0, -1.0),
+    "left_ankle_pitch_joint": ("左足首", 1, 1.0),
+    "left_ankle_roll_joint": ("左足首", 0, 1.0),
+
+
     # 躯干
     "waist_pitch_joint": ("上半身", 0, 1.0),
     "waist_roll_joint": ("上半身", 1, 1.0),

@@ -1,12 +1,21 @@
 # Copyright (c) 2022-2025.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""运行宇树 G1 站立任务 - 零动作，机器人在场景正中以默认姿态站立。Launch Isaac Sim Simulator first."""
+"""
+G1 站立任务动作回放主脚本。
+
+功能概览：
+1) 读取 pose/dance 目录下的 CSV 动作并按键触发播放；
+2) 支持关节映射 UI，实时显示当前关节角度；
+3) 支持 O 键触发音频并与动作回放共用真实时间基准；
+4) 在重置和切换动作时维护控制参考姿态，避免姿态回弹。
+"""
 
 import argparse
 import math
 import os
 import sys
+import time
 from typing import Any
 try:
     import winsound
@@ -26,6 +35,7 @@ DEFAULT_DANCE_DIR = os.path.join(_MEDIA_DIR, "dance")
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
+    """构建命令行参数。"""
     parser = argparse.ArgumentParser(description="宇树 G1 站立 - 零动作运行。")
     parser.add_argument("--num_envs", type=int, default=1, help="环境数量（默认 1）")
     parser.add_argument("--disable_fabric", action="store_true", help="禁用 fabric，使用 USD I/O")
@@ -52,12 +62,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--play_speed", type=float, default=1.0, help="播放速度倍率")
     parser.add_argument("--smooth_alpha", type=float, default=1.0, help="动作平滑系数 0~1")
+    parser.add_argument(
+        "--groove_pos_to_world",
+        type=float,
+        default=0.01,
+        help="グルーブ/CSV 位置单位到仿真世界米：默认 0.01（即 CSV 为厘米时 厘米→米），若已是米则设 1.0",
+    )
     parser.add_argument("--sim_fps", type=int, default=0, help="仿真控制频率 FPS（0 使用默认）")
     parser.add_argument(
         "--dance_audio_wav",
         type=str,
         default=os.path.join(_MEDIA_DIR, "you_are_important.wav"),
-        help="按 I 键触发 dance 时同步播放的 WAV 音频路径",
+        help="按 O 键触发 dance 时同步播放的 WAV 音频路径",
     )
     parser.add_argument(
         "--instant_joint_set",
@@ -84,7 +100,6 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab.devices import Se3Keyboard, Se3KeyboardCfg
 
-from robot_mmd.my_task.g1_stand_env_cfg import get_robot_cfg_for_motion_playback
 from robot_mmd.train_workflow.csv_motion_loader import (
     build_joint_positions_from_frame,
     get_bone_frame_lists,
@@ -113,12 +128,7 @@ def _load_motion(filepath: str) -> tuple | None:
 
 def _load_pose_motion_dir(pose_dir: str) -> list[tuple[str, str, tuple]]:
     """读取目录下全部 CSV，返回 [(文件名, 全路径, motion_data)]。"""
-    if not os.path.isdir(pose_dir):
-        print(f"[WARN] pose 目录不存在: {pose_dir}")
-        return []
-    csv_files = sorted(
-        f for f in os.listdir(pose_dir) if f.lower().endswith(".csv") and os.path.isfile(os.path.join(pose_dir, f))
-    )
+    csv_files = _list_csv_files(pose_dir, "pose")
     out: list[tuple[str, str, tuple]] = []
     for name in csv_files:
         fullpath = os.path.join(pose_dir, name)
@@ -133,23 +143,27 @@ def _load_pose_motion_dir(pose_dir: str) -> list[tuple[str, str, tuple]]:
     return out
 
 
-def _load_dance_key_mapping(dance_dir: str, dance_keys: list[str]) -> dict[str, tuple[str, tuple]]:
-    """读取 dance 目录并按键位绑定，返回 key -> (文件名, motion_data)。"""
-    if not os.path.isdir(dance_dir):
-        print(f"[WARN] dance 目录不存在: {dance_dir}")
-        return {}
+def _list_csv_files(dir_path: str, label: str) -> list[str]:
+    """列出目录中的 CSV 文件（按文件名排序）。"""
+    if not os.path.isdir(dir_path):
+        print(f"[WARN] {label} 目录不存在: {dir_path}")
+        return []
     csv_files = sorted(
-        f for f in os.listdir(dance_dir) if f.lower().endswith(".csv") and os.path.isfile(os.path.join(dance_dir, f))
+        f for f in os.listdir(dir_path) if f.lower().endswith(".csv") and os.path.isfile(os.path.join(dir_path, f))
     )
     if not csv_files:
-        print(f"[WARN] dance 目录没有可用 CSV: {dance_dir}")
+        print(f"[WARN] {label} 目录没有可用 CSV: {dir_path}")
+    return csv_files
+
+
+def _load_dance_key_mapping(dance_dir: str, dance_keys: list[str]) -> dict[str, tuple[str, tuple]]:
+    """读取 dance 目录并按键位绑定，返回 key -> (文件名, motion_data)。"""
+    csv_files = _list_csv_files(dance_dir, "dance")
+    if not csv_files:
         return {}
 
     mapping: dict[str, tuple[str, tuple]] = {}
-    max_bind = min(len(dance_keys), len(csv_files))
-    for i in range(max_bind):
-        key = dance_keys[i]
-        name = csv_files[i]
+    for key, name in zip(dance_keys, csv_files):
         fullpath = os.path.join(dance_dir, name)
         data = _load_motion(fullpath)
         if data is None:
@@ -196,6 +210,11 @@ def _compute_action_for_frame(
         smoothed_action = smooth_alpha * target_action + (1.0 - smooth_alpha) * smoothed_action
     return smoothed_action, smoothed_action
 
+
+def _build_joint_pos_deg_cache(joint_names: list[str], joint_pos_cmd: Any) -> dict[str, float]:
+    """将关节弧度数组转为 UI 使用的角度缓存。"""
+    return {j: float(deg) for j, deg in zip(joint_names, joint_pos_cmd * (180.0 / math.pi))}
+
 def _play_wav_async(filepath: str) -> None:
     """异步播放 WAV，不阻塞仿真循环。"""
     if winsound is None:
@@ -231,9 +250,6 @@ def _apply_joint_state_instant(env: Any, joint_pos_cmd: Any, joint_ids: Any) -> 
     joint_pos_tensor = joint_pos_tensor.repeat(num_envs, 1)
     joint_vel_tensor = torch.zeros_like(joint_pos_tensor)
 
-    if not hasattr(robot, "write_joint_state_to_sim"):
-        return False
-
     try:
         robot.write_joint_state_to_sim(joint_pos_tensor, joint_vel_tensor, joint_ids=joint_ids)
         return True
@@ -246,6 +262,56 @@ def _apply_joint_state_instant(env: Any, joint_pos_cmd: Any, joint_ids: Any) -> 
             return False
     except Exception:
         return False
+
+
+def _apply_root_pos_instant(env: Any, root_pos_xyz: tuple[float, float, float], root_quat_xyzw: Any = None) -> bool:
+    """将机器人根位置直接写入仿真（位置即时刷新）。成功返回 True。"""
+    robot = env.unwrapped.scene["robot"]
+    device = env.unwrapped.device
+    num_envs = robot.data.joint_pos.shape[0]
+
+    # 优先沿用当前根姿态的四元数，避免每帧更新位置时引入旋转抖动。
+    if root_quat_xyzw is None:
+        try:
+            root_state = getattr(robot.data, "root_state_w", None)
+            if torch.is_tensor(root_state) and root_state.shape[1] >= 7:
+                root_quat_xyzw = root_state[0, 3:7].detach().cpu().tolist()
+        except Exception:
+            root_quat_xyzw = None
+    if root_quat_xyzw is None:
+        root_quat_xyzw = [0.0, 0.0, 0.0, 1.0]
+
+    root_pose = torch.tensor(
+        [root_pos_xyz[0], root_pos_xyz[1], root_pos_xyz[2], root_quat_xyzw[0], root_quat_xyzw[1], root_quat_xyzw[2], root_quat_xyzw[3]],
+        dtype=torch.float32,
+        device=device,
+    ).unsqueeze(0)
+    root_pose = root_pose.repeat(num_envs, 1)
+
+    if hasattr(robot, "write_root_pose_to_sim"):
+        try:
+            robot.write_root_pose_to_sim(root_pose)
+            return True
+        except Exception:
+            pass
+
+    if hasattr(robot, "write_root_state_to_sim"):
+        try:
+            root_state = getattr(robot.data, "root_state_w", None)
+            if torch.is_tensor(root_state) and root_state.shape[1] >= 13:
+                state = root_state.clone()
+            else:
+                state = torch.zeros((num_envs, 13), dtype=torch.float32, device=device)
+                state[:, 3:7] = root_pose[:, 3:7]
+            state[:, 0:3] = root_pose[:, 0:3]
+            if state[:, 3:7].abs().sum() < 1e-6:
+                state[:, 6] = 1.0
+            robot.write_root_state_to_sim(state)
+            return True
+        except Exception:
+            pass
+
+    return False
 
 
 def main():
@@ -262,18 +328,23 @@ def main():
         use_fabric=not args_cli.disable_fabric,
     )
     if args_cli.motion_playback:
-        env_cfg.scene.robot = get_robot_cfg_for_motion_playback().replace(
-            prim_path=env_cfg.scene.robot.prim_path
-        )
+        from robot_mmd.my_task.g1_stand_env_cfg import G1_TPOSE_INIT_STATE
+        env_cfg.scene.robot.init_state = G1_TPOSE_INIT_STATE
+        env_cfg.scene.robot.spawn.articulation_props.fix_root_link = False
+        env_cfg.scene.robot.spawn.rigid_props.disable_gravity = True
+        # env_cfg.scene.robot.spawn.rigid_props.linear_damping = 2.0
+        # env_cfg.scene.robot.spawn.rigid_props.angular_damping = 2.0
+
+        env_cfg.scene.robot.spawn.rigid_props.linear_damping = 10.0
+        env_cfg.scene.robot.spawn.rigid_props.angular_damping = 10.0
         print("[INFO] 已启用动作回放模式")
 
     # UI 用：缓存当前关节角度（度制），由动作回放每步更新
     joint_pos_deg_cache: dict[str, float] = {}
 
-    step_dt = 0.02
     if args_cli.sim_fps > 0:
-        step_dt = 1.0 / args_cli.sim_fps
-        env_cfg.sim.dt = step_dt / 2
+        control_dt = 1.0 / args_cli.sim_fps
+        env_cfg.sim.dt = control_dt / 2
         env_cfg.decimation = 2
         env_cfg.sim.render_interval = env_cfg.decimation
         print(f"[INFO] 仿真控制: {args_cli.sim_fps} FPS")
@@ -294,14 +365,17 @@ def main():
     pending_dance_key: str | None = None
 
     def _on_reset():
+        """键盘回调：请求在主循环中执行 reset。"""
         nonlocal reset_requested
         reset_requested = True
 
     def _request_cycle_play():
+        """键盘回调：请求切换到下一个 pose。"""
         nonlocal pending_cycle_play
         pending_cycle_play = True
 
     def _request_dance_play(key: str):
+        """键盘回调：请求播放指定 dance。"""
         nonlocal pending_dance_key
         pending_dance_key = key
 
@@ -319,19 +393,24 @@ def main():
     current_motion = None  # (frames, frame_list, bone_frame_lists, all_bones)
     current_motion_label = ""
     current_pose_idx = -1
-    play_start_step = 0
+    play_start_time = 0.0
     is_playing = False
     last_printed_frame = -1
     action_scale = env_cfg.actions.joint_pos.scale
     joint_names: list[str] = []
     joint_ids: Any = None
     default_joint_pos: Any = None
+    initial_default_joint_pos: Any = None
     smoothed_action = None
-    step_count = 0
     instant_mode_warned = False
+    root_track_warned = False
+    motion_groove_origin_pos: tuple[float, float, float] | None = None
+    motion_root_origin_pos: tuple[float, float, float] | None = None
+    motion_root_quat_xyzw: list[float] | None = None
 
     def _ensure_joint_info():
-        nonlocal joint_names, joint_ids, default_joint_pos
+        """惰性读取关节元数据，仅在首次需要时初始化。"""
+        nonlocal joint_names, joint_ids, default_joint_pos, initial_default_joint_pos
         if not joint_names:
             action_term = env.unwrapped.action_manager.get_term("joint_pos")
             joint_names = action_term._joint_names
@@ -342,30 +421,87 @@ def main():
                 .cpu()
                 .numpy()
             )
-            # 初始化 UI 显示为默认姿态
-            joint_pos_deg_cache.clear()
-            joint_pos_deg_cache.update(
-                {
-                    j: float(deg)
-                    for j, deg in zip(
-                        joint_names,
-                        default_joint_pos * (180.0 / math.pi),
-                    )
-                }
-            )
+            initial_default_joint_pos = default_joint_pos.copy()
+            _update_joint_pos_cache(default_joint_pos)
+
+    def _update_joint_pos_cache(joint_pos_cmd: Any) -> None:
+        """将关节值写入 UI 缓存（度制）。"""
+        joint_pos_deg_cache.clear()
+        joint_pos_deg_cache.update(_build_joint_pos_deg_cache(joint_names, joint_pos_cmd))
+
+    def _set_control_reference_pose(new_default_joint_pos: Any) -> bool:
+        """更新控制器参考姿态，避免 zero action 把关节拉回旧默认姿态。"""
+        nonlocal default_joint_pos
+        if new_default_joint_pos is None or not joint_names:
+            return False
+        action_term = env.unwrapped.action_manager.get_term("joint_pos")
+        new_default = torch.tensor(
+            new_default_joint_pos, dtype=torch.float32, device=env.unwrapped.device
+        )
+
+        # IsaacLab JointPositionAction 使用 _offset 作为 zero_action 的参考姿态
+        offset_updated = False
+        try:
+            offset_ref = getattr(action_term, "_offset", None)
+            if torch.is_tensor(offset_ref):
+                if offset_ref.ndim == 1 and offset_ref.shape[0] == new_default.shape[0]:
+                    offset_ref.copy_(new_default)
+                    offset_updated = True
+                elif offset_ref.ndim == 2 and offset_ref.shape[1] == new_default.shape[0]:
+                    offset_ref.copy_(new_default.unsqueeze(0).repeat(offset_ref.shape[0], 1))
+                    offset_updated = True
+        except Exception as exc:
+            print(f"[WARN] 更新 joint_pos._offset 失败: {exc}")
+
+        # 同步 robot 默认关节位，确保相对量观测与控制参考一致
+        try:
+            robot = env.unwrapped.scene["robot"]
+            if hasattr(robot.data, "default_joint_pos"):
+                robot_default = robot.data.default_joint_pos
+                if torch.is_tensor(robot_default) and robot_default.ndim == 2:
+                    robot_default[:, joint_ids] = new_default.unsqueeze(0).repeat(robot_default.shape[0], 1)
+        except Exception as exc:
+            print(f"[WARN] 同步 robot.default_joint_pos 失败: {exc}")
+
+        if not offset_updated:
+            print("[WARN] 未能更新 joint_pos 控制参考，zero_action 可能会回弹到旧姿态")
+            return False
+        default_joint_pos = new_default.detach().cpu().numpy().copy()
+        return True
 
     def _switch_to_motion(data, label: str):
-        nonlocal current_motion, current_motion_label, play_start_step, is_playing, last_printed_frame, smoothed_action
+        """切换当前播放动作，并重置播放状态。"""
+        nonlocal current_motion, current_motion_label, play_start_time, is_playing, last_printed_frame
+        nonlocal smoothed_action, motion_groove_origin_pos, motion_root_origin_pos, motion_root_quat_xyzw
         if data is None:
             return
         current_motion = data
         current_motion_label = label
-        play_start_step = step_count
+        play_start_time = time.perf_counter()
         is_playing = True
         last_printed_frame = -1
         smoothed_action = None
+        motion_groove_origin_pos = None
+        motion_root_origin_pos = None
+        motion_root_quat_xyzw = None
         _ensure_joint_info()
         print(f"[INFO] 开始播放 {label}")
+
+    def _reset_to_initial_pose(sync_ui_cache: bool = False) -> None:
+        """将控制参考和机器人姿态恢复到初始默认位。"""
+        _ensure_joint_info()
+        if initial_default_joint_pos is None:
+            return
+        _set_control_reference_pose(initial_default_joint_pos)
+        if args_cli.instant_joint_set and joint_ids is not None:
+            _apply_joint_state_instant(env, initial_default_joint_pos, joint_ids)
+        if sync_ui_cache and default_joint_pos is not None and joint_names:
+            _update_joint_pos_cache(default_joint_pos)
+
+    def _prepare_motion_switch() -> None:
+        """动作切换前的公共准备：停音频并回到初始姿态。"""
+        _stop_wav()
+        _reset_to_initial_pose(sync_ui_cache=False)
 
     zero_action = torch.zeros(env.action_space.shape, device=env.unwrapped.device)
 
@@ -378,22 +514,15 @@ def main():
                 keyboard.reset()
                 is_playing = False
                 smoothed_action = None
+                _reset_to_initial_pose(sync_ui_cache=True)
                 print("[INFO] 环境已重置")
-                if default_joint_pos is not None and joint_names:
-                    joint_pos_deg_cache = {
-                        j: float(deg)
-                        for j, deg in zip(
-                            joint_names,
-                            default_joint_pos * (180.0 / math.pi),
-                        )
-                    }
 
             if pending_cycle_play:
                 pending_cycle_play = False
-                _stop_wav()
                 if not pose_motions:
                     print(f"[WARN] pose 目录无可播放 CSV: {args_cli.pose_dir}")
                 else:
+                    _prepare_motion_switch()
                     current_pose_idx = (current_pose_idx + 1) % len(pose_motions)
                     name, _, data = pose_motions[current_pose_idx]
                     _switch_to_motion(data, f"pose[{current_pose_idx + 1}/{len(pose_motions)}] {name}")
@@ -405,17 +534,15 @@ def main():
                 if entry is None:
                     print(f"[WARN] dance 键 [{dkey}] 未绑定文件")
                 else:
-                    if dkey == "I":
-                        _play_wav_async(args_cli.dance_audio_wav)
-                    else:
-                        _stop_wav()
+                    _prepare_motion_switch()
                     name, data = entry
                     _switch_to_motion(data, f"dance[{dkey}] {name}")
+                    if dkey == "O":
+                        _play_wav_async(args_cli.dance_audio_wav)
 
             if is_playing and current_motion:
                 frames, frame_list, bone_frame_lists, all_bones = current_motion  # type: ignore
-                elapsed_steps = step_count - play_start_step
-                elapsed_sec = elapsed_steps * step_dt
+                elapsed_sec = max(0.0, time.perf_counter() - play_start_time)
                 frame = int(elapsed_sec * VMD_FPS * args_cli.play_speed)
                 max_frame = frame_list[-1]
                 frame = min(frame, max_frame)
@@ -435,42 +562,86 @@ def main():
                     args_cli.smooth_alpha,
                     smoothed_action,
                 )
-                if result is not None:
-                    # 根据当前 action 推导“目标关节角度”，用于 UI 展示（deg）
-                    joint_pos_cmd = None
+
+                # 同步根位置：将「グルーブ」视作 torso 中心平移轨迹，按每帧增量刷新到机器人根位置。
+                groove = interpolate_bone(frame, "グルーブ", frames, bone_frame_lists.get("グルーブ"))
+                if groove is not None and "pos" in groove:
                     try:
-                        joint_pos_cmd = default_joint_pos + action_scale * result  # radians
-                        joint_pos_deg_cache = {
-                            j: float(deg)
-                            for j, deg in zip(
-                                joint_names,
-                                joint_pos_cmd * (180.0 / math.pi),
+                        gx, gy, gz = groove["pos"]
+                        groove_pos = (float(gx), float(gy), float(gz))
+                        robot = env.unwrapped.scene["robot"]
+
+                        if motion_root_origin_pos is None:
+                            root_state = getattr(robot.data, "root_state_w", None)
+                            if torch.is_tensor(root_state) and root_state.shape[1] >= 7:
+                                motion_root_origin_pos = (
+                                    float(root_state[0, 0].item()),
+                                    float(root_state[0, 1].item()),
+                                    float(root_state[0, 2].item()),
+                                )
+                                motion_root_quat_xyzw = [
+                                    float(root_state[0, 3].item()),
+                                    float(root_state[0, 4].item()),
+                                    float(root_state[0, 5].item()),
+                                    float(root_state[0, 6].item()),
+                                ]
+
+                        if motion_groove_origin_pos is None:
+                            motion_groove_origin_pos = groove_pos
+
+                        if motion_root_origin_pos is not None and motion_groove_origin_pos is not None:
+                            # グルーブ pos 为 MMD 导出的厘米单位；将差分换算为米后再叠加到 root。
+                            s = float(args_cli.groove_pos_to_world)
+                            # MMD 常用 Y-up；位移映射到仿真世界：X->X, Z->Y, Y->Z
+                            dx = (groove_pos[0] - motion_groove_origin_pos[0]) * s
+                            dy = (groove_pos[1] - motion_groove_origin_pos[1]) * s
+                            dz = (groove_pos[2] - motion_groove_origin_pos[2]) * s
+                            target_root_pos = (
+                                motion_root_origin_pos[0] + dx,
+                                motion_root_origin_pos[1] + dz,
+                                motion_root_origin_pos[2] + dy,
                             )
-                        }
+                            applied_root = _apply_root_pos_instant(env, target_root_pos, motion_root_quat_xyzw)
+                            if not applied_root and not root_track_warned:
+                                print("[WARN] 当前环境不支持直接写 root 位姿，已跳过グルーブ位置同步")
+                                root_track_warned = True
                     except Exception:
                         pass
 
+                last_frame_joint_pos_cmd = None
+                if result is not None:
+                    joint_pos_cmd = None
+                    try:
+                        joint_pos_cmd = default_joint_pos + action_scale * result  # radians
+                        last_frame_joint_pos_cmd = joint_pos_cmd
+                        _update_joint_pos_cache(joint_pos_cmd)
+                    except Exception:
+                        pass
+
+                    # 保持 instant write 以减少关节跟踪误差，但控制目标仍通过 actions 下发，
+                    # 避免同步 step 阶段 PD 控制器把关节拉回 offset（即初始姿态）
                     if args_cli.instant_joint_set and joint_pos_cmd is not None:
                         applied = _apply_joint_state_instant(env, joint_pos_cmd, joint_ids)
                         if not applied and not instant_mode_warned:
                             print("[WARN] 当前环境不支持直接写关节状态，自动回退为驱动模式")
                             instant_mode_warned = True
-                            actions = torch.tensor(
-                                result, dtype=torch.float32, device=env.unwrapped.device
-                            ).unsqueeze(0)
-                        else:
-                            actions = zero_action
-                    else:
-                        actions = torch.tensor(
-                            result, dtype=torch.float32, device=env.unwrapped.device
-                        ).unsqueeze(0)
+
+                    actions = torch.tensor(
+                        result, dtype=torch.float32, device=env.unwrapped.device
+                    ).unsqueeze(0)
                 else:
                     actions = zero_action
+                if frame >= max_frame:
+                    # 播放结束时把控制参考更新到最后一帧，使后续 zero_action 维持末姿态，不会被拉回初始
+                    if last_frame_joint_pos_cmd is not None:
+                        _set_control_reference_pose(last_frame_joint_pos_cmd)
+                    is_playing = False
+                    smoothed_action = None
+                    print(f"[INFO] 播放结束: {current_motion_label}")
             else:
                 actions = zero_action
 
             env.step(actions)
-            step_count += 1
 
     env.close()
 

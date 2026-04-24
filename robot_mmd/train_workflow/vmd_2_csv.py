@@ -1,8 +1,11 @@
 """
-VMD 文件解析器 - 读取 MMD 骨骼动画数据
-支持按帧顺序输出骨骼数据，并导出为 CSV 文件
-支持将四元数 CSV 转换为 roll/pitch/yaw 欧拉角 CSV
-支持读取 VPD 单帧姿态数据
+VMD/VPD 到 CSV 的转换工具。
+
+功能概览：
+1) 解析 VMD 二进制骨骼关键帧；
+2) 解析 VPD 单帧姿态文本；
+3) 导出统一的四元数 CSV；
+4) 将四元数 CSV 转换为便于人工查看的欧拉角 CSV。
 """
 import math
 import re
@@ -10,6 +13,28 @@ import struct
 import csv
 from pathlib import Path
 from typing import Iterator
+
+
+def _read_text_with_fallback(file_path: str, encodings: tuple[str, ...]) -> list[str]:
+    """按候选编码读取文本文件，返回全部行。"""
+    for enc in encodings:
+        try:
+            with open(file_path, "r", encoding=enc) as f:
+                return f.readlines()
+        except UnicodeDecodeError:
+            continue
+    raise UnicodeDecodeError("", b"", 0, 0, f"无法用 {'/'.join(encodings)} 解码文件")
+
+
+def _read_csv_rows_with_fallback(csv_path: str, encodings: tuple[str, ...]) -> list[dict]:
+    """按候选编码读取 CSV 并返回 DictReader 行。"""
+    for enc in encodings:
+        try:
+            with open(csv_path, encoding=enc) as f:
+                return list(csv.DictReader(f))
+        except UnicodeDecodeError:
+            continue
+    raise UnicodeDecodeError("", b"", 0, 0, f"无法用 {'/'.join(encodings)} 解码 CSV")
 
 
 def read_vmd_bones(file_path: str) -> list[dict]:
@@ -29,6 +54,8 @@ def read_vmd_bones(file_path: str) -> list[dict]:
             # 每帧包含: 骨骼名(15), 帧序号(4), 坐标(12), 旋转(16), 插值(64)
             # 总共 111 字节
             data = f.read(111)
+            if len(data) < 111:
+                break
 
             # 解析骨骼名 (Shift-JIS 编码)
             name = data[:15].split(b'\x00')[0].decode('shift_jis', errors='ignore')
@@ -58,15 +85,7 @@ def read_vpd_pose(file_path: str) -> list[dict]:
     所有骨骼的 frame 均为 0，可直接用于 export_to_csv、iter_frames 等函数。
     VPD 为 Shift-JIS 编码的文本格式。
     """
-    for enc in ("shift_jis", "cp932", "utf-8"):
-        try:
-            with open(file_path, "r", encoding=enc) as f:
-                lines = f.readlines()
-            break
-        except UnicodeDecodeError:
-            continue
-    else:
-        raise UnicodeDecodeError("", b"", 0, 0, "无法用 shift_jis/cp932/utf-8 解码 VPD")
+    lines = _read_text_with_fallback(file_path, ("shift_jis", "cp932", "utf-8"))
 
     bones_data: list[dict] = []
     i = 0
@@ -165,16 +184,7 @@ def convert_csv_to_euler(csv_path: str) -> str:
         csv_path = str(path)
     out_path = path.parent / (path.stem + "_euler.csv")
 
-    rows = None
-    for enc in ("utf-8", "cp932", "shift_jis"):
-        try:
-            with open(csv_path, encoding=enc) as f:
-                rows = list(csv.DictReader(f))
-            break
-        except UnicodeDecodeError:
-            continue
-    if rows is None:
-        raise UnicodeDecodeError("", b"", 0, 0, "无法用 utf-8/cp932/shift_jis 解码 CSV")
+    rows = _read_csv_rows_with_fallback(csv_path, ("utf-8", "cp932", "shift_jis"))
 
     if not rows:
         with open(out_path, "w", encoding="utf-8", newline="") as out:

@@ -1,7 +1,14 @@
 """
-G1 关节映射编辑 UI - 在 Isaac Sim 中提供可编辑窗口，修改欧拉分量索引和缩放系数
+G1 关节映射编辑窗口。
+
+功能概览：
+1) 在 Isaac Sim Window 菜单注册 `G1 Joint Mapping` 面板；
+2) 在线调整关节映射的欧拉主轴索引与缩放系数；
+3) 实时显示当前机器人关节角度，便于映射调试；
+4) 保留映射重置能力，支持恢复默认配置。
 """
 import asyncio
+from typing import Callable
 
 from robot_mmd.train_workflow.csv_motion_loader import (
     G1_JOINT_TO_MMD,
@@ -10,13 +17,14 @@ from robot_mmd.train_workflow.csv_motion_loader import (
 )
 
 WINDOW_TITLE = "G1 Joint Mapping"
+_AUTO_OPEN = False
 
 # 外部注入：用于在 UI 中显示“当前环境下的关节值（度制）”
 # 返回值建议是: dict[joint_name] = angle_deg
-_joint_value_provider = None
+_joint_value_provider: Callable[[], dict[str, float]] | None = None
 
 
-def set_joint_value_provider(provider) -> None:
+def set_joint_value_provider(provider: Callable[[], dict[str, float]] | None) -> None:
     """设置关节值提供器，用于 UI 实时显示当前角度（deg）。"""
     global _joint_value_provider
     _joint_value_provider = provider
@@ -83,20 +91,19 @@ def _build_mapping_window(ui):
             return " + ".join(_to_romaji(b) for b in bones)
         return _to_romaji(str(bones))
 
-    def _on_euler_changed(joint_name: str, model):
-        try:
-            euler_idx = max(0, min(2, int(model.get_value_as_int())))
-            scale_model = joint_models[joint_name][1]
-            scale = float(scale_model.get_value_as_float())
-            update_mapping_entry(joint_name, euler_idx, scale)
-        except Exception:
-            pass
+    def _on_euler_changed(joint_name: str, _model):
+        _update_mapping_from_models(joint_name)
 
-    def _on_scale_changed(joint_name: str, model):
+    def _on_scale_changed(joint_name: str, _model):
+        _update_mapping_from_models(joint_name)
+
+    def _update_mapping_from_models(joint_name: str) -> None:
+        """读取 UI 模型并提交到运行时映射。"""
         try:
-            scale = float(model.get_value_as_float())
             euler_model = joint_models[joint_name][0]
+            scale_model = joint_models[joint_name][1]
             euler_idx = max(0, min(2, int(euler_model.get_value_as_int())))
+            scale = float(scale_model.get_value_as_float())
             update_mapping_entry(joint_name, euler_idx, scale)
         except Exception:
             pass
@@ -104,11 +111,10 @@ def _build_mapping_window(ui):
     def _on_flip_scale(joint_name: str):
         """将缩放系数取反（正负号切换）。"""
         try:
-            euler_model, scale_model, _ = joint_models[joint_name]
+            _euler_model, scale_model, _ = joint_models[joint_name]
             new_scale = -float(scale_model.get_value_as_float())
             scale_model.set_value(new_scale)
-            euler_idx = max(0, min(2, int(euler_model.get_value_as_int())))
-            update_mapping_entry(joint_name, euler_idx, new_scale)
+            _update_mapping_from_models(joint_name)
         except Exception:
             pass
 
@@ -222,7 +228,8 @@ def create_mapping_ui():
             await omni.kit.app.get_app().next_update_async()
         _create_window()
 
-    asyncio.ensure_future(_auto_open())
+    if _AUTO_OPEN:
+        asyncio.ensure_future(_auto_open())
 
     async def _refresh_loop():
         nonlocal _refresh_started

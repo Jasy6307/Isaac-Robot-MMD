@@ -22,8 +22,8 @@ from isaaclab_assets import G1_29DOF_CFG, G1_INSPIRE_FTP_CFG  # isort: skip
 
 # T-pose 初始姿态：手臂水平外展 90°，腿部直立，与 MMD 基准姿态对齐
 G1_TPOSE_INIT_STATE = ArticulationCfg.InitialStateCfg(
-    # pos=(0.0, 0.0, 0.76),
-    pos=(0.0, 0.0, 1.0),
+    pos=(0.0, 0.0, 0.76),
+    # pos=(0.0, 0.0, 1.0),
     rot=(0.7071, 0, 0, 0.7071),
     joint_pos={
         # 腿部：直立
@@ -54,22 +54,6 @@ G1_TPOSE_INIT_STATE = ArticulationCfg.InitialStateCfg(
     },
     joint_vel={".*": 0.0},
 )
-
-
-def get_robot_cfg_for_motion_playback() -> ArticulationCfg:
-    """获取适用于动作回放的机器人配置：不固定根链接、禁用重力、增加阻尼，便于观察动作细节且不摔倒。"""
-    cfg = G1_29DOF_CFG.copy()
-    cfg.init_state = G1_TPOSE_INIT_STATE
-    new_spawn = cfg.spawn.replace(
-        articulation_props=cfg.spawn.articulation_props.replace(fix_root_link=True),
-        rigid_props=cfg.spawn.rigid_props.replace(
-            disable_gravity=False,
-            linear_damping=2.0,
-            angular_damping=2.0,
-        ),
-        
-    )
-    return cfg.replace(spawn=new_spawn)
 
 
 ##

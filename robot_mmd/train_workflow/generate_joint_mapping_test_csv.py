@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """
-生成 MMD->G1 关节映射测试用 CSV 文件。
+关节映射验证动作生成脚本。
 
-仅上半身骨骼，每 100 帧动一个关节（从 0° 到 90°）：
+功能概览：
+1) 生成仅包含上半身关键骨骼的测试动作 CSV；
+2) 每个时间块只驱动一个骨骼从 0° 平滑到 90°；
+3) 通过逐块观察机器人响应，快速定位映射是否正确。
+
+默认动作分块（每 100 帧动一个关节，从 0° 到 90°）：
   0-99:   右ひじ (right_elbow)
   100-199: 左ひじ (left_elbow)
   200-299: 右肩 (right_shoulder_pitch)
@@ -49,39 +54,38 @@ def quat_from_angle_axis(angle_rad: float, axis: int) -> tuple[float, float, flo
 
 def generate_csv(output_path: str, num_frames: int = 1000, frames_per_joint: int = 100):
     """生成测试 CSV。"""
-    rows = []
-    for frame in range(num_frames):
-        block_idx = frame // frames_per_joint
-        frame_in_block = frame % frames_per_joint
-        t = frame_in_block / max(1, frames_per_joint - 1)  # 0 到 1
-        angle_rad = t * (math.pi / 2)  # 0 到 90 度
-
-        for bone_idx, (bone_name, euler_axis) in enumerate(TEST_BONES):
-            if bone_idx == block_idx:
-                qx, qy, qz, qw = quat_from_angle_axis(angle_rad, euler_axis)
-            else:
-                qx, qy, qz, qw = 0.0, 0.0, 0.0, 1.0  # identity
-
-            rows.append({
-                "frame": frame,
-                "bone": bone_name,
-                "pos_x": 0.0,
-                "pos_y": 0.0,
-                "pos_z": 0.0,
-                "quat_x": round(qx, 6),
-                "quat_y": round(qy, 6),
-                "quat_z": round(qz, 6),
-                "quat_w": round(qw, 6),
-            })
-
     fieldnames = ["frame", "bone", "pos_x", "pos_y", "pos_z", "quat_x", "quat_y", "quat_z", "quat_w"]
     with open(output_path, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(rows)
+        for frame in range(num_frames):
+            block_idx = frame // frames_per_joint
+            frame_in_block = frame % frames_per_joint
+            t = frame_in_block / max(1, frames_per_joint - 1)  # 0 到 1
+            angle_rad = t * (math.pi / 2)  # 0 到 90 度
+
+            for bone_idx, (bone_name, euler_axis) in enumerate(TEST_BONES):
+                if bone_idx == block_idx:
+                    qx, qy, qz, qw = quat_from_angle_axis(angle_rad, euler_axis)
+                else:
+                    qx, qy, qz, qw = 0.0, 0.0, 0.0, 1.0  # identity
+
+                writer.writerow(
+                    {
+                        "frame": frame,
+                        "bone": bone_name,
+                        "pos_x": 0.0,
+                        "pos_y": 0.0,
+                        "pos_z": 0.0,
+                        "quat_x": round(qx, 6),
+                        "quat_y": round(qy, 6),
+                        "quat_z": round(qz, 6),
+                        "quat_w": round(qw, 6),
+                    }
+                )
 
     print(f"已生成: {output_path}")
-    print(f"  帧数: {num_frames}, 每块 {frames_per_joint} 帧, 共 {len(rows)} 行")
+    print(f"  帧数: {num_frames}, 每块 {frames_per_joint} 帧, 共 {num_frames * len(TEST_BONES)} 行")
 
 
 if __name__ == "__main__":
