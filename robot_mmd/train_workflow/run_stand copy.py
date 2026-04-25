@@ -246,12 +246,10 @@ def _apply_root_pos_instant(env: Any, root_pos_xyz: tuple[float, float, float], 
     num_envs = robot.data.joint_pos.shape[0]
 
     root_state = robot.data.root_state_w
-    fallback_wxyz = root_state[0, 3:7].detach().cpu().tolist()
-    q_xyzw = _quat_normalize_xyzw(_coerce_quat_xyzw(root_quat_xyzw, fallback_wxyz))
-    qwxyz = _quat_xyzw_to_wxyz(q_xyzw)
+    root_quat_xyzw = root_state[0, 3:7].detach().cpu().tolist()
 
     root_pose = torch.tensor(
-        [root_pos_xyz[0], root_pos_xyz[1], root_pos_xyz[2], qwxyz[0], qwxyz[1], qwxyz[2], qwxyz[3]],
+        [root_pos_xyz[0], root_pos_xyz[1], root_pos_xyz[2], root_quat_xyzw[0], root_quat_xyzw[1], root_quat_xyzw[2], root_quat_xyzw[3]],
         dtype=torch.float32,
         device=device,
     ).unsqueeze(0)
@@ -267,160 +265,6 @@ def _apply_root_pos_instant(env: Any, root_pos_xyz: tuple[float, float, float], 
     state[:, 7:13] = 0.0
     robot.write_root_state_to_sim(state)
     return True
-
-
-def _coerce_quat_xyzw(q: Any, fallback_wxyz4: list[float]) -> list[float]:
-    """入参为 xyzw；若无效则使用 Isaac root_state 切片 fallback（wxyz）。"""
-    if q is None:
-        return _quat_wxyz_to_xyzw(fallback_wxyz4)
-    try:
-        out = [float(v) for v in q]
-        if len(out) != 4:
-            raise ValueError
-        return out
-    except Exception:
-        return _quat_wxyz_to_xyzw(fallback_wxyz4)
-
-
-def _root_quat_xyzw_from_state_row(state_row: Any) -> list[float]:
-    """单环境 root_state 一行：索引 3:7 为 wxyz。"""
-    return _quat_wxyz_to_xyzw(
-        [float(state_row[i].item()) for i in (3, 4, 5, 6)]
-    )
-
-
-def _quat_normalize_xyzw(q: list[float]) -> list[float]:
-    """归一化 xyzw 四元数。"""
-    n = math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3])
-    if n < 1e-10:
-        return [0.0, 0.0, 0.0, 1.0]
-    return [q[0] / n, q[1] / n, q[2] / n, q[3] / n]
-
-
-def _quat_mul_xyzw(q1: list[float], q2: list[float]) -> list[float]:
-    """四元数乘法 q1 * q2（xyzw）。"""
-    x1, y1, z1, w1 = q1
-    x2, y2, z2, w2 = q2
-    return [
-        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
-        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
-        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
-        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
-    ]
-
-
-def _quat_inv_xyzw(q: list[float]) -> list[float]:
-    """单位四元数逆（xyzw）。"""
-    qn = _quat_normalize_xyzw(q)
-    return [-qn[0], -qn[1], -qn[2], qn[3]]
-
-
-def _quat_wxyz_to_xyzw(q_wxyz: list[float]) -> list[float]:
-    """Isaac root_state_w 的 wxyz -> 本脚本使用的 xyzw。"""
-    if len(q_wxyz) != 4:
-        return [0.0, 0.0, 0.0, 1.0]
-    return [float(q_wxyz[1]), float(q_wxyz[2]), float(q_wxyz[3]), float(q_wxyz[0])]
-
-
-def _quat_xyzw_to_wxyz(q_xyzw: list[float]) -> list[float]:
-    """本脚本使用的 xyzw -> Isaac root_state_w 的 wxyz。"""
-    if len(q_xyzw) != 4:
-        return [1.0, 0.0, 0.0, 0.0]
-    return [float(q_xyzw[3]), float(q_xyzw[0]), float(q_xyzw[1]), float(q_xyzw[2])]
-
-
-def _mat3_mul(a: list[list[float]], b: list[list[float]]) -> list[list[float]]:
-    return [[sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
-
-
-def _mat3_transpose(a: list[list[float]]) -> list[list[float]]:
-    return [list(row) for row in zip(*a)]
-
-
-def _quat_to_rotmat_xyzw(q: list[float]) -> list[list[float]]:
-    x, y, z, w = _quat_normalize_xyzw(q)
-    xx, yy, zz = x * x, y * y, z * z
-    xy, xz, yz = x * y, x * z, y * z
-    wx, wy, wz = w * x, w * y, w * z
-    return [
-        [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)],
-        [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)],
-        [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)],
-    ]
-
-
-def _rotmat_to_quat_xyzw(r: list[list[float]]) -> list[float]:
-    """旋转矩阵 -> 单位四元数 xyzw（Shepperd）。"""
-    tr = r[0][0] + r[1][1] + r[2][2]
-    if tr > 0.0:
-        s = math.sqrt(tr + 1.0) * 2.0
-        qw = 0.25 * s
-        qx = (r[2][1] - r[1][2]) / s
-        qy = (r[0][2] - r[2][0]) / s
-        qz = (r[1][0] - r[0][1]) / s
-    elif r[0][0] > r[1][1] and r[0][0] > r[2][2]:
-        s = math.sqrt(1.0 + r[0][0] - r[1][1] - r[2][2]) * 2.0
-        qw = (r[2][1] - r[1][2]) / s
-        qx = 0.25 * s
-        qy = (r[0][1] + r[1][0]) / s
-        qz = (r[0][2] + r[2][0]) / s
-    elif r[1][1] > r[2][2]:
-        s = math.sqrt(1.0 + r[1][1] - r[0][0] - r[2][2]) * 2.0
-        qw = (r[0][2] - r[2][0]) / s
-        qx = (r[0][1] + r[1][0]) / s
-        qy = 0.25 * s
-        qz = (r[1][2] + r[2][1]) / s
-    else:
-        s = math.sqrt(1.0 + r[2][2] - r[0][0] - r[1][1]) * 2.0
-        qw = (r[1][0] - r[0][1]) / s
-        qx = (r[0][2] + r[2][0]) / s
-        qy = (r[1][2] + r[2][1]) / s
-        qz = 0.25 * s
-    return _quat_normalize_xyzw([qx, qy, qz, qw])
-
-
-def _mmd_quat_to_world_xyzw(q_mmd: list[float]) -> list[float]:
-    """MMD 四元数 -> 仿真系（与平移 X->X, Z->Y, Y->Z 一致：R_w = B R_m B^T）。"""
-    b = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]]
-    r_m = _quat_to_rotmat_xyzw(q_mmd)
-    r_w = _mat3_mul(b, _mat3_mul(r_m, _mat3_transpose(b)))
-    return _rotmat_to_quat_xyzw(r_w)
-
-
-def _get_csv_root_quat(frame: int, frames: Any, bone_frame_lists: dict[str, list[int]]) -> list[float] | None:
-    """从 CSV 当前帧提取可用于根朝向的四元数（优先常见根骨骼）。"""
-    # 优先使用“有连续关键帧”的根骨骼，避免误选只在 0 帧存在的常量骨骼（例如某些数据里的センター）。
-    candidates = ("グルーブ", "センター親", "腰", "センター")
-
-    for require_dynamic in (True, False):
-        for bone in candidates:
-            keyframes = bone_frame_lists.get(bone) or []
-            if require_dynamic and len(keyframes) <= 1:
-                continue
-            d = interpolate_bone(frame, bone, frames, keyframes)
-            if d is None:
-                continue
-            quat = d.get("quat")
-            if quat is None or len(quat) != 4:
-                continue
-            try:
-                return _quat_normalize_xyzw([float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])])
-            except Exception:
-                continue
-    return None
-
-
-def _interpolate_mmd_root_translation_bone(
-    frame: int,
-    frames: Any,
-    bone_frame_lists: dict[str, list[int]],
-) -> tuple[str | None, dict | None]:
-    """根在 MMD 中的平移轨迹：有「グルーブ」用其（舞台位移），否则用「センター」（无グルーブ 的 pose 常见）。"""
-    for bone in ("グルーブ", "センター"):
-        d = interpolate_bone(frame, bone, frames, bone_frame_lists.get(bone))
-        if d is not None and "pos" in d:
-            return bone, d
-    return None, None
 
 
 def main():
@@ -468,7 +312,7 @@ def main():
     keyboard = Se3Keyboard(Se3KeyboardCfg(pos_sensitivity=0.1, rot_sensitivity=0.1))
     reset_requested = False
     pending_cycle_play = False
-    pending_dance_key: str = None
+    pending_dance_key: str | None = None
 
     def _on_reset():
         """键盘回调：请求在主循环中执行 reset。"""
@@ -502,7 +346,6 @@ def main():
     play_start_time = 0.0
     is_playing = False
     last_printed_frame = -1
-    last_printed_root_frame = -1
     action_scale = env_cfg.actions.joint_pos.scale
     joint_names: list[str] = []
     joint_ids: Any = None
@@ -511,11 +354,9 @@ def main():
     smoothed_action = None
     instant_mode_warned = False
     root_track_warned = False
-    csv_root_track_warned = False
     motion_groove_origin_pos: tuple[float, float, float] | None = None
     motion_root_origin_pos: tuple[float, float, float] | None = None
     motion_root_quat_xyzw: list[float] | None = None
-    motion_csv_root_origin_quat_xyzw: list[float] | None = None
 
     def _ensure_joint_info():
         """惰性读取关节元数据，仅在首次需要时初始化。"""
@@ -581,9 +422,7 @@ def main():
     def _switch_to_motion(data, label: str):
         """切换当前播放动作，并重置播放状态。"""
         nonlocal current_motion, current_motion_label, play_start_time, is_playing, last_printed_frame
-        nonlocal last_printed_root_frame
         nonlocal smoothed_action, motion_groove_origin_pos, motion_root_origin_pos, motion_root_quat_xyzw
-        nonlocal motion_csv_root_origin_quat_xyzw
         if data is None:
             return
         current_motion = data
@@ -591,12 +430,10 @@ def main():
         play_start_time = time.perf_counter()
         is_playing = True
         last_printed_frame = -1
-        last_printed_root_frame = -1
         smoothed_action = None
         motion_groove_origin_pos = None
         motion_root_origin_pos = None
         motion_root_quat_xyzw = None
-        motion_csv_root_origin_quat_xyzw = None
         _ensure_joint_info()
         print(f"[INFO] 开始播放 {label}")
 
@@ -612,15 +449,9 @@ def main():
             _update_joint_pos_cache(default_joint_pos)
 
     def _prepare_motion_switch() -> None:
-        """动作切换前：停音频，并把控制参考恢复为初始默认关节（与 CSV 角度解算一致）。
-
-        不强制把身体关节写回初始位，避免“先回 T 再开始新动作”的明显跳变；新片段仍用
-        initial_default_joint_pos 参与 build_joint_positions，因此解算与原先一致。
-        """
+        """动作切换前的公共准备：停音频并回到初始姿态。"""
         audio_util.stop_wav()
-        _ensure_joint_info()
-        if initial_default_joint_pos is not None:
-            _set_control_reference_pose(initial_default_joint_pos)
+        _reset_to_initial_pose(sync_ui_cache=False)
 
     zero_action = torch.zeros(env.action_space.shape, device=env.unwrapped.device)
 
@@ -661,7 +492,6 @@ def main():
 
             if is_playing and current_motion:
                 frames, frame_list, bone_frame_lists, all_bones = current_motion  # type: ignore
-                robot = env.unwrapped.scene["robot"]
                 elapsed_sec = max(0.0, time.perf_counter() - play_start_time)
                 frame = int(elapsed_sec * VMD_FPS * args_cli.play_speed)
                 max_frame = frame_list[-1]
@@ -683,14 +513,13 @@ def main():
                     smoothed_action,
                 )
 
-                # 同步根位姿：平移用 グルーブ/センター 相对首帧差分；朝向用 CSV 根骨骼四元数（经 MMD->世界）相对首帧乘到起始根姿态。
-                _root_bone_name, root_mmd = _interpolate_mmd_root_translation_bone(
-                    frame, frames, bone_frame_lists
-                )
-                if root_mmd is not None and "pos" in root_mmd:
+                # 同步根位置：将「グルーブ」视作 torso 中心平移轨迹，按每帧增量刷新到机器人根位置。
+                groove = interpolate_bone(frame, "グルーブ", frames, bone_frame_lists.get("グルーブ"))
+                if groove is not None and "pos" in groove:
                     try:
-                        gx, gy, gz = root_mmd["pos"]
-                        mmd_pos = (float(gx), float(gy), float(gz))
+                        gx, gy, gz = groove["pos"]
+                        groove_pos = (float(gx), float(gy), float(gz))
+                        robot = env.unwrapped.scene["robot"]
 
                         if motion_root_origin_pos is None:
                             root_state = getattr(robot.data, "root_state_w", None)
@@ -700,61 +529,34 @@ def main():
                                     float(root_state[0, 1].item()),
                                     float(root_state[0, 2].item()),
                                 )
-                                motion_root_quat_xyzw = _root_quat_xyzw_from_state_row(root_state[0])
+                                motion_root_quat_xyzw = [
+                                    float(root_state[0, 3].item()),
+                                    float(root_state[0, 4].item()),
+                                    float(root_state[0, 5].item()),
+                                    float(root_state[0, 6].item()),
+                                ]
 
                         if motion_groove_origin_pos is None:
-                            motion_groove_origin_pos = mmd_pos
+                            motion_groove_origin_pos = groove_pos
 
                         if motion_root_origin_pos is not None and motion_groove_origin_pos is not None:
-                            # MMD 位置为导出单位；差分 * groove_pos_to_world 后叠到 root。
+                            # グルーブ pos 为 MMD 导出的厘米单位；将差分换算为米后再叠加到 root。
                             s = float(args_cli.groove_pos_to_world)
                             # MMD 常用 Y-up；位移映射到仿真世界：X->X, Z->Y, Y->Z
-                            dx = (mmd_pos[0] - motion_groove_origin_pos[0]) * s
-                            dy = (mmd_pos[1] - motion_groove_origin_pos[1]) * s
-                            dz = (mmd_pos[2] - motion_groove_origin_pos[2]) * s
+                            dx = (groove_pos[0] - motion_groove_origin_pos[0]) * s
+                            dy = (groove_pos[1] - motion_groove_origin_pos[1]) * s
+                            dz = (groove_pos[2] - motion_groove_origin_pos[2]) * s
                             target_root_pos = (
                                 motion_root_origin_pos[0] + dx,
                                 motion_root_origin_pos[1] + dz,
                                 motion_root_origin_pos[2] + dy,
                             )
-                            target_root_quat_xyzw = motion_root_quat_xyzw
-                            csv_root_quat_xyzw = _get_csv_root_quat(frame, frames, bone_frame_lists)
-                            if csv_root_quat_xyzw is not None and motion_root_quat_xyzw is not None:
-                                q_w = _mmd_quat_to_world_xyzw(csv_root_quat_xyzw)
-                                if motion_csv_root_origin_quat_xyzw is None:
-                                    motion_csv_root_origin_quat_xyzw = q_w
-                                d = _quat_mul_xyzw(q_w, _quat_inv_xyzw(motion_csv_root_origin_quat_xyzw))
-                                target_root_quat_xyzw = _quat_normalize_xyzw(
-                                    _quat_mul_xyzw(d, motion_root_quat_xyzw)
-                                )
-                            elif csv_root_quat_xyzw is None and not csv_root_track_warned:
-                                print("[WARN] 当前 CSV 未找到可用根旋转骨骼，root 朝向将保持动作起始值")
-                                csv_root_track_warned = True
-
-                            applied_root = _apply_root_pos_instant(env, target_root_pos, target_root_quat_xyzw)
+                            applied_root = _apply_root_pos_instant(env, target_root_pos, motion_root_quat_xyzw)
                             if not applied_root and not root_track_warned:
-                                print(
-                                    f"[WARN] 当前环境不支持直接写 root 位姿，已跳过根位姿同步"
-                                    f"（平移骨: {_root_bone_name}）"
-                                )
+                                print("[WARN] 当前环境不支持直接写 root 位姿，已跳过グルーブ位置同步")
                                 root_track_warned = True
                     except Exception:
                         pass
-
-                # 与 [播放] 日志保持同频：每 10 帧输出一次 root 位姿，避免刷屏。
-                if frame // 10 != last_printed_root_frame:
-                    root_state_now = getattr(robot.data, "root_state_w", None)
-                    if torch.is_tensor(root_state_now) and root_state_now.shape[1] >= 7:
-                        px = float(root_state_now[0, 0].item())
-                        py = float(root_state_now[0, 1].item())
-                        pz = float(root_state_now[0, 2].item())
-                        qx, qy, qz, qw = _root_quat_xyzw_from_state_row(root_state_now[0])
-                        print(
-                            f"[ROOT] {current_motion_label} 帧 {frame}: "
-                            f"pos=({px:.4f}, {py:.4f}, {pz:.4f}) "
-                            f"quat_xyzw=({qx:.4f}, {qy:.4f}, {qz:.4f}, {qw:.4f})"
-                        )
-                        last_printed_root_frame = frame // 10
 
                 last_frame_joint_pos_cmd = None
                 if result is not None:
