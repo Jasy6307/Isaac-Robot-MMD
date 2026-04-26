@@ -23,11 +23,28 @@ _AUTO_OPEN = False
 # 返回值建议是: dict[joint_name] = angle_deg
 _joint_value_provider: Callable[[], dict[str, float]] | None = None
 
+# 映射表被用户修改后通知主循环（例如在非播放状态下按新映射重算当前姿势）
+_mapping_changed_cb: Callable[[], None] | None = None
+
 
 def set_joint_value_provider(provider: Callable[[], dict[str, float]] | None) -> None:
     """设置关节值提供器，用于 UI 实时显示当前角度（deg）。"""
     global _joint_value_provider
     _joint_value_provider = provider
+
+
+def set_mapping_changed_callback(cb: Callable[[], None] | None) -> None:
+    """注册映射变更回调（欧拉轴/缩放/重置时调用），供仿真循环即时重算姿势。"""
+    global _mapping_changed_cb
+    _mapping_changed_cb = cb
+
+
+def _notify_mapping_changed() -> None:
+    if _mapping_changed_cb is not None:
+        try:
+            _mapping_changed_cb()
+        except Exception:
+            pass
 
 
 # MMD 骨骼日文 -> 短罗马音（R_/L_ 替代 migi_/hidari_，Isaac 中日文显示异常）
@@ -105,6 +122,7 @@ def _build_mapping_window(ui):
             euler_idx = max(0, min(2, int(euler_model.get_value_as_int())))
             scale = float(scale_model.get_value_as_float())
             update_mapping_entry(joint_name, euler_idx, scale)
+            _notify_mapping_changed()
         except Exception:
             pass
 
@@ -120,6 +138,7 @@ def _build_mapping_window(ui):
 
     def _on_reset():
         reset_mapping_to_default()
+        _notify_mapping_changed()
         for jname, (euler_model, scale_model, _value_label) in joint_models.items():
             base = G1_JOINT_TO_MMD.get(jname)
             if base:

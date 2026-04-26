@@ -172,7 +172,9 @@ class G1StandEnvCfg(ManagerBasedRLEnvCfg):
         # 单环境，位于原点
         self.scene.num_envs = 1
         self.decimation = 4
-        self.episode_length_s = 60.0
+        # 原 60s 会与 MDP time_out 一致，交互脚本里每 ~60s 仿真时间会自动 reset。
+        # 长时间站姿/动作演示请用大值；需要按回合切场景时再改小。
+        self.episode_length_s = 86400.0
         self.sim.dt = 0.005
         self.sim.render_interval = self.decimation
         self.sim.physics_material = self.scene.terrain.physics_material

@@ -349,7 +349,7 @@ def read_motion_and_export(
 # 使用示例
 if __name__ == "__main__":
 
-    mmd_file = Path("I:/robot_isaac/robot_mmd/media/pose/test3.vpd")
+    mmd_file = Path("I:/robot_isaac/robot_mmd/media/pose/Back Together Pose 10 M8.vpd")
     output_csv = str(mmd_file.with_suffix(".csv"))
     read_and_export(mmd_file, output_csv)
 

@@ -11,8 +11,11 @@ CSV 动作加载与 G1 关节重定向核心模块。
 1) 欧拉角 CSV: frame,bone,pos_x,pos_y,pos_z,roll,pitch,yaw(度)
 2) 四元数 CSV: frame,bone,pos_x,pos_y,pos_z,quat_x,quat_y,quat_z,quat_w
 
-内部统一保存为弧度欧拉角 + 归一化四元数，并使用 Swing-Twist 提取指定轴角度，
-用于 MMD -> G1 的 1DOF 关节重定向。
+内部统一保存为弧度欧拉角 + 归一化四元数（bone dict 仅保留 `quat_wxyz`），
+并使用 Swing-Twist 提取指定轴角度，用于 MMD -> G1 的 1DOF 关节重定向。
+
+注意：CSV 列 `quat_x/quat_y/quat_z/quat_w` 仍表示 x,y,z,w；仅在读入内存后转换为
+`quat_wxyz`（w,x,y,z）以对齐 Isaac root_state API。
 """
 import bisect
 import csv
@@ -21,9 +24,10 @@ from typing import Iterator
 
 import numpy as np
 
+from robot_mmd.train_workflow.g1_joint_axis_map_raw import AxisMapRawEntry, G1_JOINT_AXIS_MAP_RAW
+
 Axis3 = tuple[float, float, float]
 AxisMapEntry = tuple[str | list[str], Axis3, float]
-AxisMapRawEntry = tuple[str | list[str], int, float]
 
 
 def _euler_to_quat(roll: float, pitch: float, yaw: float) -> tuple[float, float, float, float]:
@@ -75,6 +79,38 @@ def _quat_normalize(q: tuple[float, float, float, float]) -> tuple[float, float,
     if n < 1e-12:
         return (0.0, 0.0, 0.0, 1.0)
     return (x / n, y / n, z / n, w / n)
+
+
+def _bone_quat_from_xyzw(q_xyzw: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """xyzw -> wxyz（bone dict 约定）。"""
+    x, y, z, w = _quat_normalize(q_xyzw)
+    return (w, x, y, z)
+
+
+def _bone_quat_to_xyzw(q_wxyz: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """wxyz -> xyzw（供内部数学计算）。"""
+    w, x, y, z = q_wxyz
+    return _quat_normalize((x, y, z, w))
+
+
+def _finalize_bone_dict(bone_data: dict) -> dict:
+    """标准化 bone dict：仅输出 pos/euler/quat_wxyz。"""
+    quat_wxyz = bone_data.get("quat_wxyz")
+    if quat_wxyz is None:
+        quat_xyzw = bone_data.get("quat")
+        if quat_xyzw is None:
+            euler = bone_data.get("euler")
+            if euler is None:
+                quat_xyzw = (0.0, 0.0, 0.0, 1.0)
+            else:
+                quat_xyzw = _euler_to_quat(*euler)
+        quat_wxyz = _bone_quat_from_xyzw(tuple(float(v) for v in quat_xyzw))
+    else:
+        quat_wxyz = tuple(float(v) for v in quat_wxyz)
+        quat_wxyz = _bone_quat_from_xyzw(_bone_quat_to_xyzw(quat_wxyz))
+    bone_data["quat_wxyz"] = quat_wxyz
+    bone_data.pop("quat", None)
+    return bone_data
 
 
 def _quat_nlerp(
@@ -139,48 +175,6 @@ def _build_axis_map(raw_map: dict[str, AxisMapRawEntry]) -> dict[str, AxisMapEnt
     return out
 
 
-# G1 关节（紧凑写法） -> (MMD 骨骼或 [肩, 腕] 列表, 轴索引(0/1/2), 缩放系数)
-G1_JOINT_AXIS_MAP_RAW: dict[str, AxisMapRawEntry] = {
-    
-    # 手臂（肩部：先组合 肩+腕 四元数）
-    "right_shoulder_pitch_joint": (["右肩", "右腕"], 1, 1.0),
-    "right_shoulder_roll_joint": (["右肩", "右腕"], 2, 1.0),
-    "right_shoulder_yaw_joint": (["右肩", "右腕"], 0, -1.0),
-    "right_elbow_joint": ("右ひじ", 1, 1.0),
-    "right_wrist_pitch_joint": ("右手首", 0, 1.0),
-    "right_wrist_roll_joint": ("右手首", 1, 1.0),
-    "right_wrist_yaw_joint": ("右手首", 2, 1.0),
-    
-    "left_shoulder_pitch_joint": (["左肩", "左腕"], 1, 1.0),
-    "left_shoulder_roll_joint": (["左肩", "左腕"], 2, 1.0),
-    "left_shoulder_yaw_joint": (["左肩", "左腕"], 0, 1.0),
-    "left_elbow_joint": ("左ひじ", 1, -1.0),
-    "left_wrist_pitch_joint": ("左手首", 0, 1.0),
-    "left_wrist_roll_joint": ("左手首", 1, 1.0),
-    "left_wrist_yaw_joint": ("左手首", 2, 1.0),
-    
-    # 腿部
-    "right_hip_pitch_joint": ("右足", 1, 1.0),
-    "right_hip_roll_joint": ("右足", 2, 1.0),
-    "right_hip_yaw_joint": ("右足", 0, 1.0),
-    "right_knee_joint": ("右ひざ", 0, -1.0),
-    "right_ankle_pitch_joint": ("右足首", 1, 1.0),
-    "right_ankle_roll_joint": ("右足首", 0, 1.0),
-    
-    "left_hip_pitch_joint": ("左足", 1, 1.0),
-    "left_hip_roll_joint": ("左足", 2, 1.0),
-    "left_hip_yaw_joint": ("左足", 0, 1.0),
-    "left_knee_joint": ("左ひざ", 0, -1.0),
-    "left_ankle_pitch_joint": ("左足首", 1, 1.0),
-    "left_ankle_roll_joint": ("左足首", 0, 1.0),
-
-
-    # 躯干
-    "waist_pitch_joint": ("上半身", 0, 1.0),
-    "waist_roll_joint": ("上半身", 1, 1.0),
-    "waist_yaw_joint": ("首", 2, 1.0),
-}
-
 # G1 关节 -> (MMD 骨骼或 [肩, 腕] 列表, Twist 轴(骨骼本地系), 缩放系数)
 G1_JOINT_AXIS_MAP: dict[str, AxisMapEntry] = _build_axis_map(G1_JOINT_AXIS_MAP_RAW)
 
@@ -240,7 +234,8 @@ def reset_mapping_to_default() -> None:
 def load_csv_motion(csv_path: str) -> dict[int, dict[str, dict]]:
     """
     加载 CSV 骨骼数据（自动识别四元数/欧拉角列）。
-    返回: {frame_idx: {bone_name: {"pos": tuple, "euler": tuple(rad), "quat": tuple(x,y,z,w)}}}
+    返回: {frame_idx: {bone_name: {"pos": tuple, "euler": tuple(rad),
+                                   "quat_wxyz": tuple(w,x,y,z)}}}
     """
     rows = None
     for enc in ("utf-8", "cp932", "shift_jis"):
@@ -292,7 +287,9 @@ def load_csv_motion(csv_path: str) -> dict[int, dict[str, dict]]:
             quat = _quat_normalize(quat)
         if frame not in frames:
             frames[frame] = {}
-        frames[frame][bone] = {"pos": pos, "euler": euler, "quat": quat}
+        frames[frame][bone] = _finalize_bone_dict(
+            {"pos": pos, "euler": euler, "quat_wxyz": _bone_quat_from_xyzw(quat)}
+        )
     return frames
 
 
@@ -331,7 +328,7 @@ def interpolate_bone(
         return None
 
     if frame in frames and bone in frames[frame]:
-        return dict(frames[frame][bone])
+        return _finalize_bone_dict(dict(frames[frame][bone]))
 
     # bisect 二分查找前后关键帧
     idx = bisect.bisect_right(bone_frame_list, frame)
@@ -343,15 +340,15 @@ def interpolate_bone(
     if prev_f is None:
         if bone not in frames.get(next_f, {}):
             return None
-        return dict(frames[next_f][bone])
+        return _finalize_bone_dict(dict(frames[next_f][bone]))
     if next_f is None:
         if bone not in frames.get(prev_f, {}):
             return None
-        return dict(frames[prev_f][bone])
+        return _finalize_bone_dict(dict(frames[prev_f][bone]))
     if prev_f == next_f:
         if bone not in frames.get(prev_f, {}):
             return None
-        return dict(frames[prev_f][bone])
+        return _finalize_bone_dict(dict(frames[prev_f][bone]))
 
     # 欧拉角 / 四元数插值
     if bone not in frames.get(prev_f, {}) or bone not in frames.get(next_f, {}):
@@ -361,10 +358,12 @@ def interpolate_bone(
     pos = tuple((1 - t) * a + t * b for a, b in zip(d0["pos"], d1["pos"]))
     e0, e1 = d0["euler"], d1["euler"]
     euler = tuple((1 - t) * a + t * b for a, b in zip(e0, e1))
-    q0 = d0.get("quat") or _euler_to_quat(*e0)
-    q1 = d1.get("quat") or _euler_to_quat(*e1)
-    quat = _quat_nlerp(q0, q1, t)
-    return {"pos": pos, "euler": euler, "quat": quat}
+    q0_wxyz = d0.get("quat_wxyz")
+    q1_wxyz = d1.get("quat_wxyz")
+    q0 = _bone_quat_to_xyzw(tuple(float(v) for v in q0_wxyz)) if q0_wxyz is not None else _euler_to_quat(*e0)
+    q1 = _bone_quat_to_xyzw(tuple(float(v) for v in q1_wxyz)) if q1_wxyz is not None else _euler_to_quat(*e1)
+    quat_xyzw = _quat_nlerp(q0, q1, t)
+    return _finalize_bone_dict({"pos": pos, "euler": euler, "quat_wxyz": _bone_quat_from_xyzw(quat_xyzw)})
 
 
 def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> float | None:
@@ -381,19 +380,25 @@ def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> flo
     if isinstance(bones, list):
         if len(bones) != 2 or bones[0] not in frame_data or bones[1] not in frame_data:
             return None
-        q_肩 = frame_data[bones[0]].get("quat")
-        q_腕 = frame_data[bones[1]].get("quat")
-        if q_肩 is None:
+        q_肩_wxyz = frame_data[bones[0]].get("quat_wxyz")
+        q_腕_wxyz = frame_data[bones[1]].get("quat_wxyz")
+        if q_肩_wxyz is None:
             q_肩 = _euler_to_quat(*frame_data[bones[0]]["euler"])
-        if q_腕 is None:
+        else:
+            q_肩 = _bone_quat_to_xyzw(tuple(float(v) for v in q_肩_wxyz))
+        if q_腕_wxyz is None:
             q_腕 = _euler_to_quat(*frame_data[bones[1]]["euler"])
+        else:
+            q_腕 = _bone_quat_to_xyzw(tuple(float(v) for v in q_腕_wxyz))
         q = _quat_normalize(_quat_multiply(q_肩, q_腕))
     else:
         if bones not in frame_data:
             return None
-        q = frame_data[bones].get("quat")
-        if q is None:
+        q_wxyz = frame_data[bones].get("quat_wxyz")
+        if q_wxyz is None:
             q = _euler_to_quat(*frame_data[bones]["euler"])
+        else:
+            q = _bone_quat_to_xyzw(tuple(float(v) for v in q_wxyz))
         q = _quat_normalize(q)
 
     base_val = swing_twist_angle(*q, axis)

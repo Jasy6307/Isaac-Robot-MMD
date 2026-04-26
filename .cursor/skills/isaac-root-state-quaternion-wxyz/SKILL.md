@@ -34,3 +34,4 @@ description: >-
 ## 与本仓库
 
 - `robot_mmd/train_workflow/run_stand.py` 中已用 `_quat_wxyz_to_xyzw` / `_quat_xyzw_to_wxyz` 封装上述约定；新增 Isaac 根姿态逻辑时应复用同一约定。
+- `robot_mmd/train_workflow/csv_motion_loader.py` 的 bone dict 现仅保留 `quat_wxyz`(wxyz)；CSV 列仍为 `quat_x..quat_w`(xyzw)，读取后会在内存层转换。
