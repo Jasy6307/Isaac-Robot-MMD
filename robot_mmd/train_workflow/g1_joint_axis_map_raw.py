@@ -26,20 +26,22 @@ G1_JOINT_AXIS_MAP_RAW: dict[str, AxisMapRawEntry] = {
     "right_wrist_roll_joint": ("右手首", 1, 1.0),
     "right_wrist_yaw_joint": ("右手首", 2, 1.0),
     # 腿部
-    "left_hip_pitch_joint": ("左足", 1, 1.5),
-    "left_hip_roll_joint": ("左足", 2, -0.5),
-    "left_hip_yaw_joint": ("左足", 0, -1.0),
-    "left_knee_joint": ("左ひざ", 0, -0.8),
+    "left_hip_pitch_joint": ("左足", 0, -1.0),
+    "left_hip_roll_joint": ("左足", 2, -1.0),
+    "left_hip_yaw_joint": ("左足", 1, -1.0),
+    "left_knee_joint": ("左ひざ", 0, -1.0),
     "left_ankle_pitch_joint": ("左足首", 1, 1.0),
     "left_ankle_roll_joint": ("左足首", 0, 1.0),
-    "right_hip_pitch_joint": ("右足", 1, -1.5),
-    "right_hip_roll_joint": ("右足", 2, 0.5),
-    "right_hip_yaw_joint": ("右足", 0, 1.0),
-    "right_knee_joint": ("右ひざ", 0, -0.8),
+
+    "right_hip_pitch_joint": ("右足", 0, -1.0),
+    "right_hip_roll_joint": ("右足", 2, 1.0),
+    "right_hip_yaw_joint": ("右足", 1, 1.0),
+    "right_knee_joint": ("右ひざ", 0, -1.0),
     "right_ankle_pitch_joint": ("右足首", 1, 1.0),
     "right_ankle_roll_joint": ("右足首", 0, 1.0),
+    
     # 躯干
-    "waist_pitch_joint": ("上半身", 1, 1.0),
-    "waist_roll_joint": ("上半身", 2, 1.0),
-    "waist_yaw_joint": ("上半身", 0, 1.0),
+    "waist_pitch_joint": (["上半身", "上半身2"], 1, 1.0),
+    "waist_roll_joint": (["上半身", "上半身2"], 2, 1.0),
+    "waist_yaw_joint": (["上半身", "上半身2"], 0, 1.0),
 }

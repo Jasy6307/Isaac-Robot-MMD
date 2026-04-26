@@ -36,6 +36,10 @@ from isaaclab.app import AppLauncher
 
 DEFAULT_POSE_DIR = os.path.join(_MEDIA_DIR, "pose")
 DEFAULT_DANCE_DIR = os.path.join(_MEDIA_DIR, "dance")
+# 若存在，单帧姿势的 MMD 平移 = (本帧 グルーブ/センター) - (参考文件中的同骨)，再乘 groove 比例
+DEFAULT_POSE_MMD_BASELINE_VPD = os.path.join(DEFAULT_POSE_DIR, "mmd_baseline.vpd")
+DEFAULT_POSE_MMD_BASELINE_CSV = os.path.join(DEFAULT_POSE_DIR, "mmd_baseline.csv")
+_POSE_MMD_NO_BASELINE_WARNED = False
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -43,21 +47,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="宇树 G1 站立 - 零动作运行。")
     parser.add_argument("--num_envs", type=int, default=1, help="环境数量（默认 1）")
     parser.add_argument("--disable_fabric", action="store_true", help="禁用 fabric，使用 USD I/O")
-    parser.add_argument("--pose_dir", type=str, default=DEFAULT_POSE_DIR, help="按序播放的姿势 CSV 目录")
     parser.add_argument(
         "--pose_cycle_key",
         type=str,
         default="P",
-        help="按该键按序播放 pose_dir 下 CSV（默认 P）",
+        help=f"按该键按序播放姿势 CSV（目录固定为 {DEFAULT_POSE_DIR}，默认键 P）",
     )
-    parser.add_argument("--dance_dir", type=str, default=DEFAULT_DANCE_DIR, help="按键触发的舞蹈 CSV 目录")
     parser.add_argument(
         "--dance_keys",
         type=str,
         default="I,O,U",
-        help="舞蹈触发键列表（逗号分隔），按文件名排序依次绑定，如 I,O,U",
+        help=f"舞蹈触发键（逗号分隔），CSV 目录固定为 {DEFAULT_DANCE_DIR}，按文件名排序绑定",
     )
-
     parser.add_argument(
         "--motion_playback",
         action="store_true",
@@ -71,6 +72,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=0.1,
         help="グルーブ/CSV 平移差分到仿真米：默认 0.1（分米→米）。若为厘米设 0.01，若已是米则 1.0",
     )
+    parser.add_argument(
+        "--pose_mmd_baseline",
+        type=float,
+        nargs=3,
+        metavar=("X", "Y", "Z"),
+        default=None,
+        help="单帧姿势：MMD「センター/グルーブ」在参考姿态下的数值；本帧 mmd 平移先减该点再乘 groove_pos_to_world。与舞蹈用首帧锚点同理",
+    )
+    parser.add_argument(
+        "--pose_mmd_baseline_vpd",
+        type=str,
+        default="",
+        help="从该 VPD/CSV 读平移作参考（CSV 为最先帧 グルーブ 或 センター)；未设时若存在 pose/mmd_baseline.vpd 或 mmd_baseline.csv 则自动用",
+    )
     parser.add_argument("--sim_fps", type=int, default=0, help="仿真控制频率 FPS（0 使用默认）")
     parser.add_argument(
         "--dance_audio_wav",
@@ -78,13 +93,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=os.path.join(_MEDIA_DIR, "you_are_important_quiet.wav"),
         help="按 O 键触发 dance 时同步播放的 WAV 音频路径",
     )
-    parser.add_argument(
-        "--instant_joint_set",
-        default=True,
-        action="store_true",
-        help="直接写入关节状态（瞬间到位），不通过关节驱动器跟踪",
-    )
-    parser.add_argument("--mapping_ui", action="store_true", default=True, help="开启 G1 关节映射编辑窗口")
     parser.add_argument(
         "--export_isaac_csv",
         type=str,
@@ -133,6 +141,68 @@ import audio_util
 
 TASK_ID = "Isaac-G1-Stand-v0"
 VMD_FPS = 30
+
+
+def _mmd_root_translation_from_csv_baseline(path: str) -> tuple[float, float, float] | None:
+    """与 _interpolate_mmd_root_translation_bone 一致：有グルーブ用其，否则用センター。取该 CSV 最前的帧。"""
+    try:
+        frames = load_csv_motion(path)
+    except (OSError, ValueError) as e:
+        print(f"[WARN] 无法读取参考姿势 CSV: {path}: {e}")
+        return None
+    if not frames:
+        return None
+    fi = min(frames.keys())
+    fd = frames[fi]
+    for bname in ("グルーブ", "センター"):
+        row = fd.get(bname)
+        if row is not None and "pos" in row:
+            p = row["pos"]
+            return (float(p[0]), float(p[1]), float(p[2]))
+    print(f"[WARN] 参考 CSV 中无「グルーブ/センター」平移: {path}")
+    return None
+
+
+def _mmd_root_translation_from_vpd_baseline(path: str) -> tuple[float, float, float] | None:
+    from robot_mmd.train_workflow.vmd_2_csv import read_vpd_pose
+
+    try:
+        bones = read_vpd_pose(path)
+    except OSError as e:
+        print(f"[WARN] 无法读取 VPD: {path}: {e}")
+        return None
+    by_name = {b.get("bone"): b for b in bones}
+    for bname in ("グルーブ", "センター"):
+        b = by_name.get(bname)
+        if b is not None:
+            p = b["position"]
+            return (float(p[0]), float(p[1]), float(p[2]))
+    print(f"[WARN] VPD 中无「グルーブ/センター」: {path}")
+    return None
+
+
+def resolve_pose_mmd_baseline(args: Any) -> tuple[float, float, float] | None:
+    """单帧 MMD 平移参考点：与当前姿势 CSV 同模型、同坐标约定（如站立 VPD/CSV 的首帧 センター）。"""
+    if getattr(args, "pose_mmd_baseline", None) is not None:
+        t = args.pose_mmd_baseline
+        c = (float(t[0]), float(t[1]), float(t[2]))
+        print(f"[INFO] 单帧姿势 MMD 平移参考（--pose_mmd_baseline）: ({c[0]:.6f}, {c[1]:.6f}, {c[2]:.6f})")
+        return c
+    p_user = (getattr(args, "pose_mmd_baseline_vpd", None) or "").strip()
+    for p in (p_user, DEFAULT_POSE_MMD_BASELINE_VPD, DEFAULT_POSE_MMD_BASELINE_CSV):
+        if not p or not os.path.isfile(os.path.abspath(p)):
+            continue
+        ap = os.path.abspath(p)
+        if ap.lower().endswith(".csv"):
+            c = _mmd_root_translation_from_csv_baseline(ap)
+        else:
+            c = _mmd_root_translation_from_vpd_baseline(ap)
+        if c is not None:
+            print(
+                f"[INFO] 单帧姿势 MMD 平移参考: ({c[0]:.6f}, {c[1]:.6f}, {c[2]:.6f}) 来自 {ap}"
+            )
+            return c
+    return None
 
 
 def _robot_root_row_clone(env: Any) -> Any | None:
@@ -351,8 +421,10 @@ def _compute_targets_for_motion_frame(
     robot: Any,
     state: MotionRootTrackState,
     root_snapshot_row: Any | None = None,
+    pose_mmd_baseline: tuple[float, float, float] | None = None,
 ) -> tuple[Any, tuple[float, float, float] | None, list[float] | None, Any, str | None]:
     """计算本帧关节目标、根位姿、动作向量；最后一项为用于平移的 MMD 根骨名（无则 None）。"""
+    global _POSE_MMD_NO_BASELINE_WARNED
     result = _compute_action_for_frame(
         frame, frames, bone_frame_lists, all_bones, joint_names, default_joint_pos, action_scale
     )
@@ -392,7 +464,20 @@ def _compute_targets_for_motion_frame(
 
             is_pose = _motion_is_static_pose(frames)
             if is_pose:
-                groove_ref = (0.0, 0.0, 0.0)
+                # 单帧：须相对「同 PMX 的参考姿势」的 グルーブ/センター（--pose_mmd_baseline*），否则 (0,0,0) 会把绑定位移当世界位移。
+                # 与多帧舞蹈用「首帧 mmd_pos」作 groove_ref 同理，只是参考来自外置站立 VPD/CSV。
+                if pose_mmd_baseline is not None:
+                    groove_ref = pose_mmd_baseline
+                else:
+                    groove_ref = (0.0, 0.0, 0.0)
+                    if not _POSE_MMD_NO_BASELINE_WARNED:
+                        print(
+                            "[WARN] 单帧姿势未设置 MMD 平移参考（--pose_mmd_baseline / --pose_mmd_baseline_vpd，"
+                            f"或放置 {os.path.basename(DEFAULT_POSE_MMD_BASELINE_VPD)} / "
+                            f"{os.path.basename(DEFAULT_POSE_MMD_BASELINE_CSV)} 于 pose 目录）："
+                            "将相对 MMD(0,0,0) 计算，易与模型绑定数值叠加导致根位置错误。"
+                        )
+                        _POSE_MMD_NO_BASELINE_WARNED = True
             else:
                 if state.groove_origin_pos is None:
                     state.groove_origin_pos = mmd_pos
@@ -440,6 +525,7 @@ def _write_isaac_applied_motion_csv(
     groove_pos_to_world: float,
     root_snapshot_row: Any,
     env: Any,
+    pose_mmd_baseline: tuple[float, float, float] | None = None,
 ) -> None:
     """按与实时播放相同的规则逐帧计算并写出 CSV（不逐步进仿真）。"""
     frames, frame_list, bone_frame_lists, all_bones = motion_data
@@ -485,6 +571,7 @@ def _write_isaac_applied_motion_csv(
                 robot,
                 state,
                 root_snapshot_row=root_snapshot_row,
+                pose_mmd_baseline=pose_mmd_baseline,
             )
             if trp is not None:
                 last_rp = trp
@@ -499,10 +586,11 @@ def _write_isaac_applied_motion_csv(
 
 def main():
     """零动作运行 G1 站立环境。"""
+    pose_mmd_baseline = resolve_pose_mmd_baseline(args_cli)
     pose_cycle_key = (args_cli.pose_cycle_key or "P").strip().upper()[:1]
     dance_keys = [k.strip().upper()[:1] for k in args_cli.dance_keys.split(",") if k.strip()]
-    pose_motions = _load_pose_motion_dir(args_cli.pose_dir)
-    dance_motion_by_key = _load_dance_key_mapping(args_cli.dance_dir, dance_keys)
+    pose_motions = _load_pose_motion_dir(DEFAULT_POSE_DIR)
+    dance_motion_by_key = _load_dance_key_mapping(DEFAULT_DANCE_DIR, dance_keys)
 
     env_cfg = parse_env_cfg(
         TASK_ID,
@@ -592,10 +680,9 @@ def main():
         nonlocal mapping_reapply_requested
         mapping_reapply_requested = True
 
-    if args_cli.mapping_ui:
-        set_joint_value_provider(lambda: joint_pos_deg_cache)
-        set_mapping_changed_callback(_on_mapping_ui_changed)
-        create_mapping_ui()
+    set_joint_value_provider(lambda: joint_pos_deg_cache)
+    set_mapping_changed_callback(_on_mapping_ui_changed)
+    create_mapping_ui()
 
     def _ensure_joint_info():
         """惰性读取关节元数据，仅在首次需要时初始化。"""
@@ -687,7 +774,7 @@ def main():
         if initial_default_joint_pos is None:
             return
         _set_control_reference_pose(initial_default_joint_pos)
-        if args_cli.instant_joint_set and joint_ids is not None:
+        if joint_ids is not None:
             _apply_joint_state_instant(env, initial_default_joint_pos, joint_ids)
         if sync_ui_cache and default_joint_pos is not None and joint_names:
             _update_joint_pos_cache(default_joint_pos)
@@ -722,7 +809,7 @@ def main():
             if pending_cycle_play:
                 pending_cycle_play = False
                 if not pose_motions:
-                    print(f"[WARN] pose 目录无可播放 CSV: {args_cli.pose_dir}")
+                    print(f"[WARN] pose 目录无可播放 CSV: {DEFAULT_POSE_DIR}")
                 else:
                     _prepare_motion_switch()
                     current_pose_idx = (current_pose_idx + 1) % len(pose_motions)
@@ -768,6 +855,7 @@ def main():
                         robot,
                         motion_track,
                         root_snapshot_row=initial_root_snapshot_row,
+                        pose_mmd_baseline=pose_mmd_baseline,
                     )
                 )
 
@@ -806,9 +894,8 @@ def main():
                     except Exception:
                         pass
 
-                    # 保持 instant write 以减少关节跟踪误差，但控制目标仍通过 actions 下发，
-                    # 避免同步 step 阶段 PD 控制器把关节拉回 offset（即初始姿态）
-                    if args_cli.instant_joint_set and joint_pos_cmd is not None:
+                    # 直接写关节以减少跟踪误差；同时仍通过 actions 下发，避免 step 时 PD 把关节拉回旧 offset
+                    if joint_pos_cmd is not None:
                         applied = _apply_joint_state_instant(env, joint_pos_cmd, joint_ids)
                         if not applied and not instant_mode_warned:
                             print("[WARN] 当前环境不支持直接写关节状态，自动回退为驱动模式")
@@ -838,6 +925,7 @@ def main():
                             args_cli.groove_pos_to_world,
                             initial_root_snapshot_row,
                             env,
+                            pose_mmd_baseline=pose_mmd_baseline,
                         )
                     is_playing = False
                     print(f"[INFO] 播放结束: {current_motion_label}")
@@ -876,6 +964,7 @@ def main():
                     robot,
                     mt,
                     root_snapshot_row=initial_root_snapshot_row,
+                    pose_mmd_baseline=pose_mmd_baseline,
                 )
                 if tr_pos is not None and tr_quat is not None:
                     _apply_root_pos_instant(env, tr_pos, tr_quat)
@@ -885,8 +974,7 @@ def main():
                         _update_joint_pos_cache(jp_cmd)
                     except Exception:
                         pass
-                    if args_cli.instant_joint_set:
-                        _apply_joint_state_instant(env, jp_cmd, joint_ids)
+                    _apply_joint_state_instant(env, jp_cmd, joint_ids)
                     actions = zero_action
                 else:
                     actions = zero_action

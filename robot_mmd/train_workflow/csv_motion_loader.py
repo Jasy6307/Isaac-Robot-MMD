@@ -378,19 +378,28 @@ def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> flo
         return None
     bones, axis, scale = mapping[joint_name]
     if isinstance(bones, list):
-        if len(bones) != 2 or bones[0] not in frame_data or bones[1] not in frame_data:
+        if len(bones) != 2:
             return None
-        q_肩_wxyz = frame_data[bones[0]].get("quat_wxyz")
-        q_腕_wxyz = frame_data[bones[1]].get("quat_wxyz")
-        if q_肩_wxyz is None:
-            q_肩 = _euler_to_quat(*frame_data[bones[0]]["euler"])
+
+        def _read_quat_xyzw(bone_name: str) -> tuple[float, float, float, float] | None:
+            bone_data = frame_data.get(bone_name)
+            if bone_data is None:
+                return None
+            q_wxyz = bone_data.get("quat_wxyz")
+            if q_wxyz is None:
+                return _quat_normalize(_euler_to_quat(*bone_data["euler"]))
+            return _bone_quat_to_xyzw(tuple(float(v) for v in q_wxyz))
+
+        q_first = _read_quat_xyzw(bones[0])
+        q_second = _read_quat_xyzw(bones[1])
+        if q_first is None and q_second is None:
+            return None
+        if q_first is None:
+            q = _quat_normalize(q_second)
+        elif q_second is None:
+            q = _quat_normalize(q_first)
         else:
-            q_肩 = _bone_quat_to_xyzw(tuple(float(v) for v in q_肩_wxyz))
-        if q_腕_wxyz is None:
-            q_腕 = _euler_to_quat(*frame_data[bones[1]]["euler"])
-        else:
-            q_腕 = _bone_quat_to_xyzw(tuple(float(v) for v in q_腕_wxyz))
-        q = _quat_normalize(_quat_multiply(q_肩, q_腕))
+            q = _quat_normalize(_quat_multiply(q_first, q_second))
     else:
         if bones not in frame_data:
             return None

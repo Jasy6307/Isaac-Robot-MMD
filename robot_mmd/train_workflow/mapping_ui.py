@@ -65,6 +65,7 @@ MMD_BONE_TO_ROMAJI: dict[str, str] = {
     "右手首": "R_WRIST",
     "左手首": "L_WRIST",
     "上半身": "UPPER_BODY",
+    "上半身2": "UPPER_BODY2",
     "首": "HEAD",
 }
 
