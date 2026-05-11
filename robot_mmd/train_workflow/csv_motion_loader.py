@@ -81,6 +81,29 @@ def _quat_normalize(q: tuple[float, float, float, float]) -> tuple[float, float,
     return (x / n, y / n, z / n, w / n)
 
 
+def _quat_conjugate(q: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """单位四元数共轭（逆）。"""
+    x, y, z, w = _quat_normalize(q)
+    return (-x, -y, -z, w)
+
+
+def _quat_pow_xyzw(q_xyzw: tuple[float, float, float, float], exponent: float) -> tuple[float, float, float, float]:
+    """单位四元数按指数缩放旋转角（exponent=0 为恒等，1 为自身；负指数反向）。"""
+    x, y, z, w = _quat_normalize(q_xyzw)
+    if w < 0.0:
+        x, y, z, w = -x, -y, -z, -w
+    vn = math.sqrt(x * x + y * y + z * z)
+    if vn < 1e-12:
+        return (0.0, 0.0, 0.0, 1.0)
+    half = math.atan2(vn, w)
+    if abs(half) < 1e-12:
+        return (0.0, 0.0, 0.0, 1.0)
+    ax, ay, az = x / vn, y / vn, z / vn
+    nh = half * float(exponent)
+    sn = math.sin(nh)
+    return _quat_normalize((ax * sn, ay * sn, az * sn, math.cos(nh)))
+
+
 def _bone_quat_from_xyzw(q_xyzw: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
     """xyzw -> wxyz（bone dict 约定）。"""
     x, y, z, w = _quat_normalize(q_xyzw)
@@ -157,6 +180,177 @@ def swing_twist_angle(qx: float, qy: float, qz: float, qw: float, axis_xyz: Axis
     return angle
 
 
+def _swing_twist_decompose_xyzw(
+    q_xyzw: tuple[float, float, float, float],
+    axis_xyz: Axis3,
+) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
+    """将旋转分解为 q = swing * twist（均为 xyzw）。"""
+    ax, ay, az = axis_xyz
+    n = math.sqrt(ax * ax + ay * ay + az * az)
+    qx, qy, qz, qw = _quat_normalize(q_xyzw)
+    if n < 1e-10:
+        return (qx, qy, qz, qw), (0.0, 0.0, 0.0, 1.0)
+    ax, ay, az = ax / n, ay / n, az / n
+
+    dot = ax * qx + ay * qy + az * qz
+    q_twist = _quat_normalize((ax * dot, ay * dot, az * dot, qw))
+    q_swing = _quat_normalize(_quat_multiply((qx, qy, qz, qw), _quat_conjugate(q_twist)))
+    return q_swing, q_twist
+
+
+def _quat_rotation_magnitude_deg_xyzw(q_xyzw: tuple[float, float, float, float]) -> float:
+    """单位四元数对应的旋转角幅值（度），取最短弧（w 取绝对值）。"""
+    _x, _y, _z, w = _quat_normalize(q_xyzw)
+    w = max(-1.0, min(1.0, abs(w)))
+    return math.degrees(2.0 * math.acos(w))
+
+
+def knee_hinge_mapping_ui_extra(
+    frame_data_raw: dict[str, dict] | None,
+    *,
+    projection_enabled: bool,
+) -> dict[str, str]:
+    """
+    供映射 UI 显示：MMD 膝局部旋转在铰链投影下的分解与髋补偿（度）。
+    返回键为 ``{left|right}_knee_joint__knee_mmd``，值为单行说明字符串。
+    """
+    out: dict[str, str] = {}
+    if not frame_data_raw:
+        return out
+
+    side_cfg = {
+        "left": (
+            "left_knee_joint",
+            "左足",
+            "左ひざ",
+            ("left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint"),
+        ),
+        "right": (
+            "right_knee_joint",
+            "右足",
+            "右ひざ",
+            ("right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint"),
+        ),
+    }
+
+    mapping = get_mapping()
+    for side, (knee_joint, hip_bone, knee_bone, hip_js) in side_cfg.items():
+        if knee_joint not in mapping:
+            continue
+        if knee_bone not in frame_data_raw or hip_bone not in frame_data_raw:
+            continue
+        q_knee = _read_bone_quat_xyzw(frame_data_raw, knee_bone)
+        if q_knee is None:
+            continue
+        _, axis, _scale = mapping[knee_joint]
+        q_swing, _q_twist = _swing_twist_decompose_xyzw(q_knee, axis)
+        sw_deg = _quat_rotation_magnitude_deg_xyzw(q_swing)
+        hinge_deg = math.degrees(swing_twist_angle(*q_knee, axis))
+
+        if not projection_enabled:
+            out[f"{knee_joint}__knee_mmd"] = (
+                f"MMD hinge {hinge_deg:.1f}deg swing {sw_deg:.1f}deg (proj off)"
+            )
+            continue
+
+        fd = dict(frame_data_raw)
+        for b in (hip_bone, knee_bone):
+            if b in fd:
+                fd[b] = dict(fd[b])
+        _apply_knee_hinge_projection(fd, side, mapping)
+        d_list: list[float] = []
+        for hj in hip_js:
+            a = get_g1_angle_from_frame(hj, frame_data_raw)
+            b = get_g1_angle_from_frame(hj, fd)
+            if a is not None and b is not None:
+                d_list.append(math.degrees(b - a))
+            else:
+                d_list.append(0.0)
+        dp, dr, dy = d_list[0], d_list[1], d_list[2]
+        out[f"{knee_joint}__knee_mmd"] = (
+            f"MMD hinge {hinge_deg:.1f}deg swing {sw_deg:.1f}deg | "
+            f"hip d(p/r/y) {dp:+.1f}/{dr:+.1f}/{dy:+.1f}deg"
+        )
+    return out
+
+
+def elbow_hinge_mapping_ui_extra(
+    frame_data_raw: dict[str, dict] | None,
+    *,
+    projection_enabled: bool,
+) -> dict[str, str]:
+    """
+    Mapping UI: MMD elbow local rotation split + shoulder map delta (deg).
+    Keys: ``{left|right}_elbow_joint__elbow_mmd``.
+    """
+    out: dict[str, str] = {}
+    if not frame_data_raw:
+        return out
+
+    side_cfg = {
+        "left": (
+            "left_elbow_joint",
+            "左腕",
+            "左ひじ",
+            (
+                "left_shoulder_pitch_joint",
+                "left_shoulder_roll_joint",
+                "left_shoulder_yaw_joint",
+            ),
+        ),
+        "right": (
+            "right_elbow_joint",
+            "右腕",
+            "右ひじ",
+            (
+                "right_shoulder_pitch_joint",
+                "right_shoulder_roll_joint",
+                "right_shoulder_yaw_joint",
+            ),
+        ),
+    }
+
+    mapping = get_mapping()
+    for side, (elbow_joint, arm_bone, elbow_bone, shoulder_js) in side_cfg.items():
+        if elbow_joint not in mapping:
+            continue
+        if elbow_bone not in frame_data_raw or arm_bone not in frame_data_raw:
+            continue
+        q_elbow = _read_bone_quat_xyzw(frame_data_raw, elbow_bone)
+        if q_elbow is None:
+            continue
+        _, axis, _scale = mapping[elbow_joint]
+        q_swing, _q_twist = _swing_twist_decompose_xyzw(q_elbow, axis)
+        sw_deg = _quat_rotation_magnitude_deg_xyzw(q_swing)
+        hinge_deg = math.degrees(swing_twist_angle(*q_elbow, axis))
+
+        if not projection_enabled:
+            out[f"{elbow_joint}__elbow_mmd"] = (
+                f"MMD hinge {hinge_deg:.1f}deg swing {sw_deg:.1f}deg (proj off)"
+            )
+            continue
+
+        fd = dict(frame_data_raw)
+        for b in (arm_bone, elbow_bone):
+            if b in fd:
+                fd[b] = dict(fd[b])
+        _apply_elbow_hinge_projection(fd, side, mapping)
+        d_list: list[float] = []
+        for sj in shoulder_js:
+            a = get_g1_angle_from_frame(sj, frame_data_raw)
+            b = get_g1_angle_from_frame(sj, fd)
+            if a is not None and b is not None:
+                d_list.append(math.degrees(b - a))
+            else:
+                d_list.append(0.0)
+        dp, dr, dy = d_list[0], d_list[1], d_list[2]
+        out[f"{elbow_joint}__elbow_mmd"] = (
+            f"MMD hinge {hinge_deg:.1f}deg swing {sw_deg:.1f}deg | "
+            f"sho d(p/r/y) {dp:+.1f}/{dr:+.1f}/{dy:+.1f}deg"
+        )
+    return out
+
+
 # 轴索引定义：0=x, 1=y, 2=z
 _AXIS_INDEX_TO_VEC: dict[int, Axis3] = {
     0: (1.0, 0.0, 0.0),
@@ -225,10 +419,38 @@ def update_mapping_entry(joint_name: str, euler_idx: int, scale: float) -> None:
     _editable_mapping[joint_name] = (bones, axis, scale)
 
 
+HINGE_SWING_ABSORB_JOINTS: frozenset[str] = frozenset(
+    {
+        "left_knee_joint",
+        "right_knee_joint",
+        "left_elbow_joint",
+        "right_elbow_joint",
+    }
+)
+_DEFAULT_HINGE_SWING_ABSORB: dict[str, float] = {k: 1.0 for k in HINGE_SWING_ABSORB_JOINTS}
+_hinge_swing_absorb: dict[str, float] = dict(_DEFAULT_HINGE_SWING_ABSORB)
+
+
+def get_hinge_swing_absorb(joint_name: str) -> float:
+    """膝/肘：非铰链 swing 并入父骨的强度（0=不并入，1=全量，与当前默认一致）。"""
+    return float(_hinge_swing_absorb.get(joint_name, 1.0))
+
+
+def set_hinge_swing_absorb(joint_name: str, value: float) -> None:
+    if joint_name in HINGE_SWING_ABSORB_JOINTS:
+        _hinge_swing_absorb[joint_name] = float(value)
+
+
+def reset_hinge_swing_absorb() -> None:
+    global _hinge_swing_absorb
+    _hinge_swing_absorb = dict(_DEFAULT_HINGE_SWING_ABSORB)
+
+
 def reset_mapping_to_default() -> None:
     """重置为默认映射"""
     global _editable_mapping
     _editable_mapping = None
+    reset_hinge_swing_absorb()
 
 
 def load_csv_motion(csv_path: str) -> dict[int, dict[str, dict]]:
@@ -366,6 +588,86 @@ def interpolate_bone(
     return _finalize_bone_dict({"pos": pos, "euler": euler, "quat_wxyz": _bone_quat_from_xyzw(quat_xyzw)})
 
 
+def _read_bone_quat_xyzw(frame_data: dict[str, dict], bone_name: str) -> tuple[float, float, float, float] | None:
+    bone_data = frame_data.get(bone_name)
+    if bone_data is None:
+        return None
+    q_wxyz = bone_data.get("quat_wxyz")
+    if q_wxyz is None:
+        return _quat_normalize(_euler_to_quat(*bone_data["euler"]))
+    return _bone_quat_to_xyzw(tuple(float(v) for v in q_wxyz))
+
+
+def _write_bone_quat_xyzw(frame_data: dict[str, dict], bone_name: str, q_xyzw: tuple[float, float, float, float]) -> None:
+    bone_data = frame_data.get(bone_name)
+    if bone_data is None:
+        return
+    q_norm = _quat_normalize(q_xyzw)
+    bone_data["quat_wxyz"] = _bone_quat_from_xyzw(q_norm)
+    bone_data["euler"] = _quat_to_euler(*q_norm)
+
+
+def _apply_knee_hinge_projection(
+    frame_data: dict[str, dict],
+    side: str,
+    mapping: dict[str, AxisMapEntry],
+) -> None:
+    side_cfg = {
+        "left": ("left_knee_joint", "左足", "左ひざ"),
+        "right": ("right_knee_joint", "右足", "右ひざ"),
+    }
+    cfg = side_cfg.get(side)
+    if cfg is None:
+        return
+    knee_joint, hip_bone, knee_bone = cfg
+    knee_map = mapping.get(knee_joint)
+    if knee_map is None:
+        return
+    _, axis, _scale = knee_map
+    q_hip = _read_bone_quat_xyzw(frame_data, hip_bone)
+    q_knee = _read_bone_quat_xyzw(frame_data, knee_bone)
+    if q_hip is None or q_knee is None:
+        return
+
+    q_swing, _q_twist = _swing_twist_decompose_xyzw(q_knee, axis)
+    absorb = get_hinge_swing_absorb(knee_joint)
+    q_s_applied = _quat_pow_xyzw(q_swing, absorb)
+    q_knee_new = _quat_normalize(_quat_multiply(_quat_conjugate(q_s_applied), q_knee))
+    _write_bone_quat_xyzw(frame_data, knee_bone, q_knee_new)
+    _write_bone_quat_xyzw(frame_data, hip_bone, _quat_multiply(q_hip, q_s_applied))
+
+
+def _apply_elbow_hinge_projection(
+    frame_data: dict[str, dict],
+    side: str,
+    mapping: dict[str, AxisMapEntry],
+) -> None:
+    """将ひじ的非铰链 swing 并回腕骨，让 shoulder 三轴（肩+腕组合）吸收。"""
+    side_cfg = {
+        "left": ("left_elbow_joint", "左腕", "左ひじ"),
+        "right": ("right_elbow_joint", "右腕", "右ひじ"),
+    }
+    cfg = side_cfg.get(side)
+    if cfg is None:
+        return
+    elbow_joint, arm_bone, elbow_bone = cfg
+    elbow_map = mapping.get(elbow_joint)
+    if elbow_map is None:
+        return
+    _, axis, _scale = elbow_map
+    q_arm = _read_bone_quat_xyzw(frame_data, arm_bone)
+    q_elbow = _read_bone_quat_xyzw(frame_data, elbow_bone)
+    if q_arm is None or q_elbow is None:
+        return
+
+    q_swing, _q_twist = _swing_twist_decompose_xyzw(q_elbow, axis)
+    absorb = get_hinge_swing_absorb(elbow_joint)
+    q_s_applied = _quat_pow_xyzw(q_swing, absorb)
+    q_elbow_new = _quat_normalize(_quat_multiply(_quat_conjugate(q_s_applied), q_elbow))
+    _write_bone_quat_xyzw(frame_data, elbow_bone, q_elbow_new)
+    _write_bone_quat_xyzw(frame_data, arm_bone, _quat_multiply(q_arm, q_s_applied))
+
+
 def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> float | None:
     """
     从帧数据中获取指定 G1 关节的目标角度偏移（弧度）。
@@ -381,17 +683,8 @@ def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> flo
         if len(bones) != 2:
             return None
 
-        def _read_quat_xyzw(bone_name: str) -> tuple[float, float, float, float] | None:
-            bone_data = frame_data.get(bone_name)
-            if bone_data is None:
-                return None
-            q_wxyz = bone_data.get("quat_wxyz")
-            if q_wxyz is None:
-                return _quat_normalize(_euler_to_quat(*bone_data["euler"]))
-            return _bone_quat_to_xyzw(tuple(float(v) for v in q_wxyz))
-
-        q_first = _read_quat_xyzw(bones[0])
-        q_second = _read_quat_xyzw(bones[1])
+        q_first = _read_bone_quat_xyzw(frame_data, bones[0])
+        q_second = _read_bone_quat_xyzw(frame_data, bones[1])
         if q_first is None and q_second is None:
             return None
         if q_first is None:
@@ -403,12 +696,10 @@ def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> flo
     else:
         if bones not in frame_data:
             return None
-        q_wxyz = frame_data[bones].get("quat_wxyz")
-        if q_wxyz is None:
-            q = _euler_to_quat(*frame_data[bones]["euler"])
-        else:
-            q = _bone_quat_to_xyzw(tuple(float(v) for v in q_wxyz))
-        q = _quat_normalize(q)
+        q_single = _read_bone_quat_xyzw(frame_data, bones)
+        if q_single is None:
+            return None
+        q = _quat_normalize(q_single)
 
     base_val = swing_twist_angle(*q, axis)
     return float(base_val * scale)
@@ -418,6 +709,7 @@ def build_joint_positions_from_frame(
     frame_data: dict[str, dict],
     joint_names: list[str],
     default_joint_pos: np.ndarray,
+    knee_hinge_projection: bool = True,
 ) -> np.ndarray:
     """
     从一帧的骨骼数据构建 G1 关节位置数组。
@@ -425,9 +717,22 @@ def build_joint_positions_from_frame(
     - default_joint_pos: 默认关节位置
     - 返回: 目标关节位置，与 joint_names 同序
     """
+    source_frame_data = frame_data
+    if knee_hinge_projection:
+        source_frame_data = dict(frame_data)
+        for bone_name in ("左足", "左ひざ", "右足", "右ひざ", "左腕", "左ひじ", "右腕", "右ひじ"):
+            bone_data = source_frame_data.get(bone_name)
+            if bone_data is not None:
+                source_frame_data[bone_name] = dict(bone_data)
+        mapping = get_mapping()
+        _apply_knee_hinge_projection(source_frame_data, "left", mapping)
+        _apply_knee_hinge_projection(source_frame_data, "right", mapping)
+        _apply_elbow_hinge_projection(source_frame_data, "left", mapping)
+        _apply_elbow_hinge_projection(source_frame_data, "right", mapping)
+
     result = default_joint_pos.copy()
     for i, jname in enumerate(joint_names):
-        angle = get_g1_angle_from_frame(jname, frame_data)
+        angle = get_g1_angle_from_frame(jname, source_frame_data)
         if angle is not None:
             result[i] = default_joint_pos[i] + angle
     return result

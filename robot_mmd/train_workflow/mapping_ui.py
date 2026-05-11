@@ -8,26 +8,28 @@ G1 关节映射编辑窗口。
 4) 保留映射重置能力，支持恢复默认配置。
 """
 import asyncio
-from typing import Callable
+from typing import Any, Callable
 
 from robot_mmd.train_workflow.csv_motion_loader import (
     G1_JOINT_TO_MMD,
-    update_mapping_entry,
+    get_hinge_swing_absorb,
     reset_mapping_to_default,
+    set_hinge_swing_absorb,
+    update_mapping_entry,
 )
 
 WINDOW_TITLE = "G1 Joint Mapping"
 _AUTO_OPEN = False
 
 # 外部注入：用于在 UI 中显示“当前环境下的关节值（度制）”
-# 返回值建议是: dict[joint_name] = angle_deg
-_joint_value_provider: Callable[[], dict[str, float]] | None = None
+# 返回值: dict[joint_name] = angle_deg；膝/肘可含 ``__knee_mmd`` / ``__elbow_mmd`` 分解说明字符串
+_joint_value_provider: Callable[[], dict[str, Any]] | None = None
 
 # 映射表被用户修改后通知主循环（例如在非播放状态下按新映射重算当前姿势）
 _mapping_changed_cb: Callable[[], None] | None = None
 
 
-def set_joint_value_provider(provider: Callable[[], dict[str, float]] | None) -> None:
+def set_joint_value_provider(provider: Callable[[], dict[str, Any]] | None) -> None:
     """设置关节值提供器，用于 UI 实时显示当前角度（deg）。"""
     global _joint_value_provider
     _joint_value_provider = provider
@@ -68,6 +70,13 @@ MMD_BONE_TO_ROMAJI: dict[str, str] = {
     "上半身2": "UPPER_BODY2",
     "首": "HEAD",
 }
+
+# 膝/肘行第二行：MMD hinge/swing 与映射补偿（见 csv_motion_loader.*_hinge_mapping_ui_extra）
+_KNEE_JOINT_NAMES = frozenset({"left_knee_joint", "right_knee_joint"})
+_KNEE_MMD_SUFFIX = "__knee_mmd"
+_ELBOW_JOINT_NAMES = frozenset({"left_elbow_joint", "right_elbow_joint"})
+_ELBOW_MMD_SUFFIX = "__elbow_mmd"
+_HINGE_DETAIL_ROW_JOINTS = _KNEE_JOINT_NAMES | _ELBOW_JOINT_NAMES
 
 # Joint categories: Upper Body / Lower Body / Waist (display order, left then right)
 JOINT_CATEGORIES: dict[str, list[str]] = {
@@ -130,26 +139,52 @@ def _build_mapping_window(ui):
     def _on_flip_scale(joint_name: str):
         """将缩放系数取反（正负号切换）。"""
         try:
-            _euler_model, scale_model, _ = joint_models[joint_name]
+            _euler_model, scale_model, _, _abs = joint_models[joint_name]
             new_scale = -float(scale_model.get_value_as_float())
             scale_model.set_value(new_scale)
             _update_mapping_from_models(joint_name)
         except Exception:
             pass
 
+    def _on_absorb_changed(joint_name: str, _model):
+        try:
+            _eu, _sc, _vl, absorb_model = joint_models[joint_name]
+            if absorb_model is None:
+                return
+            set_hinge_swing_absorb(joint_name, float(absorb_model.get_value_as_float()))
+            _notify_mapping_changed()
+        except Exception:
+            pass
+
+    def _on_absorb_flip(joint_name: str):
+        try:
+            _eu, _sc, _vl, absorb_model = joint_models[joint_name]
+            if absorb_model is None:
+                return
+            absorb_model.set_value(-float(absorb_model.get_value_as_float()))
+            _on_absorb_changed(joint_name, absorb_model)
+        except Exception:
+            pass
+
     def _on_reset():
         reset_mapping_to_default()
         _notify_mapping_changed()
-        for jname, (euler_model, scale_model, _value_label) in joint_models.items():
+        for jname, (euler_model, scale_model, _value_label, absorb_model) in joint_models.items():
             base = G1_JOINT_TO_MMD.get(jname)
             if base:
                 euler_model.set_value(base[1])
                 scale_model.set_value(base[2])
+            if absorb_model is not None:
+                absorb_model.set_value(1.0)
 
     # ========== 整体布局：垂直堆叠 ==========
     with ui.VStack(spacing=4):
         # 顶部说明：欧拉分量含义（0=roll, 1=pitch, 2=yaw）
-        ui.Label("Euler: 0=roll, 1=pitch, 2=yaw", height=20)
+        ui.Label("Euler axis: 0=roll, 1=pitch, 2=yaw", height=20)
+        ui.Label(
+            "Knee/Elbow: value 2nd line = MMD diag; row below = swing->parent absorb scale + AbsFlip",
+            height=18,
+        )
         ui.Spacer(height=4)
 
         # ========== 可滚动区域：按分类展示关节列表 ==========
@@ -162,8 +197,9 @@ def _build_mapping_window(ui):
                         if joint_name not in G1_JOINT_TO_MMD:
                             continue
                         bones, euler_idx, scale = G1_JOINT_TO_MMD[joint_name]
-                        # 每行：水平布局，包含 [关节名 | MMD骨骼 | 欧拉索引 | 缩放系数]
-                        with ui.HStack(height=28):
+                        val_w = 300 if joint_name in _HINGE_DETAIL_ROW_JOINTS else 80
+
+                        def _main_hstack_row() -> tuple:
                             # 列1：G1 关节名（去掉 _joint 和 _）
                             ui.Label(
                                 joint_name.replace("_joint", ""),
@@ -177,25 +213,47 @@ def _build_mapping_window(ui):
                             euler_model.add_value_changed_fn(
                                 lambda m, j=joint_name: _on_euler_changed(j, m)
                             )
-                            ui.Spacer(width=8)  # 索引与系数输入框之间的间隔
-                            # 列4：缩放系数输入框
+                            ui.Spacer(width=8)
                             scale_model = ui.SimpleFloatModel(scale)
                             ui.FloatField(model=scale_model, width=50)
                             scale_model.add_value_changed_fn(
                                 lambda m, j=joint_name: _on_scale_changed(j, m)
                             )
-                            ui.Spacer(width=8)  # 系数与 Flip 之间的间隔
-                            # 列5：Flip — 缩放系数取反
+                            ui.Spacer(width=8)
                             ui.Button(
                                 "Flip",
                                 width=44,
                                 height=22,
                                 clicked_fn=lambda j=joint_name: _on_flip_scale(j),
                             )
-                            ui.Spacer(width=8)  # Flip 与关节值之间的间隔
-                            # 列6：当前关节值（deg，只读）
-                            value_label = ui.Label("N/A", width=80)
-                            joint_models[joint_name] = (euler_model, scale_model, value_label)
+                            ui.Spacer(width=8)
+                            value_label = ui.Label("N/A", width=val_w)
+                            return euler_model, scale_model, value_label
+
+                        if joint_name in _HINGE_DETAIL_ROW_JOINTS:
+                            absorb_model = ui.SimpleFloatModel(get_hinge_swing_absorb(joint_name))
+                            with ui.VStack(spacing=2):
+                                with ui.HStack(height=28):
+                                    euler_model, scale_model, value_label = _main_hstack_row()
+                                with ui.HStack(height=22):
+                                    ui.Spacer(width=280)
+                                    ui.Label("swing abs", width=72)
+                                    ui.FloatField(model=absorb_model, width=50)
+                                    absorb_model.add_value_changed_fn(
+                                        lambda m, j=joint_name: _on_absorb_changed(j, m)
+                                    )
+                                    ui.Button(
+                                        "AbsFlip",
+                                        width=52,
+                                        height=22,
+                                        clicked_fn=lambda j=joint_name: _on_absorb_flip(j),
+                                    )
+                                    ui.Spacer()
+                            joint_models[joint_name] = (euler_model, scale_model, value_label, absorb_model)
+                        else:
+                            with ui.HStack(height=28):
+                                euler_model, scale_model, value_label = _main_hstack_row()
+                            joint_models[joint_name] = (euler_model, scale_model, value_label, None)
                     ui.Spacer(height=4)  # 分类之间的间隔
 
         ui.Spacer(height=8)
@@ -224,7 +282,7 @@ def create_mapping_ui():
     _refresh_started = False
 
     def _create_window():
-        window = ui.Window(WINDOW_TITLE, width=560, height=600)
+        window = ui.Window(WINDOW_TITLE, width=800, height=700)
         with window.frame:
             nonlocal _joint_models_ref
             _joint_models_ref = _build_mapping_window(ui)
@@ -266,10 +324,19 @@ def create_mapping_ui():
                 values = _joint_value_provider() or {}
             except Exception:
                 values = {}
-            for jname, (_euler_model, _scale_model, value_label) in _joint_models_ref.items():
+            for jname, (_euler_model, _scale_model, value_label, _absorb_model) in _joint_models_ref.items():
                 v = values.get(jname) if isinstance(values, dict) else None
                 if v is None:
                     value_label.text = "N/A"
+                elif jname in _HINGE_DETAIL_ROW_JOINTS and isinstance(values, dict):
+                    if jname in _KNEE_JOINT_NAMES:
+                        mmd = values.get(f"{jname}{_KNEE_MMD_SUFFIX}")
+                    else:
+                        mmd = values.get(f"{jname}{_ELBOW_MMD_SUFFIX}")
+                    if isinstance(mmd, str) and mmd:
+                        value_label.text = f"{float(v):.1f}deg sim\n{mmd}"
+                    else:
+                        value_label.text = f"{float(v):.2f}deg"
                 else:
                     value_label.text = f"{float(v):.2f}deg"
 

@@ -1,7 +1,7 @@
 # Copyright (c) 2022-2025.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""将 16 位线性 PCM WAV 整体乘一个增益后另存（不依赖 pycaw / 混音器）。
+"""将 16 位线性 PCM WAV 整体乘一个增益后另存, 目的是降低音量（不依赖 pycaw / 混音器）。
 
 典型用法（在 conda 环境中）::
 
@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-_DEFAULT_IN = Path(__file__).resolve().parent.parent / "media" / "you_are_important.wav"
+_DEFAULT_IN = Path(__file__).resolve().parent.parent / "media" / "dance" / "deepbluetown.wav"
 
 
 def _scale_pcm16_wav(in_path: Path, out_path: Path, gain: float) -> None:

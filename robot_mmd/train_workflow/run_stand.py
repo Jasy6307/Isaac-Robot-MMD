@@ -5,9 +5,9 @@
 G1 站立任务动作回放主脚本。
 
 功能概览：
-1) 读取 pose/dance 目录下的 CSV 动作并按键触发播放；
+1) 舞蹈由 dances_config.yaml（模块内 DANCES_CONFIG_PATH）登记：键、CSV、可选音频；读 pose 目录 P 键循环；
 2) 支持关节映射 UI，实时显示当前关节角度；
-3) 支持 O 键触发音频并与动作回放共用真实时间基准；
+3) 有 audio 的条目在触发时播 WAV，与动作用同一时间基准；
 4) 在重置和切换动作时维护控制参考姿态，避免姿态回弹。
 """
 
@@ -17,6 +17,7 @@ import argparse
 import csv
 import math
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -34,12 +35,11 @@ if _WORKSPACE_ROOT not in sys.path:
 
 from isaaclab.app import AppLauncher
 
-DEFAULT_POSE_DIR = os.path.join(_MEDIA_DIR, "pose")
-DEFAULT_DANCE_DIR = os.path.join(_MEDIA_DIR, "dance")
-# 若存在，单帧姿势的 MMD 平移 = (本帧 グルーブ/センター) - (参考文件中的同骨)，再乘 groove 比例
-DEFAULT_POSE_MMD_BASELINE_VPD = os.path.join(DEFAULT_POSE_DIR, "mmd_baseline.vpd")
-DEFAULT_POSE_MMD_BASELINE_CSV = os.path.join(DEFAULT_POSE_DIR, "mmd_baseline.csv")
-_POSE_MMD_NO_BASELINE_WARNED = False
+POSE_DIR = os.path.join(_MEDIA_DIR, "pose")
+DANCES_CONFIG_PATH = os.path.join(_SCRIPT_DIR, "dances_config.yaml")
+
+# 映射 UI：最近一帧插值后的 MMD 骨骼数据（用于膝铰链分解行显示）
+_MMD_UI_LAST_INTERP_FRAME_DATA: dict[str, dict] | None = None
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -51,13 +51,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--pose_cycle_key",
         type=str,
         default="P",
-        help=f"按该键按序播放姿势 CSV（目录固定为 {DEFAULT_POSE_DIR}，默认键 P）",
-    )
-    parser.add_argument(
-        "--dance_keys",
-        type=str,
-        default="I,O,U",
-        help=f"舞蹈触发键（逗号分隔），CSV 目录固定为 {DEFAULT_DANCE_DIR}，按文件名排序绑定",
+        help=f"按该键按序播放姿势 CSV（目录固定为 {POSE_DIR}，默认键 P）",
     )
     parser.add_argument(
         "--motion_playback",
@@ -70,34 +64,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--groove_pos_to_world",
         type=float,
         default=0.1,
-        help="グルーブ/CSV 平移差分到仿真米：默认 0.1（分米→米）。若为厘米设 0.01，若已是米则 1.0",
-    )
-    parser.add_argument(
-        "--pose_mmd_baseline",
-        type=float,
-        nargs=3,
-        metavar=("X", "Y", "Z"),
-        default=None,
-        help="单帧姿势：MMD「センター/グルーブ」在参考姿态下的数值；本帧 mmd 平移先减该点再乘 groove_pos_to_world。与舞蹈用首帧锚点同理",
-    )
-    parser.add_argument(
-        "--pose_mmd_baseline_vpd",
-        type=str,
-        default="",
-        help="从该 VPD/CSV 读平移作参考（CSV 为最先帧 グルーブ 或 センター)；未设时若存在 pose/mmd_baseline.vpd 或 mmd_baseline.csv 则自动用",
+        help="CSV 根骨平移 pos 映射到仿真米制时的缩放：默认 0.1（常见为分米→米）。若为厘米设 0.01，若已是米则 1.0",
     )
     parser.add_argument("--sim_fps", type=int, default=0, help="仿真控制频率 FPS（0 使用默认）")
-    parser.add_argument(
-        "--dance_audio_wav",
-        type=str,
-        default=os.path.join(_MEDIA_DIR, "you_are_important_quiet.wav"),
-        help="按 O 键触发 dance 时同步播放的 WAV 音频路径",
-    )
     parser.add_argument(
         "--export_isaac_csv",
         type=str,
         default="targets.csv",
         help="某段动作播放结束后，将每帧写入 Isaac 的根位姿(wxyz)与关节角(弧度)导出为该路径的 CSV；空则关闭",
+    )
+    parser.add_argument(
+        "--mmd_knee_hinge_projection",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="将 MMD ひざ的非铰链 swing 分量并回父骨(足)，由 hip 三轴吸收；默认开启",
     )
     AppLauncher.add_app_launcher_args(parser)
     return parser
@@ -119,9 +99,11 @@ from isaaclab.devices import Se3Keyboard, Se3KeyboardCfg
 
 from robot_mmd.train_workflow.csv_motion_loader import (
     build_joint_positions_from_frame,
+    elbow_hinge_mapping_ui_extra,
     get_bone_frame_lists,
     get_frame_indices,
     interpolate_bone,
+    knee_hinge_mapping_ui_extra,
     load_csv_motion,
 )
 from robot_mmd.train_workflow.mapping_ui import (
@@ -132,7 +114,6 @@ from robot_mmd.train_workflow.mapping_ui import (
 from robot_mmd.train_workflow.trans_util import (
     coerce_quat,
     mmd_root_offset_quat_to_world,
-    quat_inv,
     quat_mul,
     quat_normalize,
     root_quat_from_state_row,
@@ -143,74 +124,27 @@ TASK_ID = "Isaac-G1-Stand-v0"
 VMD_FPS = 30
 
 
-def _mmd_root_translation_from_csv_baseline(path: str) -> tuple[float, float, float] | None:
-    """与 _interpolate_mmd_root_translation_bone 一致：有グルーブ用其，否则用センター。取该 CSV 最前的帧。"""
-    try:
-        frames = load_csv_motion(path)
-    except (OSError, ValueError) as e:
-        print(f"[WARN] 无法读取参考姿势 CSV: {path}: {e}")
-        return None
-    if not frames:
-        return None
-    fi = min(frames.keys())
-    fd = frames[fi]
-    for bname in ("グルーブ", "センター"):
-        row = fd.get(bname)
-        if row is not None and "pos" in row:
-            p = row["pos"]
-            return (float(p[0]), float(p[1]), float(p[2]))
-    print(f"[WARN] 参考 CSV 中无「グルーブ/センター」平移: {path}")
-    return None
-
-
-def _mmd_root_translation_from_vpd_baseline(path: str) -> tuple[float, float, float] | None:
-    from robot_mmd.train_workflow.vmd_2_csv import read_vpd_pose
-
-    try:
-        bones = read_vpd_pose(path)
-    except OSError as e:
-        print(f"[WARN] 无法读取 VPD: {path}: {e}")
-        return None
-    by_name = {b.get("bone"): b for b in bones}
-    for bname in ("グルーブ", "センター"):
-        b = by_name.get(bname)
-        if b is not None:
-            p = b["position"]
-            return (float(p[0]), float(p[1]), float(p[2]))
-    print(f"[WARN] VPD 中无「グルーブ/センター」: {path}")
-    return None
-
-
-def resolve_pose_mmd_baseline(args: Any) -> tuple[float, float, float] | None:
-    """单帧 MMD 平移参考点：与当前姿势 CSV 同模型、同坐标约定（如站立 VPD/CSV 的首帧 センター）。"""
-    if getattr(args, "pose_mmd_baseline", None) is not None:
-        t = args.pose_mmd_baseline
-        c = (float(t[0]), float(t[1]), float(t[2]))
-        print(f"[INFO] 单帧姿势 MMD 平移参考（--pose_mmd_baseline）: ({c[0]:.6f}, {c[1]:.6f}, {c[2]:.6f})")
-        return c
-    p_user = (getattr(args, "pose_mmd_baseline_vpd", None) or "").strip()
-    for p in (p_user, DEFAULT_POSE_MMD_BASELINE_VPD, DEFAULT_POSE_MMD_BASELINE_CSV):
-        if not p or not os.path.isfile(os.path.abspath(p)):
-            continue
-        ap = os.path.abspath(p)
-        if ap.lower().endswith(".csv"):
-            c = _mmd_root_translation_from_csv_baseline(ap)
-        else:
-            c = _mmd_root_translation_from_vpd_baseline(ap)
-        if c is not None:
-            print(
-                f"[INFO] 单帧姿势 MMD 平移参考: ({c[0]:.6f}, {c[1]:.6f}, {c[2]:.6f}) 来自 {ap}"
-            )
-            return c
-    return None
-
-
 def _robot_root_row_clone(env: Any) -> Any | None:
     """取 env 内机器人 root_state_w 第一行 CPU 副本；不可用则 None。"""
     rs = getattr(env.unwrapped.scene["robot"].data, "root_state_w", None)
     if torch.is_tensor(rs) and rs.shape[1] >= 7:
         return rs[0].detach().cpu().clone()
     return None
+
+
+def _format_playback_log_label(label: str) -> str:
+    """将内部动作标签格式化为播放日志短名，如 dance [Y : deepbluetown]。"""
+    m = re.match(r"^dance\[([^\]]+)\]\s+(.+)$", label)
+    if m:
+        key, path = m.group(1), m.group(2).strip()
+        base = os.path.splitext(os.path.basename(path))[0]
+        return f"dance [{key} : {base}]"
+    m = re.match(r"^pose\[([^\]]+)\]\s+(.+)$", label)
+    if m:
+        idx, path = m.group(1), m.group(2).strip()
+        base = os.path.splitext(os.path.basename(path))[0]
+        return f"pose [{idx} : {base}]"
+    return label
 
 
 def _load_motion(filepath: str) -> tuple | None:
@@ -256,28 +190,94 @@ def _list_csv_files(dir_path: str, label: str) -> list[str]:
     return csv_files
 
 
-def _load_dance_key_mapping(dance_dir: str, dance_keys: list[str]) -> dict[str, tuple[str, tuple]]:
-    """读取 dance 目录并按键位绑定，返回 key -> (文件名, motion_data)。"""
-    csv_files = _list_csv_files(dance_dir, "dance")
-    if not csv_files:
-        return {}
+def _resolve_path_under_media(relative: str) -> str:
+    """将配置中的相对路径解析到 ``robot_mmd/media/`` 下。"""
+    rel = (relative or "").strip().replace("\\", "/")
+    if not rel:
+        return ""
+    if os.path.isabs(rel):
+        return os.path.normpath(rel)
+    return os.path.normpath(os.path.join(_MEDIA_DIR, rel))
 
-    mapping: dict[str, tuple[str, tuple]] = {}
-    for key, name in zip(dance_keys, csv_files):
-        fullpath = os.path.join(dance_dir, name)
-        data = _load_motion(fullpath)
-        if data is None:
-            print(f"[WARN] 无法加载 dance CSV: {fullpath}")
+
+def _load_dances_from_yaml(
+    config_path: str,
+) -> tuple[dict[str, tuple[str, tuple]], dict[str, str]]:
+    """从 YAML 加载舞蹈：``dance_motion_by_key`` 与仅含「有有效音频」条目的 ``dance_wav_by_key``。"""
+    try:
+        import yaml
+    except ImportError as e:
+        raise ImportError(
+            "读取舞蹈配置需要 PyYAML: pip install pyyaml "
+            f"(见 {os.path.join(_SCRIPT_DIR, 'dances_requirements.txt')})"
+        ) from e
+
+    raw = (config_path or "").strip()
+    if not raw:
+        print("[WARN] 舞蹈配置文件路径为空，无 dance 键")
+        return {}, {}
+    if os.path.isfile(raw):
+        path = os.path.normpath(os.path.abspath(raw))
+    else:
+        p1 = os.path.join(_SCRIPT_DIR, raw)
+        p2 = os.path.abspath(raw)
+        if os.path.isfile(p1):
+            path = os.path.normpath(p1)
+        elif os.path.isfile(p2):
+            path = os.path.normpath(p2)
+        else:
+            print(f"[WARN] 未找到舞蹈配置 YAML: {raw}，无 dance 键")
+            return {}, {}
+
+    with open(path, encoding="utf-8") as f:
+        doc = yaml.safe_load(f)
+    if not doc:
+        print(f"[WARN] 舞蹈配置为空: {path}")
+        return {}, {}
+    items = doc.get("dances")
+    if not isinstance(items, list):
+        print(f"[WARN] 舞蹈配置缺少 ``dances`` 列表: {path}")
+        return {}, {}
+
+    motion_by_key: dict[str, tuple[str, tuple]] = {}
+    wav_by_key: dict[str, str] = {}
+    for i, ent in enumerate(items):
+        if not isinstance(ent, dict):
+            print(f"[WARN] dances[{i}] 非映射，已跳过")
             continue
-        mapping[key] = (name, data)
-        print(f"[INFO] 已绑定 dance 键 [{key}] -> {name}（{len(data[1])} 帧）")
-
-    if len(csv_files) > len(dance_keys):
-        print(
-            f"[WARN] dance 文件数量({len(csv_files)})超过按键数量({len(dance_keys)})，"
-            "超出部分未绑定"
-        )
-    return mapping
+        raw_key = ent.get("key")
+        if raw_key is None or str(raw_key).strip() == "":
+            print(f"[WARN] dances[{i}] 无 key，已跳过")
+            continue
+        key = str(raw_key).strip().upper()[:1]
+        if key in motion_by_key:
+            print(f"[WARN] 舞蹈键重复 [{key}]，后项已忽略: {ent.get('id', i)}")
+            continue
+        motion_rel = ent.get("motion")
+        if not motion_rel or not str(motion_rel).strip():
+            print(f"[WARN] dances[{i}] 无 motion，已跳过 key={key}")
+            continue
+        csv_p = _resolve_path_under_media(str(motion_rel).strip())
+        if not os.path.isfile(csv_p):
+            print(f"[WARN] 未找到 dance 键 [{key}] 的 CSV: {csv_p}")
+            continue
+        data = _load_motion(csv_p)
+        if data is None:
+            print(f"[WARN] 无法加载 dance 键 [{key}]: {csv_p}")
+            continue
+        label = ent.get("id") or ent.get("label")
+        brief = f" [{label}]" if label else ""
+        print(f"[INFO] 已绑定 dance 键 [{key}] -> {os.path.basename(csv_p)}（{len(data[1])} 帧）{brief}")
+        motion_by_key[key] = (os.path.basename(csv_p), data)
+        raw_audio = ent.get("audio", None)
+        if raw_audio is None or str(raw_audio).strip() == "":
+            continue
+        ap = _resolve_path_under_media(str(raw_audio).strip())
+        if os.path.isfile(ap):
+            wav_by_key[key] = ap
+        else:
+            print(f"[WARN] 舞蹈 [{key}] 的音频不存在，将不播伴音: {ap}")
+    return motion_by_key, wav_by_key
 
 
 def _compute_action_for_frame(
@@ -288,20 +288,29 @@ def _compute_action_for_frame(
     joint_names: list[str],
     default_joint_pos: Any,
     action_scale: float,
-) -> Any:
-    """根据帧号插值得到动作（不平滑，每帧即用目标动作）。"""
-    frame_data = {}
+    knee_hinge_projection: bool = True,
+) -> tuple[Any | None, dict[str, dict]]:
+    """根据帧号插值得到动作（不平滑，每帧即用目标动作）。
+
+    返回 (action_delta 或 None, 本帧插值后的 MMD 骨骼 dict)，供映射 UI 显示膝部分解。
+    """
+    frame_data: dict[str, dict] = {}
     for bone in current_all_bones:
         d = interpolate_bone(frame, bone, current_frames, current_bone_frame_lists.get(bone))
         if d is not None:
             frame_data[bone] = d
 
     if not frame_data or joint_names is None or default_joint_pos is None:
-        return None
+        return None, frame_data
 
-    target_pos = build_joint_positions_from_frame(frame_data, joint_names, default_joint_pos)
+    target_pos = build_joint_positions_from_frame(
+        frame_data,
+        joint_names,
+        default_joint_pos,
+        knee_hinge_projection=knee_hinge_projection,
+    )
     target_action = (target_pos - default_joint_pos) / action_scale
-    return target_action.copy()
+    return target_action.copy(), frame_data
 
 
 def _build_joint_pos_deg_cache(joint_names: list[str], joint_pos_cmd: Any) -> dict[str, float]:
@@ -391,8 +400,16 @@ def _interpolate_mmd_root_translation_bone(
     frames: Any,
     bone_frame_lists: dict[str, list[int]],
 ) -> tuple[str | None, dict | None]:
-    """根在 MMD 中的平移轨迹：有「グルーブ」用其（舞台位移），否则用「センター」（无グルーブ 的 pose 常见）。"""
-    for bone in ("グルーブ", "センター"):
+    """根在 MMD 中的平移轨迹。默认 グルーブ 优先；若 センター 关键帧远多于 グルーブ（数据把位移写在 センター、グルーブ 仅占位 0），则改优先 センター。
+
+    否则会出现：O 的 you_are_important（グルーブ 满轨迹）根跟着动，Y 的 deepbluetown（グルーブ 常静、センター 在动）根几乎不动、像「锁住身体」。"""
+    g_list = bone_frame_lists.get("グルーブ") or []
+    c_list = bone_frame_lists.get("センター") or []
+    if c_list and len(c_list) > len(g_list):
+        order: tuple[str, ...] = ("センター", "グルーブ")
+    else:
+        order = ("グルーブ", "センター")
+    for bone in order:
         d = interpolate_bone(frame, bone, frames, bone_frame_lists.get(bone))
         if d is not None and "pos" in d:
             return bone, d
@@ -401,10 +418,8 @@ def _interpolate_mmd_root_translation_bone(
 
 @dataclass
 class MotionRootTrackState:
-    """根轨迹：仿真根在重置时采样；多帧片段另存首帧 MMD 平移/根旋转锚点。"""
+    """动作切换时缓存的仿真根位姿锚点：平移为重置/切换后 root 位置，朝向用于与 CSV 根四元数复合。"""
 
-    groove_origin_pos: tuple[float, float, float] | None = None
-    csv_root_origin_quat_wxyz: list[float] | None = None
     root_origin_pos: tuple[float, float, float] | None = None
     root_quat_wxyz: list[float] | None = None
 
@@ -421,13 +436,21 @@ def _compute_targets_for_motion_frame(
     robot: Any,
     state: MotionRootTrackState,
     root_snapshot_row: Any | None = None,
-    pose_mmd_baseline: tuple[float, float, float] | None = None,
+    knee_hinge_projection: bool = True,
 ) -> tuple[Any, tuple[float, float, float] | None, list[float] | None, Any, str | None]:
     """计算本帧关节目标、根位姿、动作向量；最后一项为用于平移的 MMD 根骨名（无则 None）。"""
-    global _POSE_MMD_NO_BASELINE_WARNED
-    result = _compute_action_for_frame(
-        frame, frames, bone_frame_lists, all_bones, joint_names, default_joint_pos, action_scale
+    global _MMD_UI_LAST_INTERP_FRAME_DATA
+    result, interp_fd = _compute_action_for_frame(
+        frame,
+        frames,
+        bone_frame_lists,
+        all_bones,
+        joint_names,
+        default_joint_pos,
+        action_scale,
+        knee_hinge_projection=knee_hinge_projection,
     )
+    _MMD_UI_LAST_INTERP_FRAME_DATA = interp_fd
     if result is not None:
         joint_pos_cmd = default_joint_pos + action_scale * result
     else:
@@ -463,37 +486,18 @@ def _compute_targets_for_motion_frame(
                         state.root_quat_wxyz = root_quat_from_state_row(root_state[0])
 
             is_pose = _motion_is_static_pose(frames)
-            if is_pose:
-                # 单帧：须相对「同 PMX 的参考姿势」的 グルーブ/センター（--pose_mmd_baseline*），否则 (0,0,0) 会把绑定位移当世界位移。
-                # 与多帧舞蹈用「首帧 mmd_pos」作 groove_ref 同理，只是参考来自外置站立 VPD/CSV。
-                if pose_mmd_baseline is not None:
-                    groove_ref = pose_mmd_baseline
-                else:
-                    groove_ref = (0.0, 0.0, 0.0)
-                    if not _POSE_MMD_NO_BASELINE_WARNED:
-                        print(
-                            "[WARN] 单帧姿势未设置 MMD 平移参考（--pose_mmd_baseline / --pose_mmd_baseline_vpd，"
-                            f"或放置 {os.path.basename(DEFAULT_POSE_MMD_BASELINE_VPD)} / "
-                            f"{os.path.basename(DEFAULT_POSE_MMD_BASELINE_CSV)} 于 pose 目录）："
-                            "将相对 MMD(0,0,0) 计算，易与模型绑定数值叠加导致根位置错误。"
-                        )
-                        _POSE_MMD_NO_BASELINE_WARNED = True
-            else:
-                if state.groove_origin_pos is None:
-                    state.groove_origin_pos = mmd_pos
-                groove_ref = state.groove_origin_pos
 
             if state.root_origin_pos is not None:
                 s = float(groove_pos_to_world)
-                dx = (mmd_pos[0] - groove_ref[0]) * s
-                dy = (mmd_pos[1] - groove_ref[1]) * s
-                dz = (mmd_pos[2] - groove_ref[2]) * s
+                dx = mmd_pos[0] * s
+                dy = mmd_pos[1] * s
+                dz = mmd_pos[2] * s
                 ox, oy, oz = (
                     state.root_origin_pos[0],
                     state.root_origin_pos[1],
                     state.root_origin_pos[2],
                 )
-                # 姿势：MMD 原点 + 加号（世界 X 用 -dx，与舞蹈首帧差分约定一致，避免仅沿 X 反向）。舞蹈：首帧锚点 + 减号平移；旋转 q0*inv(q_w)。
+                # 姿势：+ 号组合；多帧舞蹈：- 号 + 轴交换（MMD→Isaac）。
                 if is_pose:
                     target_root_pos = (ox - dx, oy + dz, oz + dy)
                 else:
@@ -502,14 +506,7 @@ def _compute_targets_for_motion_frame(
                 csv_root_quat_wxyz = _get_csv_root_quat(frame, frames, bone_frame_lists)
                 if csv_root_quat_wxyz is not None and state.root_quat_wxyz is not None:
                     q_w = mmd_root_offset_quat_to_world(csv_root_quat_wxyz)
-                    if is_pose:
-                        target_root_quat_wxyz = quat_normalize(quat_mul(q_w, state.root_quat_wxyz))
-                    else:
-                        if state.csv_root_origin_quat_wxyz is None:
-                            state.csv_root_origin_quat_wxyz = list(q_w)
-                        q0 = state.csv_root_origin_quat_wxyz
-                        d = quat_normalize(quat_mul(q0, quat_inv(q_w)))
-                        target_root_quat_wxyz = quat_normalize(quat_mul(d, state.root_quat_wxyz))
+                    target_root_quat_wxyz = quat_normalize(quat_mul(q_w, state.root_quat_wxyz))
         except Exception:
             pass
 
@@ -525,7 +522,7 @@ def _write_isaac_applied_motion_csv(
     groove_pos_to_world: float,
     root_snapshot_row: Any,
     env: Any,
-    pose_mmd_baseline: tuple[float, float, float] | None = None,
+    knee_hinge_projection: bool = True,
 ) -> None:
     """按与实时播放相同的规则逐帧计算并写出 CSV（不逐步进仿真）。"""
     frames, frame_list, bone_frame_lists, all_bones = motion_data
@@ -571,7 +568,7 @@ def _write_isaac_applied_motion_csv(
                 robot,
                 state,
                 root_snapshot_row=root_snapshot_row,
-                pose_mmd_baseline=pose_mmd_baseline,
+                knee_hinge_projection=knee_hinge_projection,
             )
             if trp is not None:
                 last_rp = trp
@@ -586,11 +583,9 @@ def _write_isaac_applied_motion_csv(
 
 def main():
     """零动作运行 G1 站立环境。"""
-    pose_mmd_baseline = resolve_pose_mmd_baseline(args_cli)
     pose_cycle_key = (args_cli.pose_cycle_key or "P").strip().upper()[:1]
-    dance_keys = [k.strip().upper()[:1] for k in args_cli.dance_keys.split(",") if k.strip()]
-    pose_motions = _load_pose_motion_dir(DEFAULT_POSE_DIR)
-    dance_motion_by_key = _load_dance_key_mapping(DEFAULT_DANCE_DIR, dance_keys)
+    pose_motions = _load_pose_motion_dir(POSE_DIR)
+    dance_motion_by_key, dance_wav_by_key = _load_dances_from_yaml(DANCES_CONFIG_PATH)
 
     env_cfg = parse_env_cfg(
         TASK_ID,
@@ -662,7 +657,6 @@ def main():
     play_start_time = 0.0
     is_playing = False
     last_printed_frame = -1
-    last_printed_root_frame = -1
     action_scale = env_cfg.actions.joint_pos.scale
     joint_names: list[str] = []
     joint_ids: Any = None
@@ -704,6 +698,11 @@ def main():
         """将关节值写入 UI 缓存（度制）。"""
         joint_pos_deg_cache.clear()
         joint_pos_deg_cache.update(_build_joint_pos_deg_cache(joint_names, joint_pos_cmd))
+        fd = _MMD_UI_LAST_INTERP_FRAME_DATA
+        if fd:
+            pe = bool(args_cli.mmd_knee_hinge_projection)
+            joint_pos_deg_cache.update(knee_hinge_mapping_ui_extra(fd, projection_enabled=pe))
+            joint_pos_deg_cache.update(elbow_hinge_mapping_ui_extra(fd, projection_enabled=pe))
 
     def _set_control_reference_pose(new_default_joint_pos: Any) -> bool:
         """更新控制器参考姿态，避免 zero action 把关节拉回旧默认姿态。"""
@@ -748,7 +747,6 @@ def main():
     def _switch_to_motion(data, label: str):
         """切换当前播放动作，并重置播放状态。"""
         nonlocal current_motion, current_motion_label, play_start_time, is_playing, last_printed_frame
-        nonlocal last_printed_root_frame
         nonlocal motion_track, playback_default_joint_pos
         nonlocal last_csv_motion_frame, mapping_reapply_requested
         if data is None:
@@ -760,7 +758,6 @@ def main():
         play_start_time = time.perf_counter()
         is_playing = True
         last_printed_frame = -1
-        last_printed_root_frame = -1
         motion_track = MotionRootTrackState()
         playback_default_joint_pos = None
         _ensure_joint_info()
@@ -802,6 +799,8 @@ def main():
                 is_playing = False
                 last_csv_motion_frame = None
                 mapping_reapply_requested = False
+                global _MMD_UI_LAST_INTERP_FRAME_DATA
+                _MMD_UI_LAST_INTERP_FRAME_DATA = None
                 initial_root_snapshot_row = _robot_root_row_clone(env)
                 _reset_to_initial_pose(sync_ui_cache=True)
                 print("[INFO] 环境已重置")
@@ -809,7 +808,7 @@ def main():
             if pending_cycle_play:
                 pending_cycle_play = False
                 if not pose_motions:
-                    print(f"[WARN] pose 目录无可播放 CSV: {DEFAULT_POSE_DIR}")
+                    print(f"[WARN] pose 目录无可播放 CSV: {POSE_DIR}")
                 else:
                     _prepare_motion_switch()
                     current_pose_idx = (current_pose_idx + 1) % len(pose_motions)
@@ -826,8 +825,12 @@ def main():
                     _prepare_motion_switch()
                     name, data = entry
                     _switch_to_motion(data, f"dance[{dkey}] {name}")
-                    if dkey == "O":
-                        audio_util.play_wav_async(args_cli.dance_audio_wav)
+                    wav = dance_wav_by_key.get(dkey)
+                    if wav and str(wav).strip():
+                        if os.path.isfile(wav):
+                            audio_util.play_wav_async(wav)
+                        else:
+                            print(f"[WARN] 音频文件不存在: {wav}")
 
             if is_playing and current_motion:
                 frames, frame_list, bone_frame_lists, all_bones = current_motion  # type: ignore
@@ -837,10 +840,6 @@ def main():
                 max_frame = frame_list[-1]
                 frame = min(frame, max_frame)
                 last_csv_motion_frame = frame
-
-                if frame // 10 != last_printed_frame:
-                    last_printed_frame = frame // 10
-                    print(f"[播放] {current_motion_label} 帧 {frame}/{max_frame}")
 
                 joint_pos_cmd, target_root_pos, target_root_quat_wxyz, result, mmd_root_trans_bone = (
                     _compute_targets_for_motion_frame(
@@ -855,7 +854,7 @@ def main():
                         robot,
                         motion_track,
                         root_snapshot_row=initial_root_snapshot_row,
-                        pose_mmd_baseline=pose_mmd_baseline,
+                        knee_hinge_projection=args_cli.mmd_knee_hinge_projection,
                     )
                 )
 
@@ -871,20 +870,22 @@ def main():
                         )
                         root_track_warned = True
 
-                # 与 [播放] 日志保持同频：每 10 帧输出一次 root 位姿，避免刷屏。
-                if frame // 10 != last_printed_root_frame:
+                # 每 10 帧一行：帧进度 + 仿真根位姿（在写根之后读取，与画面一致）。
+                if frame // 10 != last_printed_frame:
+                    last_printed_frame = frame // 10
+                    tag = _format_playback_log_label(current_motion_label)
+                    root_suffix = ""
                     root_state_now = getattr(robot.data, "root_state_w", None)
                     if torch.is_tensor(root_state_now) and root_state_now.shape[1] >= 7:
                         px = float(root_state_now[0, 0].item())
                         py = float(root_state_now[0, 1].item())
                         pz = float(root_state_now[0, 2].item())
                         qw, qx, qy, qz = root_quat_from_state_row(root_state_now[0])
-                        print(
-                            f"[ROOT] {current_motion_label} 帧 {frame}: "
-                            f"pos=({px:.4f}, {py:.4f}, {pz:.4f}) "
-                            f"quat_wxyz=({qw:.4f}, {qx:.4f}, {qy:.4f}, {qz:.4f})"
+                        root_suffix = (
+                            f" [pos=({px:.4f}, {py:.4f}, {pz:.4f}) "
+                            f"quat_wxyz=({qw:.4f}, {qx:.4f}, {qy:.4f}, {qz:.4f})]"
                         )
-                        last_printed_root_frame = frame // 10
+                    print(f"[播放] {tag} [帧:{frame}/{max_frame}]{root_suffix}")
 
                 last_frame_joint_pos_cmd = None
                 if result is not None:
@@ -925,7 +926,7 @@ def main():
                             args_cli.groove_pos_to_world,
                             initial_root_snapshot_row,
                             env,
-                            pose_mmd_baseline=pose_mmd_baseline,
+                            knee_hinge_projection=args_cli.mmd_knee_hinge_projection,
                         )
                     is_playing = False
                     print(f"[INFO] 播放结束: {current_motion_label}")
@@ -964,7 +965,7 @@ def main():
                     robot,
                     mt,
                     root_snapshot_row=initial_root_snapshot_row,
-                    pose_mmd_baseline=pose_mmd_baseline,
+                    knee_hinge_projection=args_cli.mmd_knee_hinge_projection,
                 )
                 if tr_pos is not None and tr_quat is not None:
                     _apply_root_pos_instant(env, tr_pos, tr_quat)

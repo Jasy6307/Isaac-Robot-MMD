@@ -1,0 +1,22 @@
+# 舞蹈登记：由 run_stand.py 用 DEFAULT_DANCES_CONFIG_PATH 读取（默认本文件）。
+# 各 motion / audio 路径相对于 robot_mmd/media/，例如 dance/foo.csv 即 media/dance/foo.csv
+# - key: 单字符触发键
+# - motion: 必填
+# - audio: 选填；省略或空则播放时不伴音
+# - id: 选填，仅日志用
+
+version: 1
+dances:
+  - id: joint_mapping 测试
+    key: I
+    motion: dance/joint_mapping_test.csv
+
+  - id: you are important
+    key: O
+    motion: dance/you_are_important.csv
+    audio: dance/you_are_important.wav
+
+  - id: deep blue town
+    key: Y
+    motion: dance/deepbluetown.csv
+    audio: dance/deepbluetown.wav
