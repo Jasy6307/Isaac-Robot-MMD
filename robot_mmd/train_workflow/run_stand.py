@@ -14,7 +14,6 @@ G1 站立任务动作回放主脚本。
 from __future__ import annotations
 
 import argparse
-import csv
 import math
 import os
 import re
@@ -53,16 +52,21 @@ def _apply_app_window_kit_flags(ns: argparse.Namespace) -> None:
     if app_window_height is not None:
         fragments.append(f"--/app/window/height={int(app_window_height)}")
         fragments.append(f"--/persistent/app/window/height={int(app_window_height)}")
-    if getattr(ns, "app_window_maximized", False):
+    mode = getattr(ns, "app_window_mode", "normal") or "normal"
+    if mode == "maximized":
         fragments.append("--/app/window/maximized=true")
         fragments.append("--/persistent/app/window/maximized=true")
-    if getattr(ns, "app_window_fullscreen", False):
+        fragments.append("--/app/window/fullscreen=false")
+        fragments.append("--/persistent/app/window/fullscreen=false")
+    elif mode == "fullscreen":
         fragments.append("--/app/window/fullscreen=true")
-    if getattr(ns, "app_window_no_decorations", False):
-        fragments.append("--/app/window/noDecorations=true")
-        fragments.append("--/persistent/app/window/noDecorations=true")
-    if not fragments:
-        return
+        fragments.append("--/app/window/maximized=false")
+        fragments.append("--/persistent/app/window/maximized=false")
+    else:
+        fragments.append("--/app/window/maximized=false")
+        fragments.append("--/persistent/app/window/maximized=false")
+        fragments.append("--/app/window/fullscreen=false")
+        fragments.append("--/persistent/app/window/fullscreen=false")
     existing = str(getattr(ns, "kit_args", "") or "").strip()
     ns.kit_args = (existing + " " + " ".join(fragments)).strip()
 
@@ -77,12 +81,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=str,
         default="P",
         help=f"按该键按序播放姿势 CSV（目录固定为 {POSE_DIR}，默认键 P）",
-    )
-    parser.add_argument(
-        "--motion_playback",
-        action="store_true",
-        default=True,
-        help="动作回放模式：不固定根链接、禁用重力、增加阻尼",
     )
     parser.add_argument("--play_speed", type=float, default=1.0, help="播放速度倍率")
     parser.add_argument(
@@ -103,57 +101,36 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--sim_fps", type=int, default=0, help="仿真控制频率 FPS（0 使用默认）")
     parser.add_argument(
-        "--export_isaac_csv",
-        type=str,
-        default="targets.csv",
-        help="某段动作播放结束后，将每帧写入 Isaac 的根位姿(wxyz)与关节角(弧度)导出为该路径的 CSV；空则关闭",
-    )
-    parser.add_argument(
         "--mmd_knee_hinge_projection",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="将 MMD ひざ的非铰链 swing 分量并回父骨(足)，由 hip 三轴吸收；默认开启",
     )
-    # 视口渲染分辨率（与操作系统窗口外框不同；见 --app_window_*）
+    # 视口分辨率（width/height）与 OS 主窗口（app_window_* → _apply_app_window_kit_flags / carb）
+    for _flag, _default, _help in (
+        ("--width", 1280, "视口/生成图像宽度（像素）；默认 1280"),
+        ("--height", 720, "视口/生成图像高度（像素）；默认 720"),
+        (
+            "--app_window_width",
+            None,
+            "Isaac 主窗口宽度（像素）；不传则沿用 Isaac 默认或上次持久化尺寸",
+        ),
+        (
+            "--app_window_height",
+            None,
+            "Isaac 主窗口高度（像素）；不传则沿用 Isaac 默认或上次持久化尺寸",
+        ),
+    ):
+        parser.add_argument(_flag, type=int, default=_default, help=_help)
     parser.add_argument(
-        "--width",
-        type=int,
-        default=1280,
-        help="视口/生成图像宽度（像素）；默认 1280",
-    )
-    parser.add_argument(
-        "--height",
-        type=int,
-        default=720,
-        help="视口/生成图像高度（像素）；默认 720",
-    )
-    # 操作系统主窗口：统一走 carb --/app/window/*，避免被其它默认值覆盖
-    parser.add_argument(
-        "--app_window_width",
-        type=int,
-        default=None,
-        help="Isaac 主窗口宽度（像素）；不传则沿用 Isaac 默认或上次持久化尺寸",
-    )
-    parser.add_argument(
-        "--app_window_height",
-        type=int,
-        default=None,
-        help="Isaac 主窗口高度（像素）；不传则沿用 Isaac 默认或上次持久化尺寸",
-    )
-    parser.add_argument(
-        "--app_window_maximized",
-        action="store_true",
-        help="启动时最大化主窗口（标题栏仍在，除非另开无边框）",
-    )
-    parser.add_argument(
-        "--app_window_fullscreen",
-        action="store_true",
-        help="启动时全屏主窗口",
-    )
-    parser.add_argument(
-        "--app_window_no_decorations",
-        action="store_true",
-        help="无边框窗口（无原生标题栏/系统装饰；按需与 maximized 组合）",
+        "--app_window_mode",
+        type=str,
+        choices=("normal", "maximized", "fullscreen"),
+        default="normal",
+        metavar="MODE",
+        help=(
+            "Isaac 主窗口形态（写入 carb）：normal 普通、maximized 最大化、fullscreen 全屏；默认 normal"
+        ),
     )
     AppLauncher.add_app_launcher_args(parser)
     return parser
@@ -196,11 +173,13 @@ from robot_mmd.train_workflow.csv_motion_loader import (
     get_frame_indices,
     interpolate_bone,
     knee_hinge_mapping_ui_extra,
+    retarget_leg_debug_ui_extra,
     load_csv_motion,
     shoulder_retarget_debug_ui_extra,
 )
-from robot_mmd.train_workflow.mapping_ui import (
+from robot_mmd.train_workflow.ui_mapping import (
     create_mapping_ui,
+    create_retarget_tune_ui,
     set_joint_value_provider,
     set_mapping_changed_callback,
     set_playback_status_provider,
@@ -233,17 +212,14 @@ def _robot_root_row_clone(env: Any) -> Any | None:
 
 def _format_playback_log_label(label: str) -> str:
     """将内部动作标签格式化为播放日志短名，如 dance [Y : deepbluetown]。"""
-    m = re.match(r"^dance\[([^\]]+)\]\s+(.+)$", label)
-    if m:
-        key, path = m.group(1), m.group(2).strip()
-        base = os.path.splitext(os.path.basename(path))[0]
-        return f"dance [{key} : {base}]"
-    m = re.match(r"^pose\[([^\]]+)\]\s+(.+)$", label)
-    if m:
-        idx, path = m.group(1), m.group(2).strip()
-        base = os.path.splitext(os.path.basename(path))[0]
-        return f"pose [{idx} : {base}]"
-    return label
+    m = re.match(r"^(dance|pose)\[([^\]]+)\]\s+(.+)$", label)
+    if not m:
+        return label
+    kind, key_or_idx, path = m.group(1), m.group(2), m.group(3).strip()
+    base = os.path.splitext(os.path.basename(path))[0]
+    if kind == "dance":
+        return f"dance [{key_or_idx} : {base}]"
+    return f"pose [{key_or_idx} : {base}]"
 
 
 def _load_motion(filepath: str) -> tuple | None:
@@ -474,7 +450,6 @@ def _motion_is_static_pose(frames: Any) -> bool:
 def _get_csv_root_quat(frame: int, frames: Any, bone_frame_lists: dict[str, list[int]]) -> list[float] | None:
     """从 CSV 当前帧提取根朝向四元数（wxyz）。"""
     # 优先使用“有连续关键帧”的根骨骼，避免误选只在 0 帧存在的常量骨骼（例如某些数据里的センター）。
-    # 先尝试下半身（骨盆语义）参与根朝向，再回退到传统根骨候选。
     candidates = ("下半身", "グルーブ", "センター親", "腰", "センター")
 
     for require_dynamic in (True, False):
@@ -539,8 +514,13 @@ def _compute_targets_for_motion_frame(
     knee_hinge_projection: bool = True,
     mmd_center_to_root_offset_local_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0),
     root_quat_rpy_scale: tuple[float, float, float] = (1.0, 1.0, 1.0),
-) -> tuple[Any, tuple[float, float, float] | None, list[float] | None, Any, str | None]:
-    """计算本帧关节目标、根位姿、动作向量；最后一项为用于平移的 MMD 根骨名（无则 None）。"""
+) -> tuple[Any, tuple[float, float, float] | None, list[float] | None, Any, str | None, bool | None]:
+    """计算本帧关节目标、根位姿、动作向量。
+
+    返回值依次为：关节指令、目标根位置、目标根四元数、相对动作向量 MMD、平移所用人骨名，
+    以及 ``csv_root_rotation_lookup``：已为根轨迹调用过 ``_get_csv_root_quat`` 时 True=成功取到，
+    False=未取到可用根朝向（与主循环原 WARN 条件一致）；未进入根平移分支则为 None。
+    """
     global _MMD_UI_LAST_INTERP_FRAME_DATA
     result, interp_fd = _compute_action_for_frame(
         frame,
@@ -561,6 +541,7 @@ def _compute_targets_for_motion_frame(
     target_root_pos: tuple[float, float, float] | None = None
     target_root_quat_wxyz: list[float] | None = None
     mmd_root_trans_bone: str | None = None
+    csv_root_rotation_lookup: bool | None = None
 
     root_bone_name, root_mmd = _interpolate_mmd_root_translation_bone(frame, frames, bone_frame_lists)
     if root_mmd is not None and "pos" in root_mmd:
@@ -606,6 +587,7 @@ def _compute_targets_for_motion_frame(
                     target_root_pos = (ox - dx, oy - dz, oz - dy)
                 target_root_quat_wxyz = list(state.root_quat_wxyz) if state.root_quat_wxyz else None
                 csv_root_quat_wxyz = _get_csv_root_quat(frame, frames, bone_frame_lists)
+                csv_root_rotation_lookup = csv_root_quat_wxyz is not None
                 if csv_root_quat_wxyz is not None and state.root_quat_wxyz is not None:
                     q_w = mmd_root_offset_quat_to_world(csv_root_quat_wxyz)
                     sx, sy, sz = root_quat_rpy_scale
@@ -628,79 +610,7 @@ def _compute_targets_for_motion_frame(
         except Exception:
             pass
 
-    return joint_pos_cmd, target_root_pos, target_root_quat_wxyz, result, mmd_root_trans_bone
-
-
-def _write_isaac_applied_motion_csv(
-    out_path: str,
-    motion_data: tuple,
-    joint_names: list[str],
-    default_joint_pos: Any,
-    action_scale: float,
-    groove_pos_to_world: float,
-    root_snapshot_row: Any,
-    env: Any,
-    knee_hinge_projection: bool = True,
-    mmd_center_to_root_offset_local_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0),
-    root_quat_rpy_scale: tuple[float, float, float] = (1.0, 1.0, 1.0),
-) -> None:
-    """按与实时播放相同的规则逐帧计算并写出 CSV（不逐步进仿真）。"""
-    frames, frame_list, bone_frame_lists, all_bones = motion_data
-    max_frame = frame_list[-1]
-    robot = env.unwrapped.scene["robot"]
-    state = MotionRootTrackState()
-
-    last_rp = (
-        float(root_snapshot_row[0].item()),
-        float(root_snapshot_row[1].item()),
-        float(root_snapshot_row[2].item()),
-    )
-    last_rq = root_quat_from_state_row(root_snapshot_row)
-
-    out_abs = os.path.abspath(out_path)
-    out_dir = os.path.dirname(out_abs)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
-    with open(out_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        header = [
-            "frame",
-            "root_x",
-            "root_y",
-            "root_z",
-            "root_qw",
-            "root_qx",
-            "root_qy",
-            "root_qz",
-        ] + list(joint_names)
-        w.writerow(header)
-
-        for frame in range(max_frame + 1):
-            joint_cmd, trp, trq, _r, _b = _compute_targets_for_motion_frame(
-                frame,
-                frames,
-                bone_frame_lists,
-                all_bones,
-                joint_names,
-                default_joint_pos,
-                action_scale,
-                groove_pos_to_world,
-                robot,
-                state,
-                root_snapshot_row=root_snapshot_row,
-                knee_hinge_projection=knee_hinge_projection,
-                mmd_center_to_root_offset_local_xyz=mmd_center_to_root_offset_local_xyz,
-                root_quat_rpy_scale=root_quat_rpy_scale,
-            )
-            if trp is not None:
-                last_rp = trp
-            if trq is not None:
-                last_rq = trq
-            row = [frame, last_rp[0], last_rp[1], last_rp[2], last_rq[0], last_rq[1], last_rq[2], last_rq[3]]
-            row.extend(float(x) for x in joint_cmd.tolist())
-            w.writerow(row)
-
-    print(f"[INFO] 已导出 Isaac 逐帧目标 CSV: {out_path}（共 {max_frame + 1} 行）")
+    return joint_pos_cmd, target_root_pos, target_root_quat_wxyz, result, mmd_root_trans_bone, csv_root_rotation_lookup
 
 
 def main():
@@ -715,14 +625,13 @@ def main():
         num_envs=args_cli.num_envs,
         use_fabric=not args_cli.disable_fabric,
     )
-    if args_cli.motion_playback:
-        from robot_mmd.my_task.g1_stand_env_cfg import G1_TPOSE_INIT_STATE
-        env_cfg.scene.robot.init_state = G1_TPOSE_INIT_STATE
-        env_cfg.scene.robot.spawn.articulation_props.fix_root_link = False
-        env_cfg.scene.robot.spawn.rigid_props.disable_gravity = True
-        env_cfg.scene.robot.spawn.rigid_props.linear_damping = 10.0
-        env_cfg.scene.robot.spawn.rigid_props.angular_damping = 10.0
-        print("[INFO] 已启用动作回放模式")
+
+    from robot_mmd.my_task.g1_stand_env_cfg import G1_TPOSE_INIT_STATE
+    env_cfg.scene.robot.init_state = G1_TPOSE_INIT_STATE
+    env_cfg.scene.robot.spawn.articulation_props.fix_root_link = False
+    env_cfg.scene.robot.spawn.rigid_props.disable_gravity = True
+    env_cfg.scene.robot.spawn.rigid_props.linear_damping = 10.0
+    env_cfg.scene.robot.spawn.rigid_props.angular_damping = 10.0
 
     # UI 用：缓存当前关节角度（度制），由动作回放每步更新
     joint_pos_deg_cache: dict[str, float] = {}
@@ -802,7 +711,7 @@ def main():
     pending_playback_toggle = False
     pending_seek_frame: int | None = None
     motion_has_wav = False  # 当前段是否为带伴音的 dance（供暂停/帧跳转同步 audio）
-    root_quat_rpy_scale = [-1.0, -1.0, -1.0]  # root 姿态翻转调试：按 roll/pitch/yaw 逐轴乘 scale
+    root_quat_rpy_scale = [1.0, 1.0, -1.0]  # root 姿态翻转调试：按 roll/pitch/yaw 逐轴乘 scale
 
     def _on_mapping_ui_changed():
         nonlocal mapping_reapply_requested
@@ -812,21 +721,23 @@ def main():
         if not is_playing or not current_motion or not (current_motion_label or "").strip():
             return {"playing": False}
         tag = _format_playback_log_label(current_motion_label)
-        _frames, frame_list = current_motion[0], current_motion[1]  # type: ignore[index]
+        _, frame_list = current_motion[0], current_motion[1]  # type: ignore[index]
         max_f = int(frame_list[-1])
         fr = int(last_csv_motion_frame) if last_csv_motion_frame is not None else 0
+        out: dict[str, Any] = {
+            "playing": True,
+            "tag": tag,
+            "frame": fr,
+            "max_frame": max_f,
+            "playback_paused": playback_paused,
+        }
         if current_motion_label.startswith("dance["):
-            return {
-                "playing": True,
-                "kind": "dance",
-                "tag": tag,
-                "frame": fr,
-                "max_frame": max_f,
-                "playback_paused": playback_paused,
-            }
-        if current_motion_label.startswith("pose["):
-            return {"playing": True, "kind": "pose", "tag": tag, "playback_paused": playback_paused, "frame": fr, "max_frame": max_f}
-        return {"playing": True, "kind": "", "tag": tag, "playback_paused": playback_paused, "frame": fr, "max_frame": max_f}
+            out["kind"] = "dance"
+        elif current_motion_label.startswith("pose["):
+            out["kind"] = "pose"
+        else:
+            out["kind"] = ""
+        return out
 
     def _ui_toggle_pause() -> None:
         nonlocal pending_playback_toggle
@@ -843,7 +754,8 @@ def main():
         pending_seek_frame = idx_i
 
     def _get_root_quat_scale_for_ui() -> tuple[float, float, float]:
-        return (float(root_quat_rpy_scale[0]), float(root_quat_rpy_scale[1]), float(root_quat_rpy_scale[2]))
+        a, b, c = root_quat_rpy_scale
+        return float(a), float(b), float(c)
 
     def _set_root_quat_scale_from_ui(v: tuple[float, float, float]) -> None:
         root_quat_rpy_scale[0] = float(v[0])
@@ -856,6 +768,7 @@ def main():
     set_root_quat_scale_callbacks(_get_root_quat_scale_for_ui, _set_root_quat_scale_from_ui)
     set_mapping_changed_callback(_on_mapping_ui_changed)
     create_mapping_ui()
+    create_retarget_tune_ui()
 
     def _ensure_joint_info():
         """惰性读取关节元数据，仅在首次需要时初始化。"""
@@ -883,6 +796,7 @@ def main():
             joint_pos_deg_cache.update(knee_hinge_mapping_ui_extra(fd, projection_enabled=pe))
             joint_pos_deg_cache.update(elbow_hinge_mapping_ui_extra(fd, projection_enabled=pe))
             joint_pos_deg_cache.update(shoulder_retarget_debug_ui_extra(fd))
+            joint_pos_deg_cache.update(retarget_leg_debug_ui_extra(fd))
 
     def _set_control_reference_pose(new_default_joint_pos: Any) -> bool:
         """更新控制器参考姿态，避免 zero action 把关节拉回旧默认姿态。"""
@@ -975,6 +889,32 @@ def main():
             _set_control_reference_pose(initial_default_joint_pos)
 
     zero_action = torch.zeros(env.action_space.shape, device=env.unwrapped.device)
+
+    def _call_compute_targets(
+        frame_idx: int,
+        *,
+        motion_bundle: tuple[Any, Any, dict[str, list[int]], set[str]],
+        joint_default: Any,
+        motion_track_state: MotionRootTrackState,
+    ) -> tuple[Any, tuple[float, float, float] | None, list[float] | None, Any, str | None, bool | None]:
+        mf, _fl, bf_lists, bones = motion_bundle
+        robot_inner = env.unwrapped.scene["robot"]
+        return _compute_targets_for_motion_frame(
+            frame_idx,
+            mf,
+            bf_lists,
+            bones,
+            joint_names,
+            joint_default,
+            action_scale,
+            args_cli.groove_pos_to_world,
+            robot_inner,
+            motion_track_state,
+            root_snapshot_row=initial_root_snapshot_row,
+            knee_hinge_projection=args_cli.mmd_knee_hinge_projection,
+            mmd_center_to_root_offset_local_xyz=args_cli.mmd_center_to_root_offset_local_xyz,
+            root_quat_rpy_scale=tuple(root_quat_rpy_scale),
+        )
 
     while simulation_app.is_running():
         with torch.inference_mode():
@@ -1069,31 +1009,22 @@ def main():
 
                 last_csv_motion_frame = frame
 
-                joint_pos_cmd, target_root_pos, target_root_quat_wxyz, result, mmd_root_trans_bone = (
-                    _compute_targets_for_motion_frame(
-                        frame,
-                        frames,
-                        bone_frame_lists,
-                        all_bones,
-                        joint_names,
-                        default_joint_pos,
-                        action_scale,
-                        args_cli.groove_pos_to_world,
-                        robot,
-                        motion_track,
-                        root_snapshot_row=initial_root_snapshot_row,
-                        knee_hinge_projection=args_cli.mmd_knee_hinge_projection,
-                        mmd_center_to_root_offset_local_xyz=args_cli.mmd_center_to_root_offset_local_xyz,
-                        root_quat_rpy_scale=(
-                            root_quat_rpy_scale[0],
-                            root_quat_rpy_scale[1],
-                            root_quat_rpy_scale[2],
-                        ),
-                    )
+                (
+                    joint_pos_cmd,
+                    target_root_pos,
+                    target_root_quat_wxyz,
+                    result,
+                    mmd_root_trans_bone,
+                    csv_root_rotation_lookup,
+                ) = _call_compute_targets(
+                    frame,
+                    motion_bundle=current_motion,
+                    joint_default=default_joint_pos,
+                    motion_track_state=motion_track,
                 )
 
                 if target_root_pos is not None and target_root_quat_wxyz is not None:
-                    if _get_csv_root_quat(frame, frames, bone_frame_lists) is None and not csv_root_track_warned:
+                    if csv_root_rotation_lookup is False and not csv_root_track_warned:
                         print("[WARN] 当前 CSV 未找到可用根旋转骨骼，root 朝向将保持动作起始值")
                         csv_root_track_warned = True
                     applied_root = _apply_root_pos_instant(env, target_root_pos, target_root_quat_wxyz)
@@ -1145,29 +1076,6 @@ def main():
                     # 播放结束时把控制参考更新到最后一帧，使后续 zero_action 维持末姿态，不会被拉回初始
                     if last_frame_joint_pos_cmd is not None:
                         _set_control_reference_pose(last_frame_joint_pos_cmd)
-                    export_path = (args_cli.export_isaac_csv or "").strip()
-                    if (
-                        export_path
-                        and initial_root_snapshot_row is not None
-                        and playback_default_joint_pos is not None
-                    ):
-                        _write_isaac_applied_motion_csv(
-                            export_path,
-                            current_motion,
-                            joint_names,
-                            playback_default_joint_pos,
-                            action_scale,
-                            args_cli.groove_pos_to_world,
-                            initial_root_snapshot_row,
-                            env,
-                            knee_hinge_projection=args_cli.mmd_knee_hinge_projection,
-                            mmd_center_to_root_offset_local_xyz=args_cli.mmd_center_to_root_offset_local_xyz,
-                            root_quat_rpy_scale=(
-                                root_quat_rpy_scale[0],
-                                root_quat_rpy_scale[1],
-                                root_quat_rpy_scale[2],
-                            ),
-                        )
                     is_playing = False
                     playback_paused = False
                     motion_has_wav = False
@@ -1191,30 +1099,15 @@ def main():
                     base_default = initial_default_joint_pos
                 if base_default is None:
                     base_default = default_joint_pos
-                frames, frame_list, bone_frame_lists, all_bones = current_motion  # type: ignore
-                f_hi = frame_list[-1]
+                frame_hi = current_motion[1][-1]  # type: ignore[index]
+                f_hi = int(frame_hi)
                 f_apply = max(0, min(int(last_csv_motion_frame), f_hi))
-                robot = env.unwrapped.scene["robot"]
                 mt = MotionRootTrackState()
-                jp_cmd, tr_pos, tr_quat, res, _mb = _compute_targets_for_motion_frame(
+                jp_cmd, tr_pos, tr_quat, res, _mb, _csv_lookup = _call_compute_targets(
                     f_apply,
-                    frames,
-                    bone_frame_lists,
-                    all_bones,
-                    joint_names,
-                    base_default,
-                    action_scale,
-                    args_cli.groove_pos_to_world,
-                    robot,
-                    mt,
-                    root_snapshot_row=initial_root_snapshot_row,
-                    knee_hinge_projection=args_cli.mmd_knee_hinge_projection,
-                    mmd_center_to_root_offset_local_xyz=args_cli.mmd_center_to_root_offset_local_xyz,
-                    root_quat_rpy_scale=(
-                        root_quat_rpy_scale[0],
-                        root_quat_rpy_scale[1],
-                        root_quat_rpy_scale[2],
-                    ),
+                    motion_bundle=current_motion,
+                    joint_default=base_default,
+                    motion_track_state=mt,
                 )
                 if tr_pos is not None and tr_quat is not None:
                     _apply_root_pos_instant(env, tr_pos, tr_quat)

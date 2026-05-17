@@ -12,8 +12,9 @@ CSV 动作加载与 G1 关节重定向核心模块。
 2) 四元数 CSV: frame,bone,pos_x,pos_y,pos_z,quat_x,quat_y,quat_z,quat_w
 
 内部统一保存为弧度欧拉角 + 归一化四元数（bone dict 仅保留 `quat_wxyz`）。
-单骨骼关节用 Swing-Twist 抽单轴；肩/腰等「两骨骼组合」用与 URDF 链一致的外旋欧拉分解
-（见 ``extrinsic_euler``），再按 X/Y/Z 轴索引取分量。
+- 肩/腿链走专用链式反解（``retarget_basis`` 共用基变换；``retarget_arm`` / ``retarget_leg`` 分命名空间 tune）；
+- 腰（两骨骼组合）走外旋欧拉分解（见 ``extrinsic_euler``）；
+- 其它单骨骼关节走 Swing-Twist 单轴提取。
 
 注意：CSV 列 `quat_x/quat_y/quat_z/quat_w` 仍表示 x,y,z,w；仅在读入内存后转换为
 `quat_wxyz`（w,x,y,z）以对齐 Isaac root_state API。
@@ -25,7 +26,7 @@ from typing import Iterator
 
 import numpy as np
 
-from robot_mmd.train_workflow.arm_retarget import (
+from robot_mmd.train_workflow.retarget_arm import (
     SHOULDER_JOINT_TO_AXIS_INDEX,
     SHOULDER_JOINT_TO_SIDE_BONES,
     compute_shoulder_angles,
@@ -33,6 +34,15 @@ from robot_mmd.train_workflow.arm_retarget import (
 )
 from robot_mmd.train_workflow.extrinsic_euler import euler_xyz_rad_waist_extrinsic
 from robot_mmd.train_workflow.g1_joint_axis_map_raw import AxisMapRawEntry, G1_JOINT_AXIS_MAP_RAW
+from robot_mmd.train_workflow.retarget_leg import (
+    ANKLE_JOINT_TO_AXIS_INDEX,
+    ANKLE_JOINT_TO_SIDE_BONE,
+    HIP_JOINT_TO_AXIS_INDEX,
+    HIP_JOINT_TO_SIDE_BONE,
+    compute_ankle_angles,
+    compute_hip_angles,
+    leg_debug_info as _leg_debug_info,
+)
 
 Axis3 = tuple[float, float, float]
 AxisMapEntry = tuple[str | list[str], Axis3, float]
@@ -655,6 +665,26 @@ def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> flo
         return None
     bones, axis, scale = mapping[joint_name]
 
+    # 髋关节 3DOF：专用链式反解
+    if joint_name in HIP_JOINT_TO_AXIS_INDEX:
+        side, leg_bone = HIP_JOINT_TO_SIDE_BONE[joint_name]
+        q_leg = _read_bone_quat_xyzw(frame_data, leg_bone)
+        if q_leg is None:
+            return None
+        pitch, roll, yaw = compute_hip_angles(side, q_leg)
+        triple = (pitch, roll, yaw)
+        return float(triple[HIP_JOINT_TO_AXIS_INDEX[joint_name]] * scale)
+
+    # 踝关节 2DOF：专用链式反解
+    if joint_name in ANKLE_JOINT_TO_AXIS_INDEX:
+        side, ank_bone = ANKLE_JOINT_TO_SIDE_BONE[joint_name]
+        q_ank = _read_bone_quat_xyzw(frame_data, ank_bone)
+        if q_ank is None:
+            return None
+        pitch, roll = compute_ankle_angles(side, q_ank)
+        pair = (pitch, roll)
+        return float(pair[ANKLE_JOINT_TO_AXIS_INDEX[joint_name]] * scale)
+
     # 肩部 3DOF 走专用重定向（YXZ intrinsic + MMD->G1 基变换）
     if joint_name in SHOULDER_JOINT_TO_AXIS_INDEX:
         side, sho_bone, arm_bone = SHOULDER_JOINT_TO_SIDE_BONES[joint_name]
@@ -750,6 +780,19 @@ def shoulder_retarget_debug_ui_extra(
     if not frame_data_raw:
         return {}
     return _shoulder_debug_info(frame_data_raw, _read_bone_quat_xyzw)
+
+
+def retarget_leg_debug_ui_extra(
+    frame_data_raw: dict[str, dict] | None,
+) -> dict[str, str]:
+    """
+    返回腿部 retarget 原始角度（未施加 scale）供 UI 显示。
+    键:
+      '__leg_left_hip_raw' / '__leg_right_hip_raw' / '__leg_left_ank_raw' / '__leg_right_ank_raw'
+    """
+    if not frame_data_raw:
+        return {}
+    return _leg_debug_info(frame_data_raw, _read_bone_quat_xyzw)
 
 
 def iter_motion_frames(

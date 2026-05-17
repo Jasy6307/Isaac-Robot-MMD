@@ -38,7 +38,7 @@ flowchart LR
     CSV --> run
     run --> loader[csv_motion_loader]
     loader --> sim[Isaac Sim G1]
-    run --> ui[mapping_ui]
+    run --> ui[ui_mapping]
     ui --> loader
   end
 ```
@@ -59,7 +59,6 @@ flowchart LR
 - **动作回放模式**：`--motion_playback`（默认开）：不固定根、关重力、增阻尼等（见脚本内逻辑）。
 - **根位姿**：从 CSV 的 `グルーブ` / `センター` 等骨骼取平移（带 `--groove_pos_to_world` 缩放）；旋转候选含 `グルーブ`、`センター親`、`腰` 等。对「位移写在センター、グルーブ静态」的数据会自动优先 `センター` 平移。
 - **控制**：每帧 `write_joint_state_to_sim` + 关节位置 action，并维护 `joint_pos` 的 `_offset`，避免 zero action 把姿态拉回旧默认。
-- **导出**：`--export_isaac_csv` 在一段播放结束后导出 Isaac 侧根姿（**wxyz**）与关节角（弧度）到 CSV。
 
 ### 4.2 `csv_motion_loader.py`
 
@@ -78,9 +77,10 @@ flowchart LR
 - **职责**：**wxyz** 四元数运算、归一化、乘积；`mmd_root_offset_quat_to_world` 等与根朝向复合相关的工具（与 CSV/仿真根对齐）。
 - **注意**：任何与 `root_state_w` 列 3–6 交互的代码须使用 **wxyz**（见仓库内 skill `isaac-root-state-quaternion-wxyz`）。
 
-### 4.5 `mapping_ui.py`
+### 4.5 `ui_mapping.py` / `ui_retargeting_tune.py`
 
-- **职责**：在 Isaac Sim 窗口菜单注册 **「G1 Joint Mapping」**；在线改欧拉主轴索引与缩放；显示当前关节角（度）；膝/肘可显示 hinge 分解附加行。
+- **职责**：在 Isaac Sim **Window** 菜单注册 **「G1 Joint Mapping」**（欧拉主轴索引与缩放、播放 scrub、Root R/P/Y）；另注册 **「G1 Retarget Tune」**（肩/腿 basis 的 Rz·Ry·Rx），面板构建见 ``ui_retargeting_tune.py``。
+- 显示当前关节角（度）；膝/肘可显示 hinge 分解附加行。
 - 映射变更通过回调触发主循环在「暂停态」下按最后一帧重算姿态。
 
 ### 4.6 `vmd_2_csv.py`
@@ -128,7 +128,6 @@ python robot_mmd/train_workflow/run_stand.py
 
 - `--play_speed`：播放倍速  
 - `--groove_pos_to_world`：根骨平移到米制缩放（默认 `0.1`）  
-- `--export_isaac_csv path.csv`：片段播放结束后导出  
 - `--no-mmd_knee_hinge_projection`：关闭膝铰链投影  
 
 **舞蹈 YAML 依赖**：`pip install pyyaml`（若未安装，启动加载配置时会报错提示）。
@@ -151,7 +150,6 @@ python robot_mmd/train_workflow/run_stand.py
 ## 8. 相关根目录文件
 
 - 仓库根 `README.md` 当前仅为短标题；详细 workflow 以本文与各模块文件头 docstring 为准。
-- `targets.csv` 可为 `--export_isaac_csv` 导出结果，具体列格式见 `run_stand.py` 中 `_write_isaac_applied_motion_csv`。
 
 ---
 
