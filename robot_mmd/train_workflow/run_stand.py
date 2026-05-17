@@ -7,7 +7,7 @@ G1 站立任务动作回放主脚本。
 功能概览：
 1) 舞蹈由 dances_config.yaml（模块内 DANCES_CONFIG_PATH）登记：键、CSV、可选音频；读 pose 目录 P 键循环；
 2) 支持关节映射 UI，实时显示当前关节角度；
-3) 有 audio 的条目在触发时播 WAV，与动作用同一时间基准；
+3) 有 audio 的 dance 播 WAV，与动作同一「逻辑帧时间轴」；安装 pygame 后支持 UI 暂停/帧跳转时伴音同步（无则仍用 winsound，无暂停对准）；
 4) 在重置和切换动作时维护控制参考姿态，避免姿态回弹。
 """
 
@@ -42,6 +42,31 @@ DANCES_CONFIG_PATH = os.path.join(_SCRIPT_DIR, "dances_config.yaml")
 _MMD_UI_LAST_INTERP_FRAME_DATA: dict[str, dict] | None = None
 
 
+def _apply_app_window_kit_flags(ns: argparse.Namespace) -> None:
+    """将 Omniverse 主窗口（系统壳层）的 carb 设置并入 kit_args。"""
+    fragments: list[str] = []
+    app_window_width = getattr(ns, "app_window_width", None)
+    app_window_height = getattr(ns, "app_window_height", None)
+    if app_window_width is not None:
+        fragments.append(f"--/app/window/width={int(app_window_width)}")
+        fragments.append(f"--/persistent/app/window/width={int(app_window_width)}")
+    if app_window_height is not None:
+        fragments.append(f"--/app/window/height={int(app_window_height)}")
+        fragments.append(f"--/persistent/app/window/height={int(app_window_height)}")
+    if getattr(ns, "app_window_maximized", False):
+        fragments.append("--/app/window/maximized=true")
+        fragments.append("--/persistent/app/window/maximized=true")
+    if getattr(ns, "app_window_fullscreen", False):
+        fragments.append("--/app/window/fullscreen=true")
+    if getattr(ns, "app_window_no_decorations", False):
+        fragments.append("--/app/window/noDecorations=true")
+        fragments.append("--/persistent/app/window/noDecorations=true")
+    if not fragments:
+        return
+    existing = str(getattr(ns, "kit_args", "") or "").strip()
+    ns.kit_args = (existing + " " + " ".join(fragments)).strip()
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     """构建命令行参数。"""
     parser = argparse.ArgumentParser(description="宇树 G1 站立 - 零动作运行。")
@@ -66,6 +91,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=0.1,
         help="CSV 根骨平移 pos 映射到仿真米制时的缩放：默认 0.1（常见为分米→米）。若为厘米设 0.01，若已是米则 1.0",
     )
+    parser.add_argument(
+        "--mmd_center_to_root_offset_local",
+        type=str,
+        default="0,0,0",
+        help=(
+            "articulation root 局部系中「从 VMD/CSV 的センター指向骨盆(机械 root)」的向量(米)，"
+            "逗号分隔 x,y,z；会按本帧目标根四元数旋到世界系后加到根平移。"
+            "MMD 里センター常在 root 沿躯干向下约 0.2m，可试 0,0,0.2 或按需改轴。默认 0 表示不补偿。"
+        ),
+    )
     parser.add_argument("--sim_fps", type=int, default=0, help="仿真控制频率 FPS（0 使用默认）")
     parser.add_argument(
         "--export_isaac_csv",
@@ -79,6 +114,47 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=True,
         help="将 MMD ひざ的非铰链 swing 分量并回父骨(足)，由 hip 三轴吸收；默认开启",
     )
+    # 视口渲染分辨率（与操作系统窗口外框不同；见 --app_window_*）
+    parser.add_argument(
+        "--width",
+        type=int,
+        default=1280,
+        help="视口/生成图像宽度（像素）；默认 1280",
+    )
+    parser.add_argument(
+        "--height",
+        type=int,
+        default=720,
+        help="视口/生成图像高度（像素）；默认 720",
+    )
+    # 操作系统主窗口：统一走 carb --/app/window/*，避免被其它默认值覆盖
+    parser.add_argument(
+        "--app_window_width",
+        type=int,
+        default=None,
+        help="Isaac 主窗口宽度（像素）；不传则沿用 Isaac 默认或上次持久化尺寸",
+    )
+    parser.add_argument(
+        "--app_window_height",
+        type=int,
+        default=None,
+        help="Isaac 主窗口高度（像素）；不传则沿用 Isaac 默认或上次持久化尺寸",
+    )
+    parser.add_argument(
+        "--app_window_maximized",
+        action="store_true",
+        help="启动时最大化主窗口（标题栏仍在，除非另开无边框）",
+    )
+    parser.add_argument(
+        "--app_window_fullscreen",
+        action="store_true",
+        help="启动时全屏主窗口",
+    )
+    parser.add_argument(
+        "--app_window_no_decorations",
+        action="store_true",
+        help="无边框窗口（无原生标题栏/系统装饰；按需与 maximized 组合）",
+    )
     AppLauncher.add_app_launcher_args(parser)
     return parser
 
@@ -86,6 +162,22 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 parser = _build_arg_parser()
 args_cli = parser.parse_args()
 args_cli.device = "cpu"
+
+try:
+    _co = [p.strip() for p in str(args_cli.mmd_center_to_root_offset_local or "").split(",")]
+    if len(_co) != 3:
+        raise ValueError("须恰好三个数")
+    args_cli.mmd_center_to_root_offset_local_xyz = (
+        float(_co[0]),
+        float(_co[1]),
+        float(_co[2]),
+    )
+except Exception as exc:
+    raise SystemExit(
+        f"--mmd_center_to_root_offset_local 需为 x,y,z 三个浮点数（逗号分隔），例如 0,0,0.2: {exc}"
+    ) from exc
+
+_apply_app_window_kit_flags(args_cli)
 
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
@@ -110,13 +202,19 @@ from robot_mmd.train_workflow.mapping_ui import (
     create_mapping_ui,
     set_joint_value_provider,
     set_mapping_changed_callback,
+    set_playback_status_provider,
+    set_playback_transport_callbacks,
+    set_root_quat_scale_callbacks,
 )
 from robot_mmd.train_workflow.trans_util import (
     coerce_quat,
     mmd_root_offset_quat_to_world,
+    quat_from_euler_xyz,
     quat_mul,
     quat_normalize,
+    quat_to_euler_xyz,
     root_quat_from_state_row,
+    rotate_vec_by_quat_wxyz,
 )
 import audio_util
 
@@ -375,7 +473,8 @@ def _motion_is_static_pose(frames: Any) -> bool:
 def _get_csv_root_quat(frame: int, frames: Any, bone_frame_lists: dict[str, list[int]]) -> list[float] | None:
     """从 CSV 当前帧提取根朝向四元数（wxyz）。"""
     # 优先使用“有连续关键帧”的根骨骼，避免误选只在 0 帧存在的常量骨骼（例如某些数据里的センター）。
-    candidates = ("グルーブ", "センター親", "腰", "センター")
+    # 先尝试下半身（骨盆语义）参与根朝向，再回退到传统根骨候选。
+    candidates = ("下半身", "グルーブ", "センター親", "腰", "センター")
 
     for require_dynamic in (True, False):
         for bone in candidates:
@@ -437,6 +536,8 @@ def _compute_targets_for_motion_frame(
     state: MotionRootTrackState,
     root_snapshot_row: Any | None = None,
     knee_hinge_projection: bool = True,
+    mmd_center_to_root_offset_local_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    root_quat_rpy_scale: tuple[float, float, float] = (1.0, 1.0, 1.0),
 ) -> tuple[Any, tuple[float, float, float] | None, list[float] | None, Any, str | None]:
     """计算本帧关节目标、根位姿、动作向量；最后一项为用于平移的 MMD 根骨名（无则 None）。"""
     global _MMD_UI_LAST_INTERP_FRAME_DATA
@@ -506,7 +607,23 @@ def _compute_targets_for_motion_frame(
                 csv_root_quat_wxyz = _get_csv_root_quat(frame, frames, bone_frame_lists)
                 if csv_root_quat_wxyz is not None and state.root_quat_wxyz is not None:
                     q_w = mmd_root_offset_quat_to_world(csv_root_quat_wxyz)
+                    sx, sy, sz = root_quat_rpy_scale
+                    if abs(sx - 1.0) > 1e-9 or abs(sy - 1.0) > 1e-9 or abs(sz - 1.0) > 1e-9:
+                        rr, rp, ry = quat_to_euler_xyz(q_w)
+                        q_w = quat_from_euler_xyz(rr * float(sx), rp * float(sy), ry * float(sz))
                     target_root_quat_wxyz = quat_normalize(quat_mul(q_w, state.root_quat_wxyz))
+                off_l = mmd_center_to_root_offset_local_xyz
+                if (
+                    target_root_pos is not None
+                    and target_root_quat_wxyz is not None
+                    and (abs(off_l[0]) > 1e-12 or abs(off_l[1]) > 1e-12 or abs(off_l[2]) > 1e-12)
+                ):
+                    dv = rotate_vec_by_quat_wxyz(target_root_quat_wxyz, off_l)
+                    target_root_pos = (
+                        target_root_pos[0] + dv[0],
+                        target_root_pos[1] + dv[1],
+                        target_root_pos[2] + dv[2],
+                    )
         except Exception:
             pass
 
@@ -523,6 +640,8 @@ def _write_isaac_applied_motion_csv(
     root_snapshot_row: Any,
     env: Any,
     knee_hinge_projection: bool = True,
+    mmd_center_to_root_offset_local_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    root_quat_rpy_scale: tuple[float, float, float] = (1.0, 1.0, 1.0),
 ) -> None:
     """按与实时播放相同的规则逐帧计算并写出 CSV（不逐步进仿真）。"""
     frames, frame_list, bone_frame_lists, all_bones = motion_data
@@ -569,6 +688,8 @@ def _write_isaac_applied_motion_csv(
                 state,
                 root_snapshot_row=root_snapshot_row,
                 knee_hinge_projection=knee_hinge_projection,
+                mmd_center_to_root_offset_local_xyz=mmd_center_to_root_offset_local_xyz,
+                root_quat_rpy_scale=root_quat_rpy_scale,
             )
             if trp is not None:
                 last_rp = trp
@@ -612,11 +733,17 @@ def main():
         env_cfg.sim.render_interval = env_cfg.decimation
         print(f"[INFO] 仿真控制: {args_cli.sim_fps} FPS")
 
+    ox, oy, oz = args_cli.mmd_center_to_root_offset_local_xyz
+    if abs(ox) > 1e-12 or abs(oy) > 1e-12 or abs(oz) > 1e-12:
+        print(f"[INFO] センター→root 局部偏移(米): ({ox}, {oy}, {oz})")
+
     env = gym.make(TASK_ID, cfg=env_cfg)
 
     print(f"[INFO] 观测: {env.observation_space}, 动作: {env.action_space}")
     dance_hint = ", ".join(f"{k}=dance" for k in dance_motion_by_key.keys()) or "无 dance 键"
     print(f"[INFO] L=重置, {pose_cycle_key}=按序播放 pose, {dance_hint}")
+    if dance_wav_by_key:
+        audio_util.warn_if_no_pygame_sync()
 
     keyboard = Se3Keyboard(Se3KeyboardCfg(pos_sensitivity=0.1, rot_sensitivity=0.1))
     reset_requested = False
@@ -669,12 +796,63 @@ def main():
     playback_default_joint_pos: Any = None
     mapping_reapply_requested = False
     last_csv_motion_frame: int | None = None
+    playback_paused = False
+    pause_hold_frame = 0
+    pending_playback_toggle = False
+    pending_seek_frame: int | None = None
+    motion_has_wav = False  # 当前段是否为带伴音的 dance（供暂停/帧跳转同步 audio）
+    root_quat_rpy_scale = [-1.0, -1.0, -1.0]  # root 姿态翻转调试：按 roll/pitch/yaw 逐轴乘 scale
 
     def _on_mapping_ui_changed():
         nonlocal mapping_reapply_requested
         mapping_reapply_requested = True
 
+    def _playback_status_for_ui() -> dict[str, Any]:
+        if not is_playing or not current_motion or not (current_motion_label or "").strip():
+            return {"playing": False}
+        tag = _format_playback_log_label(current_motion_label)
+        _frames, frame_list = current_motion[0], current_motion[1]  # type: ignore[index]
+        max_f = int(frame_list[-1])
+        fr = int(last_csv_motion_frame) if last_csv_motion_frame is not None else 0
+        if current_motion_label.startswith("dance["):
+            return {
+                "playing": True,
+                "kind": "dance",
+                "tag": tag,
+                "frame": fr,
+                "max_frame": max_f,
+                "playback_paused": playback_paused,
+            }
+        if current_motion_label.startswith("pose["):
+            return {"playing": True, "kind": "pose", "tag": tag, "playback_paused": playback_paused, "frame": fr, "max_frame": max_f}
+        return {"playing": True, "kind": "", "tag": tag, "playback_paused": playback_paused, "frame": fr, "max_frame": max_f}
+
+    def _ui_toggle_pause() -> None:
+        nonlocal pending_playback_toggle
+        if is_playing and current_motion:
+            pending_playback_toggle = True
+
+    def _ui_seek_frame(idx: int) -> None:
+        nonlocal pending_seek_frame
+        if not is_playing or not current_motion:
+            return
+        idx_i = int(idx)
+        if last_csv_motion_frame is not None and idx_i == int(last_csv_motion_frame):
+            return
+        pending_seek_frame = idx_i
+
+    def _get_root_quat_scale_for_ui() -> tuple[float, float, float]:
+        return (float(root_quat_rpy_scale[0]), float(root_quat_rpy_scale[1]), float(root_quat_rpy_scale[2]))
+
+    def _set_root_quat_scale_from_ui(v: tuple[float, float, float]) -> None:
+        root_quat_rpy_scale[0] = float(v[0])
+        root_quat_rpy_scale[1] = float(v[1])
+        root_quat_rpy_scale[2] = float(v[2])
+
     set_joint_value_provider(lambda: joint_pos_deg_cache)
+    set_playback_status_provider(_playback_status_for_ui)
+    set_playback_transport_callbacks(_ui_toggle_pause, _ui_seek_frame)
+    set_root_quat_scale_callbacks(_get_root_quat_scale_for_ui, _set_root_quat_scale_from_ui)
     set_mapping_changed_callback(_on_mapping_ui_changed)
     create_mapping_ui()
 
@@ -749,10 +927,15 @@ def main():
         nonlocal current_motion, current_motion_label, play_start_time, is_playing, last_printed_frame
         nonlocal motion_track, playback_default_joint_pos
         nonlocal last_csv_motion_frame, mapping_reapply_requested
+        nonlocal playback_paused, pause_hold_frame, pending_playback_toggle, pending_seek_frame
         if data is None:
             return
         last_csv_motion_frame = None
         mapping_reapply_requested = False
+        playback_paused = False
+        pause_hold_frame = 0
+        pending_playback_toggle = False
+        pending_seek_frame = None
         current_motion = data
         current_motion_label = label
         play_start_time = time.perf_counter()
@@ -782,6 +965,8 @@ def main():
         不强制把身体关节写回初始位，避免“先回 T 再开始新动作”的明显跳变；新片段仍用
         initial_default_joint_pos 参与 build_joint_positions，因此解算与原先一致。
         """
+        nonlocal motion_has_wav
+        motion_has_wav = False
         audio_util.stop_wav()
         _ensure_joint_info()
         if initial_default_joint_pos is not None:
@@ -794,11 +979,16 @@ def main():
             if reset_requested:
                 reset_requested = False
                 audio_util.stop_wav()
+                motion_has_wav = False
                 env.reset()
                 keyboard.reset()
                 is_playing = False
                 last_csv_motion_frame = None
                 mapping_reapply_requested = False
+                playback_paused = False
+                pause_hold_frame = 0
+                pending_playback_toggle = False
+                pending_seek_frame = None
                 global _MMD_UI_LAST_INTERP_FRAME_DATA
                 _MMD_UI_LAST_INTERP_FRAME_DATA = None
                 initial_root_snapshot_row = _robot_root_row_clone(env)
@@ -828,6 +1018,7 @@ def main():
                     wav = dance_wav_by_key.get(dkey)
                     if wav and str(wav).strip():
                         if os.path.isfile(wav):
+                            motion_has_wav = True
                             audio_util.play_wav_async(wav)
                         else:
                             print(f"[WARN] 音频文件不存在: {wav}")
@@ -835,10 +1026,45 @@ def main():
             if is_playing and current_motion:
                 frames, frame_list, bone_frame_lists, all_bones = current_motion  # type: ignore
                 robot = env.unwrapped.scene["robot"]
-                elapsed_sec = max(0.0, time.perf_counter() - play_start_time)
-                frame = int(elapsed_sec * VMD_FPS * args_cli.play_speed)
-                max_frame = frame_list[-1]
-                frame = min(frame, max_frame)
+                max_frame = int(frame_list[-1])
+                play_hz = VMD_FPS * args_cli.play_speed
+                paused_before_seek = playback_paused
+                did_seek_audio = False
+                sf_applied = 0
+
+                if pending_seek_frame is not None:
+                    sf = max(0, min(int(pending_seek_frame), max_frame))
+                    pending_seek_frame = None
+                    if sf != pause_hold_frame:
+                        sf_applied = sf
+                        did_seek_audio = True
+                        pause_hold_frame = sf
+                        play_start_time = time.perf_counter() - sf / play_hz
+
+                if did_seek_audio and motion_has_wav:
+                    audio_util.sync_audio_to_motion_frame(sf_applied, play_hz, paused_before_seek)
+
+                if playback_paused:
+                    frame = min(pause_hold_frame, max_frame)
+                else:
+                    elapsed_sec = max(0.0, time.perf_counter() - play_start_time)
+                    frame = min(int(elapsed_sec * play_hz), max_frame)
+                    pause_hold_frame = frame
+
+                did_toggle_audio = False
+                if pending_playback_toggle:
+                    pending_playback_toggle = False
+                    did_toggle_audio = True
+                    if playback_paused:
+                        playback_paused = False
+                        play_start_time = time.perf_counter() - frame / play_hz
+                    else:
+                        playback_paused = True
+                        pause_hold_frame = frame
+
+                if did_toggle_audio and motion_has_wav:
+                    audio_util.set_audio_paused(playback_paused)
+
                 last_csv_motion_frame = frame
 
                 joint_pos_cmd, target_root_pos, target_root_quat_wxyz, result, mmd_root_trans_bone = (
@@ -855,6 +1081,12 @@ def main():
                         motion_track,
                         root_snapshot_row=initial_root_snapshot_row,
                         knee_hinge_projection=args_cli.mmd_knee_hinge_projection,
+                        mmd_center_to_root_offset_local_xyz=args_cli.mmd_center_to_root_offset_local_xyz,
+                        root_quat_rpy_scale=(
+                            root_quat_rpy_scale[0],
+                            root_quat_rpy_scale[1],
+                            root_quat_rpy_scale[2],
+                        ),
                     )
                 )
 
@@ -927,8 +1159,17 @@ def main():
                             initial_root_snapshot_row,
                             env,
                             knee_hinge_projection=args_cli.mmd_knee_hinge_projection,
+                            mmd_center_to_root_offset_local_xyz=args_cli.mmd_center_to_root_offset_local_xyz,
+                            root_quat_rpy_scale=(
+                                root_quat_rpy_scale[0],
+                                root_quat_rpy_scale[1],
+                                root_quat_rpy_scale[2],
+                            ),
                         )
                     is_playing = False
+                    playback_paused = False
+                    motion_has_wav = False
+                    audio_util.stop_wav()
                     print(f"[INFO] 播放结束: {current_motion_label}")
             else:
                 actions = zero_action
@@ -966,6 +1207,12 @@ def main():
                     mt,
                     root_snapshot_row=initial_root_snapshot_row,
                     knee_hinge_projection=args_cli.mmd_knee_hinge_projection,
+                    mmd_center_to_root_offset_local_xyz=args_cli.mmd_center_to_root_offset_local_xyz,
+                    root_quat_rpy_scale=(
+                        root_quat_rpy_scale[0],
+                        root_quat_rpy_scale[1],
+                        root_quat_rpy_scale[2],
+                    ),
                 )
                 if tr_pos is not None and tr_quat is not None:
                     _apply_root_pos_instant(env, tr_pos, tr_quat)

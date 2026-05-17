@@ -56,12 +56,52 @@ def quat_inv(q: list[float]) -> list[float]:
     return [qn[0], -qn[1], -qn[2], -qn[3]]
 
 
+def quat_from_euler_xyz(roll: float, pitch: float, yaw: float) -> list[float]:
+    """欧拉角 XYZ -> 四元数 wxyz。"""
+    cr, sr = math.cos(roll / 2.0), math.sin(roll / 2.0)
+    cp, sp = math.cos(pitch / 2.0), math.sin(pitch / 2.0)
+    cy, sy = math.cos(yaw / 2.0), math.sin(yaw / 2.0)
+    x = sr * cp * cy - cr * sp * sy
+    y = cr * sp * cy + sr * cp * sy
+    z = cr * cp * sy - sr * sp * cy
+    w = cr * cp * cy + sr * sp * sy
+    return quat_normalize([w, x, y, z])
+
+
+def quat_to_euler_xyz(q_wxyz: list[float]) -> tuple[float, float, float]:
+    """四元数 wxyz -> 欧拉角 XYZ（roll, pitch, yaw）。"""
+    w, x, y, z = quat_normalize(q_wxyz)
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    sinp = 2.0 * (w * y - z * x)
+    sinp = max(-1.0, min(1.0, sinp))
+    pitch = math.asin(sinp)
+
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+    return roll, pitch, yaw
+
+
 def _mat3_mul(a: list[list[float]], b: list[list[float]]) -> list[list[float]]:
     return [[sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
 
 
 def _mat3_transpose(a: list[list[float]]) -> list[list[float]]:
     return [list(row) for row in zip(*a)]
+
+
+def rotate_vec_by_quat_wxyz(q_wxyz: list[float], v: tuple[float, float, float]) -> tuple[float, float, float]:
+    """用单位四元数 (wxyz) 旋转三维向量（与 ``quat_to_rotmat`` 同一右手约定）。"""
+    r = quat_to_rotmat(quat_normalize(q_wxyz))
+    x, y, z = v
+    return (
+        r[0][0] * x + r[0][1] * y + r[0][2] * z,
+        r[1][0] * x + r[1][1] * y + r[1][2] * z,
+        r[2][0] * x + r[2][1] * y + r[2][2] * z,
+    )
 
 
 def quat_to_rotmat(q: list[float]) -> list[list[float]]:
