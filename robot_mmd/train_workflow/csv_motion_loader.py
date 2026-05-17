@@ -11,8 +11,9 @@ CSV 动作加载与 G1 关节重定向核心模块。
 1) 欧拉角 CSV: frame,bone,pos_x,pos_y,pos_z,roll,pitch,yaw(度)
 2) 四元数 CSV: frame,bone,pos_x,pos_y,pos_z,quat_x,quat_y,quat_z,quat_w
 
-内部统一保存为弧度欧拉角 + 归一化四元数（bone dict 仅保留 `quat_wxyz`），
-并使用 Swing-Twist 提取指定轴角度，用于 MMD -> G1 的 1DOF 关节重定向。
+内部统一保存为弧度欧拉角 + 归一化四元数（bone dict 仅保留 `quat_wxyz`）。
+单骨骼关节用 Swing-Twist 抽单轴；肩/腰等「两骨骼组合」用与 URDF 链一致的外旋欧拉分解
+（见 ``extrinsic_euler``），再按 X/Y/Z 轴索引取分量。
 
 注意：CSV 列 `quat_x/quat_y/quat_z/quat_w` 仍表示 x,y,z,w；仅在读入内存后转换为
 `quat_wxyz`（w,x,y,z）以对齐 Isaac root_state API。
@@ -24,6 +25,13 @@ from typing import Iterator
 
 import numpy as np
 
+from robot_mmd.train_workflow.arm_retarget import (
+    SHOULDER_JOINT_TO_AXIS_INDEX,
+    SHOULDER_JOINT_TO_SIDE_BONES,
+    compute_shoulder_angles,
+    shoulder_debug_info as _shoulder_debug_info,
+)
+from robot_mmd.train_workflow.extrinsic_euler import euler_xyz_rad_waist_extrinsic
 from robot_mmd.train_workflow.g1_joint_axis_map_raw import AxisMapRawEntry, G1_JOINT_AXIS_MAP_RAW
 
 Axis3 = tuple[float, float, float]
@@ -280,7 +288,7 @@ def elbow_hinge_mapping_ui_extra(
     projection_enabled: bool,
 ) -> dict[str, str]:
     """
-    Mapping UI: MMD elbow local rotation split + shoulder map delta (deg).
+    Mapping UI: MMD elbow local rotation split (hinge/swing, deg).
     Keys: ``{left|right}_elbow_joint__elbow_mmd``.
     """
     out: dict[str, str] = {}
@@ -288,30 +296,12 @@ def elbow_hinge_mapping_ui_extra(
         return out
 
     side_cfg = {
-        "left": (
-            "left_elbow_joint",
-            "左腕",
-            "左ひじ",
-            (
-                "left_shoulder_pitch_joint",
-                "left_shoulder_roll_joint",
-                "left_shoulder_yaw_joint",
-            ),
-        ),
-        "right": (
-            "right_elbow_joint",
-            "右腕",
-            "右ひじ",
-            (
-                "right_shoulder_pitch_joint",
-                "right_shoulder_roll_joint",
-                "right_shoulder_yaw_joint",
-            ),
-        ),
+        "left": ("left_elbow_joint", "左腕", "左ひじ"),
+        "right": ("right_elbow_joint", "右腕", "右ひじ"),
     }
 
     mapping = get_mapping()
-    for side, (elbow_joint, arm_bone, elbow_bone, shoulder_js) in side_cfg.items():
+    for _side, (elbow_joint, arm_bone, elbow_bone) in side_cfg.items():
         if elbow_joint not in mapping:
             continue
         if elbow_bone not in frame_data_raw or arm_bone not in frame_data_raw:
@@ -324,24 +314,13 @@ def elbow_hinge_mapping_ui_extra(
         sw_deg = _quat_rotation_magnitude_deg_xyzw(q_swing)
         hinge_deg = math.degrees(swing_twist_angle(*q_elbow, axis))
 
-        src_idx = get_elbow_shoulder_yaw_source_axis_index(elbow_joint)
-        src_name = "roll" if src_idx == 0 else "yaw"
         if not projection_enabled:
-            syaw = get_elbow_shoulder_axis_scale(elbow_joint)[2]
             out[f"{elbow_joint}__elbow_mmd"] = (
-                f"MMD hinge {hinge_deg:.1f}deg swing {sw_deg:.1f}deg "
-                f"(proj off, src {src_name}, shYaw {syaw:.2f})"
+                f"MMD hinge {hinge_deg:.1f}deg swing {sw_deg:.1f}deg (proj off)"
             )
             continue
 
-        dyaw_add = math.degrees(_compute_elbow_to_shoulder_yaw_delta(frame_data_raw, side, mapping))
-        dp, dr, dy = 0.0, 0.0, dyaw_add
-        syaw = get_elbow_shoulder_axis_scale(elbow_joint)[2]
-        out[f"{elbow_joint}__elbow_mmd"] = (
-            f"MMD hinge {hinge_deg:.1f}deg swing {sw_deg:.1f}deg | "
-            f"sho d(p/r/y) {dp:+.1f}/{dr:+.1f}/{dy:+.1f}deg "
-            f"(src {src_name}, yaw {syaw:.2f})"
-        )
+        out[f"{elbow_joint}__elbow_mmd"] = f"MMD hinge {hinge_deg:.1f}deg swing {sw_deg:.1f}deg"
     return out
 
 
@@ -417,27 +396,10 @@ HINGE_SWING_ABSORB_JOINTS: frozenset[str] = frozenset(
     {
         "left_knee_joint",
         "right_knee_joint",
-        "left_elbow_joint",
-        "right_elbow_joint",
     }
 )
 _DEFAULT_HINGE_SWING_ABSORB: dict[str, float] = {k: 1.0 for k in HINGE_SWING_ABSORB_JOINTS}
 _hinge_swing_absorb: dict[str, float] = dict(_DEFAULT_HINGE_SWING_ABSORB)
-
-ELBOW_SHOULDER_AXIS_SCALE_JOINTS: frozenset[str] = frozenset(
-    {
-        "left_elbow_joint",
-        "right_elbow_joint",
-    }
-)
-_DEFAULT_ELBOW_SHOULDER_AXIS_SCALE: dict[str, tuple[float, float, float]] = {
-    k: (1.0, 1.0, 1.0) for k in ELBOW_SHOULDER_AXIS_SCALE_JOINTS
-}
-_elbow_shoulder_axis_scale: dict[str, tuple[float, float, float]] = dict(_DEFAULT_ELBOW_SHOULDER_AXIS_SCALE)
-_DEFAULT_ELBOW_SHOULDER_YAW_SOURCE_AXIS_INDEX: dict[str, int] = {
-    k: 2 for k in ELBOW_SHOULDER_AXIS_SCALE_JOINTS  # 0=roll, 2=yaw
-}
-_elbow_shoulder_yaw_source_axis_index: dict[str, int] = dict(_DEFAULT_ELBOW_SHOULDER_YAW_SOURCE_AXIS_INDEX)
 
 
 def get_hinge_swing_absorb(joint_name: str) -> float:
@@ -455,49 +417,11 @@ def reset_hinge_swing_absorb() -> None:
     _hinge_swing_absorb = dict(_DEFAULT_HINGE_SWING_ABSORB)
 
 
-def get_elbow_shoulder_axis_scale(joint_name: str) -> tuple[float, float, float]:
-    """elbow 的非铰链 swing 并给 shoulder 时，XYZ 分量缩放。"""
-    s = _elbow_shoulder_axis_scale.get(joint_name, (1.0, 1.0, 1.0))
-    return (float(s[0]), float(s[1]), float(s[2]))
-
-
-def set_elbow_shoulder_axis_scale(joint_name: str, scale_xyz: tuple[float, float, float]) -> None:
-    if joint_name in ELBOW_SHOULDER_AXIS_SCALE_JOINTS:
-        _elbow_shoulder_axis_scale[joint_name] = (
-            float(scale_xyz[0]),
-            float(scale_xyz[1]),
-            float(scale_xyz[2]),
-        )
-
-
-def reset_elbow_shoulder_axis_scale() -> None:
-    global _elbow_shoulder_axis_scale
-    _elbow_shoulder_axis_scale = dict(_DEFAULT_ELBOW_SHOULDER_AXIS_SCALE)
-
-
-def get_elbow_shoulder_yaw_source_axis_index(joint_name: str) -> int:
-    """elbow 并给 shoulder_yaw 时，来源轴：0=roll, 2=yaw（默认 2）。"""
-    v = int(_elbow_shoulder_yaw_source_axis_index.get(joint_name, 2))
-    return 0 if v == 0 else 2
-
-
-def set_elbow_shoulder_yaw_source_axis_index(joint_name: str, axis_index: int) -> None:
-    if joint_name in ELBOW_SHOULDER_AXIS_SCALE_JOINTS:
-        _elbow_shoulder_yaw_source_axis_index[joint_name] = 0 if int(axis_index) == 0 else 2
-
-
-def reset_elbow_shoulder_yaw_source_axis_index() -> None:
-    global _elbow_shoulder_yaw_source_axis_index
-    _elbow_shoulder_yaw_source_axis_index = dict(_DEFAULT_ELBOW_SHOULDER_YAW_SOURCE_AXIS_INDEX)
-
-
 def reset_mapping_to_default() -> None:
     """重置为默认映射"""
     global _editable_mapping
     _editable_mapping = None
     reset_hinge_swing_absorb()
-    reset_elbow_shoulder_axis_scale()
-    reset_elbow_shoulder_yaw_source_axis_index()
 
 
 def load_csv_motion(csv_path: str) -> dict[int, dict[str, dict]]:
@@ -689,7 +613,7 @@ def _apply_elbow_hinge_projection(
     side: str,
     mapping: dict[str, AxisMapEntry],
 ) -> None:
-    """将ひじ的 roll/yaw（可选其一）并给 shoulder_yaw；不影响 shoulder pitch/roll。"""
+    """肘仅保留铰链 twist（pitch），移除 roll/yaw 的肩部补偿链路。"""
     side_cfg = {
         "left": ("left_elbow_joint", "左腕", "左ひじ"),
         "right": ("right_elbow_joint", "右腕", "右ひじ"),
@@ -712,45 +636,37 @@ def _apply_elbow_hinge_projection(
     _write_bone_quat_xyzw(frame_data, elbow_bone, q_elbow_new)
 
 
-def _compute_elbow_to_shoulder_yaw_delta(
-    frame_data: dict[str, dict],
-    side: str,
-    mapping: dict[str, AxisMapEntry],
-) -> float:
-    """计算 elbow 来源分量要加到 shoulder_yaw 的角度增量（弧度）。"""
-    side_cfg = {
-        "left": ("left_elbow_joint", "左ひじ"),
-        "right": ("right_elbow_joint", "右ひじ"),
-    }
-    cfg = side_cfg.get(side)
-    if cfg is None:
-        return 0.0
-    elbow_joint, elbow_bone = cfg
-    elbow_map = mapping.get(elbow_joint)
-    if elbow_map is None:
-        return 0.0
-    q_elbow = _read_bone_quat_xyzw(frame_data, elbow_bone)
-    if q_elbow is None:
-        return 0.0
-    src_axis_idx = get_elbow_shoulder_yaw_source_axis_index(elbow_joint)
-    er, _ep, ey = _quat_to_euler(*q_elbow)
-    src_angle = er if src_axis_idx == 0 else ey
-    absorb = get_hinge_swing_absorb(elbow_joint)
-    yaw_scale = get_elbow_shoulder_axis_scale(elbow_joint)[2]
-    return float(src_angle) * float(absorb) * float(yaw_scale)
-
-
 def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> float | None:
     """
     从帧数据中获取指定 G1 关节的目标角度偏移（弧度）。
-    - 单骨骼：对骨骼四元数做 Swing-Twist 提取
-    - 肩部 [肩, 腕]：先组合四元数再做 Swing-Twist
+    - 单骨骼（1 DOF：肘/腕/腿等）：对骨骼四元数做 Swing-Twist 单轴提取
+    - 多骨骼组合（肩 = [肩, 腕]，腰 = [上半身, 上半身2]）：
+        先组合四元数（肩父 × 腕子，与 MMD 局部链一致），短弧化后按 URDF 关节顺序做
+        **固定轴外旋欧拉**分解，得到 (θx, θy, θz)，再按映射里 axis_idx 的 0/1/2
+        取绕 X/Y/Z 的分量；scale 仅作符号或小幅增益
     - 使用 get_mapping()，支持 UI 编辑后的映射
+
+    肩链与 G1 URDF 一致：pitch(Y) → roll(X) → yaw(Z)，对应 R≈Rz·Rx·Ry，用 ``syxz``。
+    腰链：yaw(Z) → roll(X) → pitch(Y)，对应 R≈Ry·Rx·Rz，用 ``szxy``。
+    此前用 intrinsic XYZ 分量或三轴独立 swing-twist 均无法与机械链对齐，「伸臂」等动作会明显错。
     """
     mapping = get_mapping()
     if joint_name not in mapping:
         return None
     bones, axis, scale = mapping[joint_name]
+
+    # 肩部 3DOF 走专用重定向（YXZ intrinsic + MMD->G1 基变换）
+    if joint_name in SHOULDER_JOINT_TO_AXIS_INDEX:
+        side, sho_bone, arm_bone = SHOULDER_JOINT_TO_SIDE_BONES[joint_name]
+        q_sho = _read_bone_quat_xyzw(frame_data, sho_bone)
+        q_arm = _read_bone_quat_xyzw(frame_data, arm_bone)
+        if q_sho is None and q_arm is None:
+            return None
+        pitch, roll, yaw = compute_shoulder_angles(side, q_sho, q_arm)
+        triple = (pitch, roll, yaw)
+        base_val = triple[SHOULDER_JOINT_TO_AXIS_INDEX[joint_name]]
+        return float(base_val * scale)
+
     if isinstance(bones, list):
         if len(bones) != 2:
             return None
@@ -764,7 +680,20 @@ def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> flo
         elif q_second is None:
             q = _quat_normalize(q_first)
         else:
-            q = _quat_normalize(_quat_multiply(q_first, q_second))
+            q = _quat_multiply(q_first, q_second)
+        # 短弧化：确保 w >= 0，避免相邻帧出现等价但绕远路的四元数引起跳变
+        qx, qy, qz, qw = _quat_normalize(q)
+        if qw < 0.0:
+            qx, qy, qz, qw = -qx, -qy, -qz, -qw
+
+        bone_pair = (bones[0], bones[1])
+        if bone_pair == ("上半身", "上半身2"):
+            euler_xyz = euler_xyz_rad_waist_extrinsic((qx, qy, qz, qw))
+        else:
+            # 未知组合：退化为 intrinsic XYZ
+            euler_xyz = _quat_to_euler(qx, qy, qz, qw)
+        idx = _axis_to_index(axis)
+        base_val = euler_xyz[idx]
     else:
         if bones not in frame_data:
             return None
@@ -772,8 +701,8 @@ def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> flo
         if q_single is None:
             return None
         q = _quat_normalize(q_single)
+        base_val = swing_twist_angle(*q, axis)
 
-    base_val = swing_twist_angle(*q, axis)
     return float(base_val * scale)
 
 
@@ -790,7 +719,6 @@ def build_joint_positions_from_frame(
     - 返回: 目标关节位置，与 joint_names 同序
     """
     source_frame_data = frame_data
-    elbow_shoulder_yaw_delta: dict[str, float] = {}
     if knee_hinge_projection:
         source_frame_data = dict(frame_data)
         for bone_name in ("左足", "左ひざ", "右足", "右ひざ", "左腕", "左ひじ", "右腕", "右ひじ"):
@@ -798,12 +726,6 @@ def build_joint_positions_from_frame(
             if bone_data is not None:
                 source_frame_data[bone_name] = dict(bone_data)
         mapping = get_mapping()
-        elbow_shoulder_yaw_delta["left_shoulder_yaw_joint"] = _compute_elbow_to_shoulder_yaw_delta(
-            source_frame_data, "left", mapping
-        )
-        elbow_shoulder_yaw_delta["right_shoulder_yaw_joint"] = _compute_elbow_to_shoulder_yaw_delta(
-            source_frame_data, "right", mapping
-        )
         _apply_knee_hinge_projection(source_frame_data, "left", mapping)
         _apply_knee_hinge_projection(source_frame_data, "right", mapping)
         _apply_elbow_hinge_projection(source_frame_data, "left", mapping)
@@ -814,9 +736,20 @@ def build_joint_positions_from_frame(
         angle = get_g1_angle_from_frame(jname, source_frame_data)
         if angle is not None:
             result[i] = default_joint_pos[i] + angle
-        if jname in elbow_shoulder_yaw_delta:
-            result[i] = result[i] + float(elbow_shoulder_yaw_delta[jname])
     return result
+
+
+def shoulder_retarget_debug_ui_extra(
+    frame_data_raw: dict[str, dict] | None,
+) -> dict[str, str]:
+    """
+    返回肩部 retarget 原始角度（未施加 scale）供 UI 显示。
+    键: '__sho_left_raw' / '__sho_right_raw'
+    值: 'P:±XX.X° R:±XX.X° Y:±XX.X°'
+    """
+    if not frame_data_raw:
+        return {}
+    return _shoulder_debug_info(frame_data_raw, _read_bone_quat_xyzw)
 
 
 def iter_motion_frames(

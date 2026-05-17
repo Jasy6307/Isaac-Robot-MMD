@@ -10,14 +10,15 @@ G1 关节映射编辑窗口。
 import asyncio
 from typing import Any, Callable
 
+from robot_mmd.train_workflow.arm_retarget import (
+    get_tune_axes_deg,
+    reset_tune_axes,
+    set_tune_axes_deg,
+)
 from robot_mmd.train_workflow.csv_motion_loader import (
     G1_JOINT_TO_MMD,
-    get_elbow_shoulder_axis_scale,
-    get_elbow_shoulder_yaw_source_axis_index,
     get_hinge_swing_absorb,
     reset_mapping_to_default,
-    set_elbow_shoulder_axis_scale,
-    set_elbow_shoulder_yaw_source_axis_index,
     set_hinge_swing_absorb,
     update_mapping_entry,
 )
@@ -202,7 +203,7 @@ def _build_mapping_window(ui):
     def _on_flip_scale(joint_name: str):
         """将缩放系数取反（正负号切换）。"""
         try:
-            _euler_model, scale_model, _value, _abs, _elbow_axis, _src_label = joint_models[joint_name]
+            _euler_model, scale_model, _value, _abs = joint_models[joint_name]
             new_scale = -float(scale_model.get_value_as_float())
             scale_model.set_value(new_scale)
             _update_mapping_from_models(joint_name)
@@ -211,7 +212,7 @@ def _build_mapping_window(ui):
 
     def _on_absorb_changed(joint_name: str, _model):
         try:
-            _eu, _sc, _vl, absorb_model, _elbow_axis, _src_label = joint_models[joint_name]
+            _eu, _sc, _vl, absorb_model = joint_models[joint_name]
             if absorb_model is None:
                 return
             set_hinge_swing_absorb(joint_name, float(absorb_model.get_value_as_float()))
@@ -221,7 +222,7 @@ def _build_mapping_window(ui):
 
     def _on_absorb_flip(joint_name: str):
         try:
-            _eu, _sc, _vl, absorb_model, _elbow_axis, _src_label = joint_models[joint_name]
+            _eu, _sc, _vl, absorb_model = joint_models[joint_name]
             if absorb_model is None:
                 return
             absorb_model.set_value(-float(absorb_model.get_value_as_float()))
@@ -229,62 +230,16 @@ def _build_mapping_window(ui):
         except Exception:
             pass
 
-    def _on_elbow_axis_changed(joint_name: str) -> None:
-        try:
-            _eu, _sc, _vl, _ab, elbow_yaw_model, _src_label = joint_models[joint_name]
-            if elbow_yaw_model is None:
-                return
-            set_elbow_shoulder_axis_scale(
-                joint_name,
-                (
-                    1.0,
-                    1.0,
-                    float(elbow_yaw_model.get_value_as_float()),
-                ),
-            )
-            _notify_mapping_changed()
-        except Exception:
-            pass
-
-    def _on_elbow_axis_flip(joint_name: str) -> None:
-        try:
-            _eu, _sc, _vl, _ab, elbow_yaw_model, _src_label = joint_models[joint_name]
-            if elbow_yaw_model is None:
-                return
-            elbow_yaw_model.set_value(-float(elbow_yaw_model.get_value_as_float()))
-            _on_elbow_axis_changed(joint_name)
-        except Exception:
-            pass
-
-    def _on_elbow_source_toggle(joint_name: str) -> None:
-        try:
-            _eu, _sc, _vl, _ab, _eyaw, src_label = joint_models[joint_name]
-            if src_label is None:
-                return
-            cur = get_elbow_shoulder_yaw_source_axis_index(joint_name)
-            nxt = 0 if cur == 2 else 2
-            set_elbow_shoulder_yaw_source_axis_index(joint_name, nxt)
-            src_label.text = "Src: Roll" if nxt == 0 else "Src: Yaw"
-            _notify_mapping_changed()
-        except Exception:
-            pass
-
     def _on_reset():
         reset_mapping_to_default()
         _notify_mapping_changed()
-        for jname, (euler_model, scale_model, _value_label, absorb_model, elbow_yaw_model, src_label) in joint_models.items():
+        for jname, (euler_model, scale_model, _value_label, absorb_model) in joint_models.items():
             base = G1_JOINT_TO_MMD.get(jname)
             if base:
                 euler_model.set_value(base[1])
                 scale_model.set_value(base[2])
             if absorb_model is not None:
                 absorb_model.set_value(1.0)
-            if elbow_yaw_model is not None:
-                set_elbow_shoulder_axis_scale(jname, (1.0, 1.0, 1.0))
-                elbow_yaw_model.set_value(1.0)
-            if src_label is not None:
-                set_elbow_shoulder_yaw_source_axis_index(jname, 2)
-                src_label.text = "Src: Yaw"
 
     # ========== 整体布局：垂直堆叠 ==========
     with ui.VStack(spacing=4):
@@ -391,7 +346,102 @@ def _build_mapping_window(ui):
         root_pitch_scale_model.add_value_changed_fn(lambda _m: _push_root_quat_scale())
         root_yaw_scale_model.add_value_changed_fn(lambda _m: _push_root_quat_scale())
         ui.Spacer(height=2)
-        ui.Label("Euler axis: 0=roll, 1=pitch, 2=yaw", height=20)
+
+        # ========== Shoulder Retarget Tune ==========
+        ui.Label(
+            "--- Shoulder Retarget Tune ---",
+            height=20,
+            style={"font_size": 15, "font_style": "bold", "color": 0xFF88FFAA},
+        )
+        ui.Label(
+            "Tune = Rz(rz)*Ry(ry)*Rx(rx) extra rotation on basis. Start with 0; try ±90 if axis wrong.",
+            height=18,
+            style={"font_size": 12, "color": 0xFFAAAAAA},
+        )
+
+        # --- 肩部 tune 面板：存储 model 引用供刷新用 ---
+        _sho_tune_models: dict[str, Any] = {}   # key: 'L_rx','L_ry','L_rz','R_rx','R_ry','R_rz'
+        _sho_raw_labels: dict[str, Any] = {}    # key: 'L','R'
+
+        def _push_sho_tune(side: str) -> None:
+            try:
+                pfx = "L" if side == "left" else "R"
+                rx = float(_sho_tune_models[f"{pfx}_rx"].get_value_as_float())
+                ry = float(_sho_tune_models[f"{pfx}_ry"].get_value_as_float())
+                rz = float(_sho_tune_models[f"{pfx}_rz"].get_value_as_float())
+                set_tune_axes_deg(side, rx, ry, rz)
+                _notify_mapping_changed()
+            except Exception:
+                pass
+
+        def _flip_sho_tune(side: str, axis: str) -> None:
+            try:
+                pfx = "L" if side == "left" else "R"
+                key = f"{pfx}_{axis}"
+                m = _sho_tune_models[key]
+                m.set_value(-float(m.get_value_as_float()))
+                _push_sho_tune(side)
+            except Exception:
+                pass
+
+        def _reset_sho_tune(side: str | None) -> None:
+            try:
+                reset_tune_axes(side)
+                for s, pfx in [("left", "L"), ("right", "R")]:
+                    if side is not None and s != side:
+                        continue
+                    rx, ry, rz = get_tune_axes_deg(s)
+                    _sho_tune_models[f"{pfx}_rx"].set_value(rx)
+                    _sho_tune_models[f"{pfx}_ry"].set_value(ry)
+                    _sho_tune_models[f"{pfx}_rz"].set_value(rz)
+                _notify_mapping_changed()
+            except Exception:
+                pass
+
+        for side, pfx, label in [("left", "L", "L-Sho Tune"), ("right", "R", "R-Sho Tune")]:
+            init_rx, init_ry, init_rz = get_tune_axes_deg(side)
+            m_rx = ui.SimpleFloatModel(init_rx)
+            m_ry = ui.SimpleFloatModel(init_ry)
+            m_rz = ui.SimpleFloatModel(init_rz)
+            _sho_tune_models[f"{pfx}_rx"] = m_rx
+            _sho_tune_models[f"{pfx}_ry"] = m_ry
+            _sho_tune_models[f"{pfx}_rz"] = m_rz
+
+            with ui.VStack(spacing=2):
+                with ui.HStack(height=24):
+                    ui.Label(label, width=80)
+                    ui.Label("Rx", width=18, style={"color": 0xFFFF8888})
+                    ui.FloatField(model=m_rx, width=52)
+                    ui.Button("Flip", width=36, height=22,
+                              clicked_fn=lambda s=side: _flip_sho_tune(s, "rx"))
+                    ui.Spacer(width=4)
+                    ui.Label("Ry", width=18, style={"color": 0xFF88FF88})
+                    ui.FloatField(model=m_ry, width=52)
+                    ui.Button("Flip", width=36, height=22,
+                              clicked_fn=lambda s=side: _flip_sho_tune(s, "ry"))
+                    ui.Spacer(width=4)
+                    ui.Label("Rz", width=18, style={"color": 0xFF8888FF})
+                    ui.FloatField(model=m_rz, width=52)
+                    ui.Button("Flip", width=36, height=22,
+                              clicked_fn=lambda s=side: _flip_sho_tune(s, "rz"))
+                    ui.Spacer(width=4)
+                    ui.Button("Rst", width=32, height=22,
+                              clicked_fn=lambda s=side: _reset_sho_tune(s))
+                with ui.HStack(height=18):
+                    ui.Spacer(width=80)
+                    raw_lbl = ui.Label("raw: —", width=320, style={"color": 0xFFCCCCCC, "font_size": 12})
+                    _sho_raw_labels[pfx] = raw_lbl
+
+            for m, ax in [(m_rx, "rx"), (m_ry, "ry"), (m_rz, "rz")]:
+                m.add_value_changed_fn(lambda _m, s=side: _push_sho_tune(s))
+
+        with ui.HStack(height=22):
+            ui.Spacer()
+            ui.Button("Reset Both Sides", width=110, height=20,
+                      clicked_fn=lambda: _reset_sho_tune(None))
+            ui.Spacer()
+        ui.Spacer(height=2)
+        ui.Label("Euler axis: 0=pitch, 1=roll, 2=yaw (shoulder); 0/1/2=X/Y/Z (others)", height=20)
         ui.Spacer(height=2)
 
         # ========== 可滚动区域：按分类展示关节列表 ==========
@@ -448,60 +498,33 @@ def _build_mapping_window(ui):
                             with ui.VStack(spacing=2):
                                 with ui.HStack(height=28):
                                     euler_model, scale_model, value_label = _main_hstack_row()
-                                with ui.HStack(height=22):
-                                    ui.Spacer(width=218)
-                                    ui.Label("swing abs", width=72)
-                                    ui.FloatField(model=absorb_model, width=50)
-                                    absorb_model.add_value_changed_fn(
-                                        lambda m, j=joint_name: _on_absorb_changed(j, m)
-                                    )
-                                    ui.Button(
-                                        "AbsFlip",
-                                        width=52,
-                                        height=22,
-                                        clicked_fn=lambda j=joint_name: _on_absorb_flip(j),
-                                    )
-                                    ui.Spacer()
-                                if joint_name in _ELBOW_JOINT_NAMES:
-                                    sx, sy, sz = get_elbow_shoulder_axis_scale(joint_name)
-                                    src_idx = get_elbow_shoulder_yaw_source_axis_index(joint_name)
-                                    myaw = ui.SimpleFloatModel(sz)
+                                if joint_name in _KNEE_JOINT_NAMES:
                                     with ui.HStack(height=22):
                                         ui.Spacer(width=218)
-                                        ui.Label("sho yaw", width=72)
-                                        ui.FloatField(model=myaw, width=56)
-                                        ui.Button(
-                                            "FlipY",
-                                            width=48,
-                                            height=22,
-                                            clicked_fn=lambda j=joint_name: _on_elbow_axis_flip(j),
+                                        ui.Label("swing abs", width=72)
+                                        ui.FloatField(model=absorb_model, width=50)
+                                        absorb_model.add_value_changed_fn(
+                                            lambda m, j=joint_name: _on_absorb_changed(j, m)
                                         )
-                                        src_text = "Src: Roll" if src_idx == 0 else "Src: Yaw"
-                                        src_label = ui.Label(src_text, width=66)
                                         ui.Button(
-                                            "Swap",
-                                            width=40,
+                                            "AbsFlip",
+                                            width=52,
                                             height=22,
-                                            clicked_fn=lambda j=joint_name: _on_elbow_source_toggle(j),
+                                            clicked_fn=lambda j=joint_name: _on_absorb_flip(j),
                                         )
                                         ui.Spacer()
-                                    myaw.add_value_changed_fn(lambda _m, j=joint_name: _on_elbow_axis_changed(j))
-                                    elbow_axis_models = myaw
                                 else:
-                                    elbow_axis_models = None
-                                    src_label = None
+                                    absorb_model = None
                             joint_models[joint_name] = (
                                 euler_model,
                                 scale_model,
                                 value_label,
                                 absorb_model,
-                                elbow_axis_models,
-                                src_label,
                             )
                         else:
                             with ui.HStack(height=28):
                                 euler_model, scale_model, value_label = _main_hstack_row()
-                            joint_models[joint_name] = (euler_model, scale_model, value_label, None, None, None)
+                            joint_models[joint_name] = (euler_model, scale_model, value_label, None)
                     ui.Spacer(height=4)  # 分类之间的间隔
 
         ui.Spacer(height=8)
@@ -522,6 +545,8 @@ def _build_mapping_window(ui):
         "root_roll_scale_model": root_roll_scale_model,
         "root_pitch_scale_model": root_pitch_scale_model,
         "root_yaw_scale_model": root_yaw_scale_model,
+        "sho_tune_models": _sho_tune_models,
+        "sho_raw_labels": _sho_raw_labels,
     }
     return joint_models, playback_title_label, transport_refs
 
@@ -650,7 +675,15 @@ def create_mapping_ui():
                         pass
                     finally:
                         _root_quat_sync_suppress_set = False
-            for jname, (_euler_model, _scale_model, value_label, _absorb_model, _elbow_axis, _src_label) in _joint_models_ref.items():
+                # 肩部 raw 角度标签
+                sho_raw = tr.get("sho_raw_labels", {})
+                if sho_raw and isinstance(values, dict):
+                    for pfx, key in [("L", "__sho_left_raw"), ("R", "__sho_right_raw")]:
+                        lbl = sho_raw.get(pfx)
+                        if lbl is not None:
+                            txt = values.get(key)
+                            lbl.text = f"raw: {txt}" if isinstance(txt, str) else "raw: —"
+            for jname, (_euler_model, _scale_model, value_label, _absorb_model) in _joint_models_ref.items():
                 v = values.get(jname) if isinstance(values, dict) else None
                 if v is None:
                     value_label.text = "N/A"

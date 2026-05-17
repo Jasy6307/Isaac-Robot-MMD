@@ -197,6 +197,7 @@ from robot_mmd.train_workflow.csv_motion_loader import (
     interpolate_bone,
     knee_hinge_mapping_ui_extra,
     load_csv_motion,
+    shoulder_retarget_debug_ui_extra,
 )
 from robot_mmd.train_workflow.mapping_ui import (
     create_mapping_ui,
@@ -881,6 +882,7 @@ def main():
             pe = bool(args_cli.mmd_knee_hinge_projection)
             joint_pos_deg_cache.update(knee_hinge_mapping_ui_extra(fd, projection_enabled=pe))
             joint_pos_deg_cache.update(elbow_hinge_mapping_ui_extra(fd, projection_enabled=pe))
+            joint_pos_deg_cache.update(shoulder_retarget_debug_ui_extra(fd))
 
     def _set_control_reference_pose(new_default_joint_pos: Any) -> bool:
         """更新控制器参考姿态，避免 zero action 把关节拉回旧默认姿态。"""
