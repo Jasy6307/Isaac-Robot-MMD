@@ -1,22 +1,20 @@
 """
 G1 肩 / 腿 Retarget Tune 独立窗口（MMD→G1 基变换前的 Rz·Ry·Rx 微调）。
 
-与关节欧拉轴映射窗口分离；仍需同一 ``ui_mapping.set_joint_value_provider`` 提供 raw 调试字符串。
+与关节欧拉轴映射窗口分离；仍需同一 ``ui.mapping.set_joint_value_provider`` 提供 raw 调试字符串。
 """
 
 from __future__ import annotations
 
 from typing import Any, Callable
 
-from robot_mmd.train_workflow.retarget_arm import (
-    get_tune_axes_deg as get_sho_tune_axes_deg,
-    reset_tune_axes as reset_sho_tune_axes,
-    set_tune_axes_deg as set_sho_tune_axes_deg,
-)
-from robot_mmd.train_workflow.retarget_leg import (
+from robot_mmd.train_workflow.retarget_unitreeG1 import (
     get_leg_tune_axes_deg,
+    get_tune_axes_deg as get_sho_tune_axes_deg,
     reset_leg_tune_axes,
+    reset_tune_axes as reset_sho_tune_axes,
     set_leg_tune_axes_deg,
+    set_tune_axes_deg as set_sho_tune_axes_deg,
 )
 
 RETARGET_TUNE_WINDOW_TITLE = "G1 Retarget Tune"

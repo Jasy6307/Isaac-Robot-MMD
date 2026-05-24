@@ -1,4 +1,4 @@
-# 舞蹈登记：由 run_stand.py 用 DEFAULT_DANCES_CONFIG_PATH 读取（默认本文件）。
+# 舞蹈登记：由 g1_mmd_playback.py 用 DEFAULT_DANCES_CONFIG_PATH 读取（默认本文件）。
 # 各 motion / audio 路径相对于 robot_mmd/media/，例如 dance/foo.csv 即 media/dance/foo.csv
 # - key: 单字符触发键
 # - motion: 必填

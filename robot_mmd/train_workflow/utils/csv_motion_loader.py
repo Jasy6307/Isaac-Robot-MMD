@@ -12,8 +12,7 @@ CSV 动作加载与 G1 关节重定向核心模块。
 2) 四元数 CSV: frame,bone,pos_x,pos_y,pos_z,quat_x,quat_y,quat_z,quat_w
 
 内部统一保存为弧度欧拉角 + 归一化四元数（bone dict 仅保留 `quat_wxyz`）。
-- 肩/腿链走专用链式反解（``retarget_basis`` 共用基变换；``retarget_arm`` / ``retarget_leg`` 分命名空间 tune）；
-- 腰（两骨骼组合）走外旋欧拉分解（见 ``extrinsic_euler``）；可选在合成前对上半身/上半身2各自取四元数共轭（见 ``get_waist_upper_pair_quat_conjugate``）。
+- 肩/腿/腰链走 ``retarget_unitreeG1`` 专用反解；腰可选在合成前对上半身/上半身2各自取四元数共轭（见 ``get_waist_upper_pair_quat_conjugate``）。
 - 其它单骨骼关节走 Swing-Twist 单轴提取。
 
 注意：CSV 列 `quat_x/quat_y/quat_z/quat_w` 仍表示 x,y,z,w；仅在读入内存后转换为
@@ -26,26 +25,25 @@ from typing import Iterator
 
 import numpy as np
 
-from robot_mmd.train_workflow.retarget_arm import (
-    SHOULDER_JOINT_TO_AXIS_INDEX,
-    SHOULDER_JOINT_TO_SIDE_BONES,
-    compute_shoulder_angles,
-    shoulder_debug_info as _shoulder_debug_info,
-)
-from robot_mmd.train_workflow.extrinsic_euler import euler_xyz_rad_waist_extrinsic
 from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
     AxisMapRawEntry,
     G1_JOINT_AXIS_MAP_RAW,
     MMD_WAIST_UPPER_PAIR_QUAT_CONJUGATE,
 )
-from robot_mmd.train_workflow.retarget_leg import (
+from robot_mmd.train_workflow.retarget_unitreeG1 import (
     ANKLE_JOINT_TO_AXIS_INDEX,
     ANKLE_JOINT_TO_SIDE_BONE,
     HIP_JOINT_TO_AXIS_INDEX,
     HIP_JOINT_TO_SIDE_BONE,
+    SHOULDER_JOINT_TO_AXIS_INDEX,
+    SHOULDER_JOINT_TO_SIDE_BONES,
+    WAIST_JOINT_TO_AXIS_INDEX,
     compute_ankle_angles,
     compute_hip_angles,
+    compute_shoulder_angles,
+    compute_waist_angles,
     leg_debug_info as _leg_debug_info,
+    shoulder_debug_info as _shoulder_debug_info,
 )
 
 Axis3 = tuple[float, float, float]
@@ -606,6 +604,17 @@ def _read_bone_quat_xyzw(frame_data: dict[str, dict], bone_name: str) -> tuple[f
     return _bone_quat_to_xyzw(tuple(float(v) for v in q_wxyz))
 
 
+def _read_first_available_bone_quat_xyzw(
+    frame_data: dict[str, dict],
+    bone_names: tuple[str, ...],
+) -> tuple[float, float, float, float] | None:
+    for bone_name in bone_names:
+        q = _read_bone_quat_xyzw(frame_data, bone_name)
+        if q is not None:
+            return q
+    return None
+
+
 def _write_bone_quat_xyzw(frame_data: dict[str, dict], bone_name: str, q_xyzw: tuple[float, float, float, float]) -> None:
     bone_data = frame_data.get(bone_name)
     if bone_data is None:
@@ -678,14 +687,12 @@ def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> flo
     从帧数据中获取指定 G1 关节的目标角度偏移（弧度）。
     - 单骨骼（1 DOF：肘/腕/腿等）：对骨骼四元数做 Swing-Twist 单轴提取
     - 多骨骼组合（肩 = [肩, 腕]，腰 = [上半身, 上半身2]）：
-        先组合四元数（肩父 × 腕子，与 MMD 局部链一致；腰可在相乘前对各骨可选取共轭），短弧化后按 URDF 关节顺序做
-        **固定轴外旋欧拉**分解，得到 (θx, θy, θz)，再按映射里 axis_idx 的 0/1/2
-        取绕 X/Y/Z 的分量；scale 仅作符号或小幅增益
+        肩：专用链式反解；腰：``retarget_unitreeG1.compute_waist_angles`` 得 (pitch, roll, yaw)，
+        再按映射里 axis_idx 的 0/1/2 取分量；scale 仅作符号或小幅增益。
     - 使用 get_mapping()，支持 UI 编辑后的映射
 
     肩链与 G1 URDF 一致：pitch(Y) → roll(X) → yaw(Z)，对应 R≈Rz·Rx·Ry，用 ``syxz``。
-    腰链：yaw(Z) → roll(X) → pitch(Y)，对应 R≈Ry·Rx·Rz，用 ``szxy``。
-    此前用 intrinsic XYZ 分量或三轴独立 swing-twist 均无法与机械链对齐，「伸臂」等动作会明显错。
+    腰链：yaw(Z) → roll(X) → pitch(Y)，对应 R≈Ry·Rx·Rz，用 ``szxy``（语义重排见 ``retarget_unitreeG1``）。
     """
     mapping = get_mapping()
     if joint_name not in mapping:
@@ -724,19 +731,22 @@ def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> flo
         base_val = triple[SHOULDER_JOINT_TO_AXIS_INDEX[joint_name]]
         return float(base_val * scale)
 
+    # 腰部 3DOF：专用链式反解（物理轴→语义 pitch/roll/yaw）
+    if joint_name in WAIST_JOINT_TO_AXIS_INDEX:
+        q_upper = _read_bone_quat_xyzw(frame_data, "上半身")
+        q_upper2 = _read_bone_quat_xyzw(frame_data, "上半身2")
+        q_lower = _read_first_available_bone_quat_xyzw(frame_data, ("下半身",))
+        c0, c1 = get_waist_upper_pair_quat_conjugate()
+        pitch, roll, yaw = compute_waist_angles(q_upper, q_upper2, q_lower, (c0, c1))
+        triple = (pitch, roll, yaw)
+        return float(triple[WAIST_JOINT_TO_AXIS_INDEX[joint_name]] * scale)
+
     if isinstance(bones, list):
         if len(bones) != 2:
             return None
 
         q_first = _read_bone_quat_xyzw(frame_data, bones[0])
         q_second = _read_bone_quat_xyzw(frame_data, bones[1])
-        bone_pair = (bones[0], bones[1])
-        if bone_pair == ("上半身", "上半身2"):
-            c0, c1 = get_waist_upper_pair_quat_conjugate()
-            if q_first is not None and c0:
-                q_first = _quat_conjugate(q_first)
-            if q_second is not None and c1:
-                q_second = _quat_conjugate(q_second)
         if q_first is None and q_second is None:
             return None
         if q_first is None:
@@ -745,16 +755,10 @@ def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> flo
             q = _quat_normalize(q_first)
         else:
             q = _quat_multiply(q_first, q_second)
-        # 短弧化：确保 w >= 0，避免相邻帧出现等价但绕远路的四元数引起跳变
         qx, qy, qz, qw = _quat_normalize(q)
         if qw < 0.0:
             qx, qy, qz, qw = -qx, -qy, -qz, -qw
-
-        if bone_pair == ("上半身", "上半身2"):
-            euler_xyz = euler_xyz_rad_waist_extrinsic((qx, qy, qz, qw))
-        else:
-            # 未知组合：退化为 intrinsic XYZ
-            euler_xyz = _quat_to_euler(qx, qy, qz, qw)
+        euler_xyz = _quat_to_euler(qx, qy, qz, qw)
         idx = _axis_to_index(axis)
         base_val = euler_xyz[idx]
     else:

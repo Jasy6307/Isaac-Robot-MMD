@@ -2,13 +2,15 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 """
-G1 站立任务动作回放主脚本。
+G1 MMD 动作回放主入口（Isaac Sim）。
 
 功能概览：
 1) 舞蹈由 dances_config.yaml（模块内 DANCES_CONFIG_PATH）登记：键、CSV、可选音频；读 pose 目录 P 键循环；
 2) 支持关节映射 UI，实时显示当前关节角度；
 3) 有 audio 的 dance 播 WAV，与动作同一「逻辑帧时间轴」；安装 pygame 后支持 UI 暂停/帧跳转时伴音同步（无则仍用 winsound，无暂停对准）；
 4) 在重置和切换动作时维护控制参考姿态，避免姿态回弹。
+
+启动：``python robot_mmd/train_workflow/g1_mmd_playback.py``
 """
 
 from __future__ import annotations
@@ -176,7 +178,7 @@ from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
     MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
     MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
 )
-from robot_mmd.train_workflow.csv_motion_loader import (
+from robot_mmd.train_workflow.utils.csv_motion_loader import (
     build_joint_positions_from_frame,
     elbow_hinge_mapping_ui_extra,
     get_bone_frame_lists,
@@ -187,7 +189,7 @@ from robot_mmd.train_workflow.csv_motion_loader import (
     load_csv_motion,
     shoulder_retarget_debug_ui_extra,
 )
-from robot_mmd.train_workflow.ui_mapping import (
+from robot_mmd.train_workflow.ui.mapping import (
     create_mapping_ui,
     create_retarget_tune_ui,
     set_joint_value_provider,
@@ -197,7 +199,7 @@ from robot_mmd.train_workflow.ui_mapping import (
     set_root_rot_bone_name_provider,
     set_root_quat_rpy_callbacks,
 )
-from robot_mmd.train_workflow.trans_util import (
+from robot_mmd.train_workflow.utils.trans_util import (
     coerce_quat,
     mmd_root_offset_quat_to_world,
     quat_from_waist_extrinsic_xyz,
@@ -207,8 +209,8 @@ from robot_mmd.train_workflow.trans_util import (
     root_quat_from_state_row,
     rotate_vec_by_quat_wxyz,
 )
-from robot_mmd.train_workflow.extrinsic_euler import euler_xyz_rad_waist_extrinsic
-import audio_util
+from robot_mmd.train_workflow.retarget_unitreeG1 import euler_xyz_rad_waist_extrinsic
+from robot_mmd.train_workflow.utils import audio_util
 
 TASK_ID = "Isaac-G1-Stand-v0"
 VMD_FPS = 30

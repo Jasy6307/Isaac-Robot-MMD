@@ -2,7 +2,7 @@
 G1 关节映射编辑窗口。
 
 功能概览：
-1) 在 Isaac Sim Window 菜单注册 ``G1 Joint Mapping``（欧拉主轴 / scale / 播放、根 R/P/Y scale、腰两骨共轭开关）；
+1) 在 Isaac Sim Window 菜单注册 ``G1 Joint Mapping``（欧拉主轴 / scale / 播放、Root R/P/Y、腰两骨共轭开关；Root 与关节映射同处可滚动滑块区）；
 2) Retarget Tune（肩/腿基变换 Rz·Ry·Rx）见独立菜单项 ``G1 Retarget Tune``（``create_retarget_tune_ui``）；
 3) 实时显示当前机器人关节角度；映射重置；映射变更回调驱动仿真重算。
 """
@@ -13,7 +13,7 @@ from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
     MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
     MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
 )
-from robot_mmd.train_workflow.csv_motion_loader import (
+from robot_mmd.train_workflow.utils.csv_motion_loader import (
     G1_JOINT_TO_MMD,
     get_hinge_swing_absorb,
     get_waist_upper_pair_quat_conjugate,
@@ -22,7 +22,7 @@ from robot_mmd.train_workflow.csv_motion_loader import (
     toggle_waist_upper_pair_quat_conjugate,
     update_mapping_entry,
 )
-from robot_mmd.train_workflow.ui_retargeting_tune import (
+from robot_mmd.train_workflow.ui.retargeting_tune import (
     RETARGET_TUNE_WINDOW_TITLE,
     build_retarget_tune_window,
 )
@@ -40,7 +40,7 @@ _joint_value_provider: Callable[[], dict[str, Any]] | None = None
 #   ``frame`` (int|None) / ``max_frame`` (int|None) —— 仅在 dance 时使用帧数
 _playback_status_provider: Callable[[], dict[str, Any]] | None = None
 
-# Transport: pause/resume, seek to frame index (only while clip loaded in run_stand)
+# Transport: pause/resume, seek to frame index (only while clip loaded in g1_mmd_playback)
 _playback_toggle_cb: Callable[[], None] | None = None
 _playback_seek_cb: Callable[[int], None] | None = None
 _root_quat_rpy_provider: Callable[
@@ -205,6 +205,13 @@ JOINT_CATEGORIES: dict[str, list[str]] = {
         "waist_pitch_joint", "waist_roll_joint", "waist_yaw_joint",
     ],
 }
+
+# Root R/P/Y remapping rows (same slider layout as joint mapping; not in G1_JOINT_TO_MMD).
+ROOT_RPY_ROWS: tuple[tuple[str, str, str], ...] = (
+    ("root_Roll", "out·R", "root_roll"),
+    ("root_Pitch", "out·P", "root_pitch"),
+    ("root_Yaw", "out·Y", "root_yaw"),
+)
 
 
 def _sync_waist_pair_conj_status_labels() -> None:
@@ -381,13 +388,6 @@ def _build_mapping_window(ui):
         btn_resume.visible = False
         scrub_model.add_value_changed_fn(_on_scrub_changed)
 
-        ui.Label(
-            "--- root R/P/Y ---",
-            height=22,
-            style={"font_size": 17, "font_style": "bold", "color": 0xFFFFFF88},
-        )
-        ui.Spacer(height=2)
-
         def _flip_root_axis(m: Any) -> None:
             try:
                 m.set_value(-float(m.get_value_as_float()))
@@ -395,38 +395,57 @@ def _build_mapping_window(ui):
             except Exception:
                 pass
 
-        root_row_value_labels: list[Any] = []
-        for axis_label, csv_hint, euler_model, fm in (
-            ("root_Roll", "out·R", root_roll_euler_model, root_roll_scale_model),
-            ("root_Pitch", "out·P", root_pitch_euler_model, root_pitch_scale_model),
-            ("root_Yaw", "out·Y", root_yaw_euler_model, root_yaw_scale_model),
-        ):
-            with ui.HStack(height=28):
-                ui.Label(axis_label, width=118)
-                ui.Label(csv_hint, width=102)
-                ui.IntField(model=euler_model, width=30)
-                euler_model.add_value_changed_fn(lambda _m: _push_root_quat_rpy())
-                ui.Spacer(width=8)
-                ui.FloatField(model=fm, width=50)
-                ui.Spacer(width=4)
-                ui.FloatSlider(model=fm, min=-3.0, max=3.0, width=112)
-                fm.add_value_changed_fn(lambda _m: _push_root_quat_rpy())
-                ui.Spacer(width=8)
-                ui.Button("Flip", width=44, height=22, clicked_fn=lambda m=fm: _flip_root_axis(m))
-                ui.Spacer(width=8)
-                root_row_value_labels.append(ui.Label("N/A", width=72))
-        root_rot_bone_label = ui.Label("Rot bone: (idle)", width=280, height=20)
-        ui.Spacer(height=2)
+        root_row_models: dict[str, tuple[Any, Any, Any]] = {
+            "root_roll": (root_roll_euler_model, root_roll_scale_model, None),
+            "root_pitch": (root_pitch_euler_model, root_pitch_scale_model, None),
+            "root_yaw": (root_yaw_euler_model, root_yaw_scale_model, None),
+        }
 
-        ui.Label(
-            "Root idx: 0=csv roll 1=pitch 2=yaw. Joints: shoulder/hip 0:P 1:R 2:Y, ankle 0:P 1:R, waist 0:X 1:Y 2:Z",
-            height=20,
-        )
-        ui.Spacer(height=2)
-
-        # ========== 可滚动区域：按分类展示关节列表 ==========
+        # ========== 可滚动区域：Root + 关节映射（统一滑块行布局） ==========
         with ui.ScrollingFrame():
             with ui.VStack(spacing=2):
+                ui.Label(
+                    "--- Root ---",
+                    height=22,
+                    style={"font_size": 17, "font_style": "bold", "color": 0xFFFFFF00},
+                )
+                ui.Label(
+                    "Root idx: 0=csv roll 1=pitch 2=yaw (per output row). Bone: LOWER_B when active.",
+                    height=20,
+                    style={"font_size": 12, "color": 0xFFAAAAAA},
+                )
+                root_row_value_labels: list[Any] = []
+                for axis_label, csv_hint, row_key in ROOT_RPY_ROWS:
+                    euler_model, scale_model, _ = root_row_models[row_key]
+                    with ui.HStack(height=28):
+                        ui.Label(axis_label, width=118)
+                        ui.Label(csv_hint, width=102)
+                        ui.IntField(model=euler_model, width=30)
+                        euler_model.add_value_changed_fn(lambda _m: _push_root_quat_rpy())
+                        ui.Spacer(width=8)
+                        ui.FloatField(model=scale_model, width=50)
+                        ui.Spacer(width=4)
+                        ui.FloatSlider(model=scale_model, min=-3.0, max=3.0, width=112)
+                        scale_model.add_value_changed_fn(lambda _m: _push_root_quat_rpy())
+                        ui.Spacer(width=8)
+                        ui.Button(
+                            "Flip",
+                            width=44,
+                            height=22,
+                            clicked_fn=lambda m=scale_model: _flip_root_axis(m),
+                        )
+                        ui.Spacer(width=8)
+                        root_row_value_labels.append(ui.Label("N/A", width=72))
+                root_rot_bone_label = ui.Label("Rot bone: (idle)", width=280, height=20)
+                ui.Spacer(height=4)
+
+                ui.Label(
+                    "Joint idx: shoulder/hip/waist 0:P 1:R 2:Y, ankle 0:P 1:R",
+                    height=20,
+                    style={"font_size": 12, "color": 0xFFAAAAAA},
+                )
+                ui.Spacer(height=2)
+
                 for category_name, joint_names in JOINT_CATEGORIES.items():
                     # 分类标题
                     ui.Label(

@@ -90,7 +90,7 @@ def generate_csv(output_path: str, num_frames: int = 1000, frames_per_joint: int
 
 if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    media_dir = os.path.join(script_dir, "..", "media")
+    media_dir = os.path.join(script_dir, "..", "..", "media")
     os.makedirs(media_dir, exist_ok=True)
     output_path = os.path.join(media_dir, "joint_mapping_test.csv")
     generate_csv(output_path)
