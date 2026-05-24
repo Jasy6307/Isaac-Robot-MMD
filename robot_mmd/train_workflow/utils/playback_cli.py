@@ -1,0 +1,110 @@
+"""CLI helpers for G1 MMD playback entry script."""
+
+from __future__ import annotations
+
+import argparse
+
+from isaaclab.app import AppLauncher
+
+
+def apply_app_window_kit_flags(ns: argparse.Namespace) -> None:
+    """Merge Omniverse main-window carb settings into kit_args."""
+    fragments: list[str] = []
+    app_window_width = getattr(ns, "app_window_width", None)
+    app_window_width = 1920
+    app_window_height = getattr(ns, "app_window_height", None)
+    app_window_height = 1080
+    if app_window_width is not None:
+        fragments.append(f"--/app/window/width={int(app_window_width)}")
+        fragments.append(f"--/persistent/app/window/width={int(app_window_width)}")
+    if app_window_height is not None:
+        fragments.append(f"--/app/window/height={int(app_window_height)}")
+        fragments.append(f"--/persistent/app/window/height={int(app_window_height)}")
+    mode = getattr(ns, "app_window_mode", "normal") or "normal"
+    if mode == "maximized":
+        fragments.append("--/app/window/maximized=true")
+        fragments.append("--/persistent/app/window/maximized=true")
+        fragments.append("--/app/window/fullscreen=false")
+        fragments.append("--/persistent/app/window/fullscreen=false")
+    elif mode == "fullscreen":
+        fragments.append("--/app/window/fullscreen=true")
+        fragments.append("--/app/window/maximized=false")
+        fragments.append("--/persistent/app/window/maximized=false")
+    else:
+        fragments.append("--/app/window/maximized=false")
+        fragments.append("--/persistent/app/window/maximized=false")
+        fragments.append("--/app/window/fullscreen=false")
+        fragments.append("--/persistent/app/window/fullscreen=false")
+    existing = str(getattr(ns, "kit_args", "") or "").strip()
+    ns.kit_args = (existing + " " + " ".join(fragments)).strip()
+
+
+def build_arg_parser(pose_dir: str) -> argparse.ArgumentParser:
+    """Build command-line parser for playback."""
+    parser = argparse.ArgumentParser(description="宇树 G1 站立 - 零动作运行。")
+    parser.add_argument("--num_envs", type=int, default=1, help="环境数量（默认 1）")
+    parser.add_argument("--disable_fabric", action="store_true", help="禁用 fabric，使用 USD I/O")
+    parser.add_argument(
+        "--pose_cycle_key",
+        type=str,
+        default="P",
+        help=f"按该键按序播放姿势 CSV（目录固定为 {pose_dir}，默认键 P）",
+    )
+    parser.add_argument("--play_speed", type=float, default=1.0, help="播放速度倍率")
+    parser.add_argument(
+        "--groove_pos_to_world",
+        type=float,
+        default=0.1,
+        help="CSV 根骨平移 pos 映射到仿真米制时的缩放：默认 0.1（常见为分米→米）。若为厘米设 0.01，若已是米则 1.0",
+    )
+    parser.add_argument(
+        "--mmd_center_to_root_offset_local",
+        type=str,
+        default="0,0,0.0",
+        help=(
+            "articulation root 局部系中「从 VMD/CSV 的センター指向骨盆(机械 root)」的向量(米)，"
+            "逗号分隔 x,y,z；会按本帧目标根四元数旋到世界系后加到根平移。"
+            "MMD 里センター常在 root 沿躯干向下约 0.2m，可试 0,0,0.2 或按需改轴。默认 0 表示不补偿。"
+        ),
+    )
+    parser.add_argument("--sim_fps", type=int, default=0, help="仿真控制频率 FPS（0 使用默认）")
+    parser.add_argument(
+        "--mmd_knee_hinge_projection",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="将 MMD ひざ的非铰链 swing 分量并回父骨(足)，由 hip 三轴吸收；默认开启",
+    )
+    for _flag, _default, _help in (
+        ("--width", 1920, "视口/生成图像宽度（像素）；默认 1280"),
+        ("--height", 1080, "视口/生成图像高度（像素）；默认 720"),
+        (
+            "--app_window_width",
+            None,
+            "Isaac 主窗口宽度（像素）；不传则沿用 Isaac 默认或上次持久化尺寸",
+        ),
+        (
+            "--app_window_height",
+            None,
+            "Isaac 主窗口高度（像素）；不传则沿用 Isaac 默认或上次持久化尺寸",
+        ),
+    ):
+        parser.add_argument(_flag, type=int, default=_default, help=_help)
+    parser.add_argument(
+        "--app_window_mode",
+        type=str,
+        choices=("normal", "maximized", "fullscreen"),
+        default="normal",
+        metavar="MODE",
+        help=(
+            "Isaac 主窗口形态（写入 carb）：normal 普通、maximized 最大化、fullscreen 全屏；默认 normal"
+        ),
+    )
+    AppLauncher.add_app_launcher_args(parser)
+    return parser
+
+
+def parse_center_to_root_offset(text: str) -> tuple[float, float, float]:
+    parts = [p.strip() for p in str(text or "").split(",")]
+    if len(parts) != 3:
+        raise ValueError("须恰好三个数")
+    return float(parts[0]), float(parts[1]), float(parts[2])

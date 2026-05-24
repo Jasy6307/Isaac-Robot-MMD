@@ -1,0 +1,214 @@
+"""Load CSV/HDF5 motion bundles and dance registry from YAML."""
+
+from __future__ import annotations
+
+import os
+import re
+from typing import Any
+
+from robot_mmd.train_workflow.utils.csv_motion_loader import (
+    get_bone_frame_lists,
+    get_frame_indices,
+    load_csv_motion,
+)
+from robot_mmd.train_workflow.utils.hdf5_motion import load_hdf5_motion
+
+MotionBundle = dict[str, Any]
+MOTION_EXTENSIONS = (".csv", ".h5", ".hdf5")
+
+
+def format_playback_log_label(label: str) -> str:
+    """Format internal motion label for playback logs, e.g. dance [Y : deepbluetown]."""
+    m = re.match(r"^(dance|pose)\[([^\]]+)\]\s+(.+)$", label)
+    if not m:
+        return label
+    kind, key_or_idx, path = m.group(1), m.group(2), m.group(3).strip()
+    base = os.path.splitext(os.path.basename(path))[0]
+    if kind == "dance":
+        return f"dance [{key_or_idx} : {base}]"
+    return f"pose [{key_or_idx} : {base}]"
+
+
+def load_motion(filepath: str) -> MotionBundle | None:
+    """Load motion (CSV/HDF5) and return a unified bundle."""
+    if not os.path.isfile(filepath):
+        return None
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext in (".h5", ".hdf5"):
+        motion = load_hdf5_motion(filepath)
+        if motion.frames.size <= 0:
+            return None
+        frame_list = [int(v) for v in motion.frames.tolist()]
+        return {"kind": "hdf5", "path": filepath, "frame_list": frame_list, "hdf5": motion}
+    if ext == ".csv":
+        frames = load_csv_motion(filepath)
+        frame_list = get_frame_indices(frames)
+        all_bones = set()
+        for f in frames.values():
+            all_bones.update(f.keys())
+        bone_frame_lists = get_bone_frame_lists(frames, frame_list, all_bones)
+        return {
+            "kind": "csv",
+            "path": filepath,
+            "frame_list": frame_list,
+            "frames": frames,
+            "bone_frame_lists": bone_frame_lists,
+            "all_bones": all_bones,
+        }
+    print(f"[WARN] 不支持的 motion 扩展名: {filepath}")
+    return None
+
+
+def list_motion_files(dir_path: str, label: str) -> list[str]:
+    """List motion files (.csv/.h5/.hdf5) in a directory, sorted by name."""
+    if not os.path.isdir(dir_path):
+        print(f"[WARN] {label} 目录不存在: {dir_path}")
+        return []
+    files = sorted(
+        f
+        for f in os.listdir(dir_path)
+        if os.path.isfile(os.path.join(dir_path, f))
+        and os.path.splitext(f)[1].lower() in MOTION_EXTENSIONS
+    )
+    if not files:
+        print(f"[WARN] {label} 目录没有可用 motion 文件: {dir_path}")
+    return files
+
+
+def load_pose_motion_dir(pose_dir: str) -> list[tuple[str, str, MotionBundle]]:
+    """Load all motion files under pose_dir as [(name, fullpath, bundle)]."""
+    motion_files = list_motion_files(pose_dir, "pose")
+    out: list[tuple[str, str, MotionBundle]] = []
+    for name in motion_files:
+        fullpath = os.path.join(pose_dir, name)
+        data = load_motion(fullpath)
+        if data is None:
+            print(f"[WARN] 无法加载 motion: {fullpath}")
+            continue
+        out.append((name, fullpath, data))
+        print(f"[INFO] 已加载 pose: {name}，共 {len(data['frame_list'])} 帧")
+    if not out:
+        print(f"[WARN] pose 目录没有可用 motion 文件: {pose_dir}")
+    return out
+
+
+def resolve_path_under_media(relative: str, media_dir: str) -> str:
+    """Resolve config-relative path under robot_mmd/media/."""
+    rel = (relative or "").strip().replace("\\", "/")
+    if not rel:
+        return ""
+    if os.path.isabs(rel):
+        return os.path.normpath(rel)
+    return os.path.normpath(os.path.join(media_dir, rel))
+
+
+def load_dances_from_yaml(
+    config_path: str,
+    *,
+    media_dir: str,
+    script_dir: str,
+) -> tuple[dict[str, tuple[str, MotionBundle]], dict[str, str]]:
+    """Load dances from YAML: motion_by_key and wav_by_key."""
+    try:
+        import yaml
+    except ImportError as e:
+        raise ImportError(
+            "读取舞蹈配置需要 PyYAML: pip install pyyaml "
+            f"(见 {os.path.join(script_dir, 'dances_requirements.txt')})"
+        ) from e
+
+    raw = (config_path or "").strip()
+    if not raw:
+        print("[WARN] 舞蹈配置文件路径为空，无 dance 键")
+        return {}, {}
+    if os.path.isfile(raw):
+        path = os.path.normpath(os.path.abspath(raw))
+    else:
+        p1 = os.path.join(script_dir, raw)
+        p2 = os.path.abspath(raw)
+        if os.path.isfile(p1):
+            path = os.path.normpath(p1)
+        elif os.path.isfile(p2):
+            path = os.path.normpath(p2)
+        else:
+            print(f"[WARN] 未找到舞蹈配置 YAML: {raw}，无 dance 键")
+            return {}, {}
+
+    with open(path, encoding="utf-8") as f:
+        doc = yaml.safe_load(f)
+    if not doc:
+        print(f"[WARN] 舞蹈配置为空: {path}")
+        return {}, {}
+    items = doc.get("dances")
+    if not isinstance(items, list):
+        print(f"[WARN] 舞蹈配置缺少 ``dances`` 列表: {path}")
+        return {}, {}
+
+    motion_by_key: dict[str, tuple[str, MotionBundle]] = {}
+    wav_by_key: dict[str, str] = {}
+    for i, ent in enumerate(items):
+        if not isinstance(ent, dict):
+            print(f"[WARN] dances[{i}] 非映射，已跳过")
+            continue
+        raw_key = ent.get("key")
+        if raw_key is None or str(raw_key).strip() == "":
+            print(f"[WARN] dances[{i}] 无 key，已跳过")
+            continue
+        key = str(raw_key).strip().upper()[:1]
+        if key in motion_by_key:
+            print(f"[WARN] 舞蹈键重复 [{key}]，后项已忽略: {ent.get('id', i)}")
+            continue
+        motion_rel = ent.get("motion")
+        if not motion_rel or not str(motion_rel).strip():
+            print(f"[WARN] dances[{i}] 无 motion，已跳过 key={key}")
+            continue
+        motion_p = resolve_path_under_media(str(motion_rel).strip(), media_dir)
+        if not os.path.isfile(motion_p):
+            print(f"[WARN] 未找到 dance 键 [{key}] 的 motion 文件: {motion_p}")
+            continue
+        data = load_motion(motion_p)
+        if data is None:
+            print(f"[WARN] 无法加载 dance 键 [{key}]: {motion_p}")
+            continue
+        label = ent.get("id") or ent.get("label")
+        brief = f" [{label}]" if label else ""
+        print(
+            f"[INFO] 已绑定 dance 键 [{key}] -> {os.path.basename(motion_p)}"
+            f"（{len(data['frame_list'])} 帧）{brief}"
+        )
+        motion_by_key[key] = (os.path.basename(motion_p), data)
+        raw_audio = ent.get("audio", None)
+        if raw_audio is None or str(raw_audio).strip() == "":
+            continue
+        ap = resolve_path_under_media(str(raw_audio).strip(), media_dir)
+        if os.path.isfile(ap):
+            wav_by_key[key] = ap
+        else:
+            print(f"[WARN] 舞蹈 [{key}] 的音频不存在，将不播伴音: {ap}")
+    return motion_by_key, wav_by_key
+
+
+def build_dance_hdf5_motion_by_key(
+    dance_motion_by_key: dict[str, tuple[str, MotionBundle]],
+) -> dict[str, tuple[str, MotionBundle]]:
+    """Map each dance key to a sibling .h5/.hdf5 when available."""
+    out: dict[str, tuple[str, MotionBundle]] = {}
+    for dkey, (_name, data) in dance_motion_by_key.items():
+        kind = str(data.get("kind", ""))
+        path = str(data.get("path", ""))
+        if kind == "hdf5":
+            out[dkey] = (_name, data)
+            continue
+        if kind != "csv" or not path:
+            continue
+        stem = os.path.splitext(path)[0]
+        for ext in (".h5", ".hdf5"):
+            alt_path = stem + ext
+            if not os.path.isfile(alt_path):
+                continue
+            alt_data = load_motion(alt_path)
+            if alt_data is None or str(alt_data.get("kind", "")) != "hdf5":
+                continue
+            out[dkey] = (os.path.basename(alt_path), alt_data)
+            break
+    return out

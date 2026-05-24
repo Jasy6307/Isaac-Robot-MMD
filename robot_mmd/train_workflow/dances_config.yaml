@@ -1,5 +1,6 @@
 # 舞蹈登记：由 g1_mmd_playback.py 用 DEFAULT_DANCES_CONFIG_PATH 读取（默认本文件）。
-# 各 motion / audio 路径相对于 robot_mmd/media/，例如 dance/foo.csv 即 media/dance/foo.csv
+# 各 motion / audio 路径相对于 robot_mmd/media/，motion 支持 .csv / .h5 / .hdf5
+# 例如 dance/foo.csv 或 dance/foo.h5 即 media/dance/foo.csv / media/dance/foo.h5
 # - key: 单字符触发键
 # - motion: 必填
 # - audio: 选填；省略或空则播放时不伴音
