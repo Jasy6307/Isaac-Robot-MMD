@@ -40,12 +40,18 @@ DANCES_CONFIG_PATH = os.path.join(_SCRIPT_DIR, "dances_config.yaml")
 # 映射 UI：最近一帧插值后的 MMD 骨骼数据（用于膝铰链分解行显示）
 _MMD_UI_LAST_INTERP_FRAME_DATA: dict[str, dict] | None = None
 
+# 根 CSV 四元数转为世界系后，欧拉 XYZ 各轴乘以 scale 后的等效角（度）；无根旋转轨迹时为 None
+_ROOT_RPY_EULER_SCALED_DEG_UI: tuple[float | None, float | None, float | None] = (None, None, None)
+_ROOT_ROT_BONE_NAME_UI: str | None = None
+
 
 def _apply_app_window_kit_flags(ns: argparse.Namespace) -> None:
     """将 Omniverse 主窗口（系统壳层）的 carb 设置并入 kit_args。"""
     fragments: list[str] = []
     app_window_width = getattr(ns, "app_window_width", None)
+    app_window_width = 1920
     app_window_height = getattr(ns, "app_window_height", None)
+    app_window_height = 1080
     if app_window_width is not None:
         fragments.append(f"--/app/window/width={int(app_window_width)}")
         fragments.append(f"--/persistent/app/window/width={int(app_window_width)}")
@@ -92,7 +98,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mmd_center_to_root_offset_local",
         type=str,
-        default="0,0,0",
+        default="0,0,0.0",
         help=(
             "articulation root 局部系中「从 VMD/CSV 的センター指向骨盆(机械 root)」的向量(米)，"
             "逗号分隔 x,y,z；会按本帧目标根四元数旋到世界系后加到根平移。"
@@ -108,8 +114,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     # 视口分辨率（width/height）与 OS 主窗口（app_window_* → _apply_app_window_kit_flags / carb）
     for _flag, _default, _help in (
-        ("--width", 1280, "视口/生成图像宽度（像素）；默认 1280"),
-        ("--height", 720, "视口/生成图像高度（像素）；默认 720"),
+        ("--width", 1920, "视口/生成图像宽度（像素）；默认 1280"),
+        ("--height", 1080, "视口/生成图像高度（像素）；默认 720"),
         (
             "--app_window_width",
             None,
@@ -166,6 +172,10 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import parse_env_cfg
 from isaaclab.devices import Se3Keyboard, Se3KeyboardCfg
 
+from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
+    MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
+    MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
+)
 from robot_mmd.train_workflow.csv_motion_loader import (
     build_joint_positions_from_frame,
     elbow_hinge_mapping_ui_extra,
@@ -184,18 +194,20 @@ from robot_mmd.train_workflow.ui_mapping import (
     set_mapping_changed_callback,
     set_playback_status_provider,
     set_playback_transport_callbacks,
-    set_root_quat_scale_callbacks,
+    set_root_rot_bone_name_provider,
+    set_root_quat_rpy_callbacks,
 )
 from robot_mmd.train_workflow.trans_util import (
     coerce_quat,
     mmd_root_offset_quat_to_world,
-    quat_from_euler_xyz,
+    quat_from_waist_extrinsic_xyz,
     quat_mul,
     quat_normalize,
-    quat_to_euler_xyz,
+    remap_root_csv_euler_xyz,
     root_quat_from_state_row,
     rotate_vec_by_quat_wxyz,
 )
+from robot_mmd.train_workflow.extrinsic_euler import euler_xyz_rad_waist_extrinsic
 import audio_util
 
 TASK_ID = "Isaac-G1-Stand-v0"
@@ -447,9 +459,12 @@ def _motion_is_static_pose(frames: Any) -> bool:
     return len(get_frame_indices(frames)) <= 1
 
 
-def _get_csv_root_quat(frame: int, frames: Any, bone_frame_lists: dict[str, list[int]]) -> list[float] | None:
-    """从 CSV 当前帧提取根朝向四元数（wxyz）。"""
-    # 优先使用“有连续关键帧”的根骨骼，避免误选只在 0 帧存在的常量骨骼（例如某些数据里的センター）。
+def _get_csv_root_quat_with_bone(
+    frame: int,
+    frames: Any,
+    bone_frame_lists: dict[str, list[int]],
+) -> tuple[str | None, list[float] | None]:
+    """从 CSV 当前帧提取根朝向四元数（wxyz）及所用骨骼名。"""
     candidates = ("下半身", "グルーブ", "センター親", "腰", "センター")
 
     for require_dynamic in (True, False):
@@ -464,10 +479,16 @@ def _get_csv_root_quat(frame: int, frames: Any, bone_frame_lists: dict[str, list
             if quat_wxyz is None or len(quat_wxyz) != 4:
                 continue
             try:
-                return quat_normalize([float(v) for v in quat_wxyz])
+                return bone, quat_normalize([float(v) for v in quat_wxyz])
             except Exception:
                 continue
-    return None
+    return None, None
+
+
+def _get_csv_root_quat(frame: int, frames: Any, bone_frame_lists: dict[str, list[int]]) -> list[float] | None:
+    """从 CSV 当前帧提取根朝向四元数（wxyz）。"""
+    _bone, q = _get_csv_root_quat_with_bone(frame, frames, bone_frame_lists)
+    return q
 
 
 def _interpolate_mmd_root_translation_bone(
@@ -513,7 +534,8 @@ def _compute_targets_for_motion_frame(
     root_snapshot_row: Any | None = None,
     knee_hinge_projection: bool = True,
     mmd_center_to_root_offset_local_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0),
-    root_quat_rpy_scale: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    root_quat_rpy_scale: tuple[float, float, float] = MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
+    root_quat_rpy_axis_idx: tuple[int, int, int] = MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
 ) -> tuple[Any, tuple[float, float, float] | None, list[float] | None, Any, str | None, bool | None]:
     """计算本帧关节目标、根位姿、动作向量。
 
@@ -521,7 +543,9 @@ def _compute_targets_for_motion_frame(
     以及 ``csv_root_rotation_lookup``：已为根轨迹调用过 ``_get_csv_root_quat`` 时 True=成功取到，
     False=未取到可用根朝向（与主循环原 WARN 条件一致）；未进入根平移分支则为 None。
     """
-    global _MMD_UI_LAST_INTERP_FRAME_DATA
+    global _MMD_UI_LAST_INTERP_FRAME_DATA, _ROOT_RPY_EULER_SCALED_DEG_UI, _ROOT_ROT_BONE_NAME_UI
+    _ROOT_RPY_EULER_SCALED_DEG_UI = (None, None, None)
+    _ROOT_ROT_BONE_NAME_UI = None
     result, interp_fd = _compute_action_for_frame(
         frame,
         frames,
@@ -586,14 +610,24 @@ def _compute_targets_for_motion_frame(
                 else:
                     target_root_pos = (ox - dx, oy - dz, oz - dy)
                 target_root_quat_wxyz = list(state.root_quat_wxyz) if state.root_quat_wxyz else None
-                csv_root_quat_wxyz = _get_csv_root_quat(frame, frames, bone_frame_lists)
+                csv_root_bone, csv_root_quat_wxyz = _get_csv_root_quat_with_bone(
+                    frame, frames, bone_frame_lists
+                )
+                _ROOT_ROT_BONE_NAME_UI = csv_root_bone
                 csv_root_rotation_lookup = csv_root_quat_wxyz is not None
                 if csv_root_quat_wxyz is not None and state.root_quat_wxyz is not None:
                     q_w = mmd_root_offset_quat_to_world(csv_root_quat_wxyz)
-                    sx, sy, sz = root_quat_rpy_scale
-                    if abs(sx - 1.0) > 1e-9 or abs(sy - 1.0) > 1e-9 or abs(sz - 1.0) > 1e-9:
-                        rr, rp, ry = quat_to_euler_xyz(q_w)
-                        q_w = quat_from_euler_xyz(rr * float(sx), rp * float(sy), ry * float(sz))
+                    qx, qy, qz, qw = q_w[1], q_w[2], q_w[3], q_w[0]
+                    rr, rp, ry = euler_xyz_rad_waist_extrinsic((qx, qy, qz, qw))
+                    out_r, out_p, out_y = remap_root_csv_euler_xyz(
+                        rr, rp, ry, root_quat_rpy_axis_idx, root_quat_rpy_scale
+                    )
+                    _ROOT_RPY_EULER_SCALED_DEG_UI = (
+                        math.degrees(out_r),
+                        math.degrees(out_p),
+                        math.degrees(out_y),
+                    )
+                    q_w = quat_from_waist_extrinsic_xyz(out_r, out_p, out_y)
                     target_root_quat_wxyz = quat_normalize(quat_mul(q_w, state.root_quat_wxyz))
                 off_l = mmd_center_to_root_offset_local_xyz
                 if (
@@ -711,7 +745,8 @@ def main():
     pending_playback_toggle = False
     pending_seek_frame: int | None = None
     motion_has_wav = False  # 当前段是否为带伴音的 dance（供暂停/帧跳转同步 audio）
-    root_quat_rpy_scale = [1.0, 1.0, -1.0]  # root 姿态翻转调试：按 roll/pitch/yaw 逐轴乘 scale
+    root_quat_rpy_scale = list(MMD_ROOT_QUAT_RPY_SCALE_DEFAULT)
+    root_quat_rpy_axis_idx = list(MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT)
 
     def _on_mapping_ui_changed():
         nonlocal mapping_reapply_requested
@@ -753,19 +788,32 @@ def main():
             return
         pending_seek_frame = idx_i
 
-    def _get_root_quat_scale_for_ui() -> tuple[float, float, float]:
-        a, b, c = root_quat_rpy_scale
-        return float(a), float(b), float(c)
+    def _get_root_quat_rpy_for_ui() -> tuple[tuple[float, float, float], tuple[int, int, int]]:
+        return (
+            (float(root_quat_rpy_scale[0]), float(root_quat_rpy_scale[1]), float(root_quat_rpy_scale[2])),
+            (
+                int(root_quat_rpy_axis_idx[0]),
+                int(root_quat_rpy_axis_idx[1]),
+                int(root_quat_rpy_axis_idx[2]),
+            ),
+        )
 
-    def _set_root_quat_scale_from_ui(v: tuple[float, float, float]) -> None:
-        root_quat_rpy_scale[0] = float(v[0])
-        root_quat_rpy_scale[1] = float(v[1])
-        root_quat_rpy_scale[2] = float(v[2])
+    def _set_root_quat_rpy_from_ui(
+        scale: tuple[float, float, float],
+        axis_idx: tuple[int, int, int],
+    ) -> None:
+        root_quat_rpy_scale[0] = float(scale[0])
+        root_quat_rpy_scale[1] = float(scale[1])
+        root_quat_rpy_scale[2] = float(scale[2])
+        root_quat_rpy_axis_idx[0] = max(0, min(2, int(axis_idx[0])))
+        root_quat_rpy_axis_idx[1] = max(0, min(2, int(axis_idx[1])))
+        root_quat_rpy_axis_idx[2] = max(0, min(2, int(axis_idx[2])))
 
     set_joint_value_provider(lambda: joint_pos_deg_cache)
     set_playback_status_provider(_playback_status_for_ui)
     set_playback_transport_callbacks(_ui_toggle_pause, _ui_seek_frame)
-    set_root_quat_scale_callbacks(_get_root_quat_scale_for_ui, _set_root_quat_scale_from_ui)
+    set_root_quat_rpy_callbacks(_get_root_quat_rpy_for_ui, _set_root_quat_rpy_from_ui)
+    set_root_rot_bone_name_provider(lambda: str(_ROOT_ROT_BONE_NAME_UI or ""))
     set_mapping_changed_callback(_on_mapping_ui_changed)
     create_mapping_ui()
     create_retarget_tune_ui()
@@ -797,6 +845,15 @@ def main():
             joint_pos_deg_cache.update(elbow_hinge_mapping_ui_extra(fd, projection_enabled=pe))
             joint_pos_deg_cache.update(shoulder_retarget_debug_ui_extra(fd))
             joint_pos_deg_cache.update(retarget_leg_debug_ui_extra(fd))
+        dr, dp, dy = _ROOT_RPY_EULER_SCALED_DEG_UI
+        if dr is not None:
+            joint_pos_deg_cache["__root_rpy_deg_r"] = float(dr)
+        if dp is not None:
+            joint_pos_deg_cache["__root_rpy_deg_p"] = float(dp)
+        if dy is not None:
+            joint_pos_deg_cache["__root_rpy_deg_y"] = float(dy)
+        if _ROOT_ROT_BONE_NAME_UI:
+            joint_pos_deg_cache["__root_rot_bone__"] = str(_ROOT_ROT_BONE_NAME_UI)
 
     def _set_control_reference_pose(new_default_joint_pos: Any) -> bool:
         """更新控制器参考姿态，避免 zero action 把关节拉回旧默认姿态。"""
@@ -914,6 +971,7 @@ def main():
             knee_hinge_projection=args_cli.mmd_knee_hinge_projection,
             mmd_center_to_root_offset_local_xyz=args_cli.mmd_center_to_root_offset_local_xyz,
             root_quat_rpy_scale=tuple(root_quat_rpy_scale),
+            root_quat_rpy_axis_idx=tuple(root_quat_rpy_axis_idx),
         )
 
     while simulation_app.is_running():
@@ -931,8 +989,10 @@ def main():
                 pause_hold_frame = 0
                 pending_playback_toggle = False
                 pending_seek_frame = None
-                global _MMD_UI_LAST_INTERP_FRAME_DATA
+                global _MMD_UI_LAST_INTERP_FRAME_DATA, _ROOT_RPY_EULER_SCALED_DEG_UI, _ROOT_ROT_BONE_NAME_UI
                 _MMD_UI_LAST_INTERP_FRAME_DATA = None
+                _ROOT_RPY_EULER_SCALED_DEG_UI = (None, None, None)
+                _ROOT_ROT_BONE_NAME_UI = None
                 initial_root_snapshot_row = _robot_root_row_clone(env)
                 _reset_to_initial_pose(sync_ui_cache=True)
                 print("[INFO] 环境已重置")

@@ -13,7 +13,7 @@ CSV 动作加载与 G1 关节重定向核心模块。
 
 内部统一保存为弧度欧拉角 + 归一化四元数（bone dict 仅保留 `quat_wxyz`）。
 - 肩/腿链走专用链式反解（``retarget_basis`` 共用基变换；``retarget_arm`` / ``retarget_leg`` 分命名空间 tune）；
-- 腰（两骨骼组合）走外旋欧拉分解（见 ``extrinsic_euler``）；
+- 腰（两骨骼组合）走外旋欧拉分解（见 ``extrinsic_euler``）；可选在合成前对上半身/上半身2各自取四元数共轭（见 ``get_waist_upper_pair_quat_conjugate``）。
 - 其它单骨骼关节走 Swing-Twist 单轴提取。
 
 注意：CSV 列 `quat_x/quat_y/quat_z/quat_w` 仍表示 x,y,z,w；仅在读入内存后转换为
@@ -33,7 +33,11 @@ from robot_mmd.train_workflow.retarget_arm import (
     shoulder_debug_info as _shoulder_debug_info,
 )
 from robot_mmd.train_workflow.extrinsic_euler import euler_xyz_rad_waist_extrinsic
-from robot_mmd.train_workflow.g1_joint_axis_map_raw import AxisMapRawEntry, G1_JOINT_AXIS_MAP_RAW
+from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
+    AxisMapRawEntry,
+    G1_JOINT_AXIS_MAP_RAW,
+    MMD_WAIST_UPPER_PAIR_QUAT_CONJUGATE,
+)
 from robot_mmd.train_workflow.retarget_leg import (
     ANKLE_JOINT_TO_AXIS_INDEX,
     ANKLE_JOINT_TO_SIDE_BONE,
@@ -411,6 +415,28 @@ HINGE_SWING_ABSORB_JOINTS: frozenset[str] = frozenset(
 _DEFAULT_HINGE_SWING_ABSORB: dict[str, float] = {k: 1.0 for k in HINGE_SWING_ABSORB_JOINTS}
 _hinge_swing_absorb: dict[str, float] = dict(_DEFAULT_HINGE_SWING_ABSORB)
 
+_waist_upper_pair_use_conj: list[bool] = [
+    bool(MMD_WAIST_UPPER_PAIR_QUAT_CONJUGATE[0]),
+    bool(MMD_WAIST_UPPER_PAIR_QUAT_CONJUGATE[1]),
+]
+
+
+def get_waist_upper_pair_quat_conjugate() -> tuple[bool, bool]:
+    """腰 [上半身, 上半身2]：合成前是否对该骨四元数取共轭（逆旋转）。"""
+    return bool(_waist_upper_pair_use_conj[0]), bool(_waist_upper_pair_use_conj[1])
+
+
+def toggle_waist_upper_pair_quat_conjugate(which: int) -> tuple[bool, bool]:
+    """切换第 ``which`` 骨（0=上半身, 1=上半身2）的共轭开关；返回当前 (c0, c1)。"""
+    i = 0 if int(which) == 0 else 1
+    _waist_upper_pair_use_conj[i] = not bool(_waist_upper_pair_use_conj[i])
+    return get_waist_upper_pair_quat_conjugate()
+
+
+def reset_waist_upper_pair_quat_conjugate() -> None:
+    _waist_upper_pair_use_conj[0] = bool(MMD_WAIST_UPPER_PAIR_QUAT_CONJUGATE[0])
+    _waist_upper_pair_use_conj[1] = bool(MMD_WAIST_UPPER_PAIR_QUAT_CONJUGATE[1])
+
 
 def get_hinge_swing_absorb(joint_name: str) -> float:
     """膝/肘：非铰链 swing 并入父骨的强度（0=不并入，1=全量，与当前默认一致）。"""
@@ -432,6 +458,7 @@ def reset_mapping_to_default() -> None:
     global _editable_mapping
     _editable_mapping = None
     reset_hinge_swing_absorb()
+    reset_waist_upper_pair_quat_conjugate()
 
 
 def load_csv_motion(csv_path: str) -> dict[int, dict[str, dict]]:
@@ -651,7 +678,7 @@ def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> flo
     从帧数据中获取指定 G1 关节的目标角度偏移（弧度）。
     - 单骨骼（1 DOF：肘/腕/腿等）：对骨骼四元数做 Swing-Twist 单轴提取
     - 多骨骼组合（肩 = [肩, 腕]，腰 = [上半身, 上半身2]）：
-        先组合四元数（肩父 × 腕子，与 MMD 局部链一致），短弧化后按 URDF 关节顺序做
+        先组合四元数（肩父 × 腕子，与 MMD 局部链一致；腰可在相乘前对各骨可选取共轭），短弧化后按 URDF 关节顺序做
         **固定轴外旋欧拉**分解，得到 (θx, θy, θz)，再按映射里 axis_idx 的 0/1/2
         取绕 X/Y/Z 的分量；scale 仅作符号或小幅增益
     - 使用 get_mapping()，支持 UI 编辑后的映射
@@ -703,6 +730,13 @@ def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> flo
 
         q_first = _read_bone_quat_xyzw(frame_data, bones[0])
         q_second = _read_bone_quat_xyzw(frame_data, bones[1])
+        bone_pair = (bones[0], bones[1])
+        if bone_pair == ("上半身", "上半身2"):
+            c0, c1 = get_waist_upper_pair_quat_conjugate()
+            if q_first is not None and c0:
+                q_first = _quat_conjugate(q_first)
+            if q_second is not None and c1:
+                q_second = _quat_conjugate(q_second)
         if q_first is None and q_second is None:
             return None
         if q_first is None:
@@ -716,7 +750,6 @@ def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> flo
         if qw < 0.0:
             qx, qy, qz, qw = -qx, -qy, -qz, -qw
 
-        bone_pair = (bones[0], bones[1])
         if bone_pair == ("上半身", "上半身2"):
             euler_xyz = euler_xyz_rad_waist_extrinsic((qx, qy, qz, qw))
         else:

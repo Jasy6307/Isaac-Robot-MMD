@@ -2,18 +2,24 @@
 G1 关节映射编辑窗口。
 
 功能概览：
-1) 在 Isaac Sim Window 菜单注册 ``G1 Joint Mapping``（欧拉主轴 / scale / 播放与 Root RPY）；
+1) 在 Isaac Sim Window 菜单注册 ``G1 Joint Mapping``（欧拉主轴 / scale / 播放、根 R/P/Y scale、腰两骨共轭开关）；
 2) Retarget Tune（肩/腿基变换 Rz·Ry·Rx）见独立菜单项 ``G1 Retarget Tune``（``create_retarget_tune_ui``）；
 3) 实时显示当前机器人关节角度；映射重置；映射变更回调驱动仿真重算。
 """
 import asyncio
 from typing import Any, Callable
 
+from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
+    MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
+    MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
+)
 from robot_mmd.train_workflow.csv_motion_loader import (
     G1_JOINT_TO_MMD,
     get_hinge_swing_absorb,
+    get_waist_upper_pair_quat_conjugate,
     reset_mapping_to_default,
     set_hinge_swing_absorb,
+    toggle_waist_upper_pair_quat_conjugate,
     update_mapping_entry,
 )
 from robot_mmd.train_workflow.ui_retargeting_tune import (
@@ -37,8 +43,13 @@ _playback_status_provider: Callable[[], dict[str, Any]] | None = None
 # Transport: pause/resume, seek to frame index (only while clip loaded in run_stand)
 _playback_toggle_cb: Callable[[], None] | None = None
 _playback_seek_cb: Callable[[int], None] | None = None
-_root_quat_scale_provider: Callable[[], tuple[float, float, float]] | None = None
-_root_quat_scale_setter: Callable[[tuple[float, float, float]], None] | None = None
+_root_quat_rpy_provider: Callable[
+    [], tuple[tuple[float, float, float], tuple[int, int, int]]
+] | None = None
+_root_quat_rpy_setter: Callable[
+    [tuple[float, float, float], tuple[int, int, int]], None
+] | None = None
+_root_rot_bone_name_provider: Callable[[], str] | None = None
 
 # True while refresh assigns scrub IntField from sim; blocks value_changed -> seek storm
 _scrub_sync_suppress_seek: bool = False
@@ -70,14 +81,39 @@ def set_playback_transport_callbacks(
     _playback_seek_cb = seek_frame
 
 
+def set_root_quat_rpy_callbacks(
+    provider: Callable[[], tuple[tuple[float, float, float], tuple[int, int, int]]] | None,
+    setter: Callable[[tuple[float, float, float], tuple[int, int, int]], None] | None,
+) -> None:
+    """Root R/P/Y: scale + axis_idx (0=csv roll, 1=pitch, 2=yaw) per output row."""
+    global _root_quat_rpy_provider, _root_quat_rpy_setter
+    _root_quat_rpy_provider = provider
+    _root_quat_rpy_setter = setter
+
+
 def set_root_quat_scale_callbacks(
     provider: Callable[[], tuple[float, float, float]] | None,
     setter: Callable[[tuple[float, float, float]], None] | None,
 ) -> None:
-    """设置 root 姿态 R/P/Y scale 的读取与写入回调。"""
-    global _root_quat_scale_provider, _root_quat_scale_setter
-    _root_quat_scale_provider = provider
-    _root_quat_scale_setter = setter
+    """Legacy: scale only; axis_idx fixed to (0, 1, 2). Prefer ``set_root_quat_rpy_callbacks``."""
+    if provider is None or setter is None:
+        set_root_quat_rpy_callbacks(None, None)
+        return
+
+    def _prov() -> tuple[tuple[float, float, float], tuple[int, int, int]]:
+        s = provider()
+        return s, (0, 1, 2)
+
+    def _set(scale: tuple[float, float, float], _axis: tuple[int, int, int]) -> None:
+        setter(scale)
+
+    set_root_quat_rpy_callbacks(_prov, _set)
+
+
+def set_root_rot_bone_name_provider(provider: Callable[[], str] | None) -> None:
+    """Active CSV bone name used for root rotation (display only)."""
+    global _root_rot_bone_name_provider
+    _root_rot_bone_name_provider = provider
 
 
 def set_mapping_changed_callback(cb: Callable[[], None] | None) -> None:
@@ -94,6 +130,8 @@ def _notify_mapping_changed() -> None:
             pass
 
 
+# 腰两骨共轭开关：两个 Label 文案由 _sync_waist_pair_conj_status_labels 更新
+_waist_pair_conj_status_labels: list[Any] = [None, None]
 # 由 create_mapping_ui / create_retarget_tune_ui 写入；刷新循环读取
 _joint_models_ref: dict[str, tuple] | None = None
 _playback_title_ref: Any | None = None
@@ -167,6 +205,16 @@ JOINT_CATEGORIES: dict[str, list[str]] = {
         "waist_pitch_joint", "waist_roll_joint", "waist_yaw_joint",
     ],
 }
+
+
+def _sync_waist_pair_conj_status_labels() -> None:
+    """Update waist [upper spine, upper2] quaternion-conjugate preset row labels."""
+
+    c0, c1 = get_waist_upper_pair_quat_conjugate()
+    if _waist_pair_conj_status_labels[0] is not None:
+        _waist_pair_conj_status_labels[0].text = f"Upper: {'conj' if c0 else 'as-is'}"
+    if _waist_pair_conj_status_labels[1] is not None:
+        _waist_pair_conj_status_labels[1].text = f"Upper2: {'conj' if c1 else 'as-is'}"
 
 
 def _build_mapping_window(ui):
@@ -243,13 +291,27 @@ def _build_mapping_window(ui):
                 scale_model.set_value(base[2])
             if absorb_model is not None:
                 absorb_model.set_value(1.0)
+        _ir, _ip, _iy = MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT
+        root_roll_euler_model.set_value(int(_ir))
+        root_pitch_euler_model.set_value(int(_ip))
+        root_yaw_euler_model.set_value(int(_iy))
+        _sr, _sp, _sy = MMD_ROOT_QUAT_RPY_SCALE_DEFAULT
+        root_roll_scale_model.set_value(float(_sr))
+        root_pitch_scale_model.set_value(float(_sp))
+        root_yaw_scale_model.set_value(float(_sy))
+        _sync_waist_pair_conj_status_labels()
 
     # ========== 整体布局：垂直堆叠 ==========
     with ui.VStack(spacing=4):
         scrub_model = ui.SimpleIntModel(0)
-        root_roll_scale_model = ui.SimpleFloatModel(1.0)
-        root_pitch_scale_model = ui.SimpleFloatModel(1.0)
-        root_yaw_scale_model = ui.SimpleFloatModel(1.0)
+        _drr, _drp, _dry = MMD_ROOT_QUAT_RPY_SCALE_DEFAULT
+        _dir, _dip, _diy = MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT
+        root_roll_euler_model = ui.SimpleIntModel(int(_dir))
+        root_pitch_euler_model = ui.SimpleIntModel(int(_dip))
+        root_yaw_euler_model = ui.SimpleIntModel(int(_diy))
+        root_roll_scale_model = ui.SimpleFloatModel(float(_drr))
+        root_pitch_scale_model = ui.SimpleFloatModel(float(_drp))
+        root_yaw_scale_model = ui.SimpleFloatModel(float(_dry))
 
         def _on_pause_click():
             if _playback_toggle_cb is not None:
@@ -282,19 +344,25 @@ def _build_mapping_window(ui):
                 except Exception:
                     pass
 
-        def _push_root_quat_scale() -> None:
+        def _push_root_quat_rpy() -> None:
             if _root_quat_sync_suppress_set:
                 return
-            if _root_quat_scale_setter is None:
+            if _root_quat_rpy_setter is None:
                 return
             try:
-                _root_quat_scale_setter(
+                _root_quat_rpy_setter(
                     (
                         float(root_roll_scale_model.get_value_as_float()),
                         float(root_pitch_scale_model.get_value_as_float()),
                         float(root_yaw_scale_model.get_value_as_float()),
-                    )
+                    ),
+                    (
+                        max(0, min(2, int(root_roll_euler_model.get_value_as_int()))),
+                        max(0, min(2, int(root_pitch_euler_model.get_value_as_int()))),
+                        max(0, min(2, int(root_yaw_euler_model.get_value_as_int()))),
+                    ),
                 )
+                _notify_mapping_changed()
             except Exception:
                 pass
 
@@ -312,46 +380,46 @@ def _build_mapping_window(ui):
         btn_pause.visible = False
         btn_resume.visible = False
         scrub_model.add_value_changed_fn(_on_scrub_changed)
-        with ui.HStack(height=24):
-            ui.Label("Root R/P/Y", width=70)
-            ui.FloatField(model=root_roll_scale_model, width=44)
-            ui.Button(
-                "FlipR",
-                width=46,
-                height=22,
-                clicked_fn=lambda: (
-                    root_roll_scale_model.set_value(-float(root_roll_scale_model.get_value_as_float())),
-                    _push_root_quat_scale(),
-                ),
-            )
-            ui.FloatField(model=root_pitch_scale_model, width=44)
-            ui.Button(
-                "FlipP",
-                width=46,
-                height=22,
-                clicked_fn=lambda: (
-                    root_pitch_scale_model.set_value(-float(root_pitch_scale_model.get_value_as_float())),
-                    _push_root_quat_scale(),
-                ),
-            )
-            ui.FloatField(model=root_yaw_scale_model, width=44)
-            ui.Button(
-                "FlipY",
-                width=46,
-                height=22,
-                clicked_fn=lambda: (
-                    root_yaw_scale_model.set_value(-float(root_yaw_scale_model.get_value_as_float())),
-                    _push_root_quat_scale(),
-                ),
-            )
-            ui.Spacer()
-        root_roll_scale_model.add_value_changed_fn(lambda _m: _push_root_quat_scale())
-        root_pitch_scale_model.add_value_changed_fn(lambda _m: _push_root_quat_scale())
-        root_yaw_scale_model.add_value_changed_fn(lambda _m: _push_root_quat_scale())
+
+        ui.Label(
+            "--- root R/P/Y ---",
+            height=22,
+            style={"font_size": 17, "font_style": "bold", "color": 0xFFFFFF88},
+        )
+        ui.Spacer(height=2)
+
+        def _flip_root_axis(m: Any) -> None:
+            try:
+                m.set_value(-float(m.get_value_as_float()))
+                _push_root_quat_rpy()
+            except Exception:
+                pass
+
+        root_row_value_labels: list[Any] = []
+        for axis_label, csv_hint, euler_model, fm in (
+            ("root_Roll", "out·R", root_roll_euler_model, root_roll_scale_model),
+            ("root_Pitch", "out·P", root_pitch_euler_model, root_pitch_scale_model),
+            ("root_Yaw", "out·Y", root_yaw_euler_model, root_yaw_scale_model),
+        ):
+            with ui.HStack(height=28):
+                ui.Label(axis_label, width=118)
+                ui.Label(csv_hint, width=102)
+                ui.IntField(model=euler_model, width=30)
+                euler_model.add_value_changed_fn(lambda _m: _push_root_quat_rpy())
+                ui.Spacer(width=8)
+                ui.FloatField(model=fm, width=50)
+                ui.Spacer(width=4)
+                ui.FloatSlider(model=fm, min=-3.0, max=3.0, width=112)
+                fm.add_value_changed_fn(lambda _m: _push_root_quat_rpy())
+                ui.Spacer(width=8)
+                ui.Button("Flip", width=44, height=22, clicked_fn=lambda m=fm: _flip_root_axis(m))
+                ui.Spacer(width=8)
+                root_row_value_labels.append(ui.Label("N/A", width=72))
+        root_rot_bone_label = ui.Label("Rot bone: (idle)", width=280, height=20)
         ui.Spacer(height=2)
 
         ui.Label(
-            "Euler axis: shoulder/hip=0:P 1:R 2:Y, ankle=0:P 1:R, waist/others=0:X 1:Y 2:Z",
+            "Root idx: 0=csv roll 1=pitch 2=yaw. Joints: shoulder/hip 0:P 1:R 2:Y, ankle 0:P 1:R, waist 0:X 1:Y 2:Z",
             height=20,
         )
         ui.Spacer(height=2)
@@ -366,6 +434,40 @@ def _build_mapping_window(ui):
                         height=22,
                         style={"font_size": 17, "font_style": "bold", "color": 0xFFFFFF00},
                     )
+                    if category_name == "Waist":
+                        global _waist_pair_conj_status_labels
+
+                        def _waist_conj_toggle(which: int) -> None:
+                            toggle_waist_upper_pair_quat_conjugate(which)
+                            _sync_waist_pair_conj_status_labels()
+                            _notify_mapping_changed()
+
+                        ui.Label(
+                            "Waist quats: optionally conjugate (invert) each bone before q_upper*q_upper2. Toggle each.",
+                            height=20,
+                            style={"font_size": 12, "color": 0xFFAAAAAA},
+                        )
+                        with ui.HStack(height=26):
+                            ui.Spacer(width=8)
+                            lbl_ub = ui.Label("", width=108, height=22)
+                            ui.Button(
+                                "Toggle",
+                                width=52,
+                                height=22,
+                                clicked_fn=lambda: _waist_conj_toggle(0),
+                            )
+                            ui.Spacer(width=8)
+                            lbl_ub2 = ui.Label("", width=108, height=22)
+                            ui.Button(
+                                "Toggle",
+                                width=52,
+                                height=22,
+                                clicked_fn=lambda: _waist_conj_toggle(1),
+                            )
+                            ui.Spacer()
+                        _waist_pair_conj_status_labels[0] = lbl_ub
+                        _waist_pair_conj_status_labels[1] = lbl_ub2
+                        _sync_waist_pair_conj_status_labels()
                     for joint_name in joint_names:
                         if joint_name not in G1_JOINT_TO_MMD:
                             continue
@@ -454,9 +556,16 @@ def _build_mapping_window(ui):
         "btn_next": btn_next,
         "btn_pause": btn_pause,
         "btn_resume": btn_resume,
+        "root_roll_euler_model": root_roll_euler_model,
+        "root_pitch_euler_model": root_pitch_euler_model,
+        "root_yaw_euler_model": root_yaw_euler_model,
         "root_roll_scale_model": root_roll_scale_model,
         "root_pitch_scale_model": root_pitch_scale_model,
         "root_yaw_scale_model": root_yaw_scale_model,
+        "root_R_value_label": root_row_value_labels[0],
+        "root_P_value_label": root_row_value_labels[1],
+        "root_Y_value_label": root_row_value_labels[2],
+        "root_rot_bone_label": root_rot_bone_label,
     }
     return joint_models, playback_title_label, transport_refs
 
@@ -528,11 +637,12 @@ async def _mapping_ui_refresh_loop() -> None:
                         pass
             finally:
                 _scrub_sync_suppress_seek = False
-            if _root_quat_scale_provider is not None:
+            if _root_quat_rpy_provider is not None:
                 try:
-                    sr, sp, sy = _root_quat_scale_provider()
+                    (sr, sp, sy), (ir, ip, iy) = _root_quat_rpy_provider()
                 except Exception:
                     sr, sp, sy = 1.0, 1.0, 1.0
+                    ir, ip, iy = 0, 1, 2
                 _root_quat_sync_suppress_set = True
                 try:
                     if abs(float(tr["root_roll_scale_model"].get_value_as_float()) - float(sr)) > 1e-6:
@@ -541,10 +651,43 @@ async def _mapping_ui_refresh_loop() -> None:
                         tr["root_pitch_scale_model"].set_value(float(sp))
                     if abs(float(tr["root_yaw_scale_model"].get_value_as_float()) - float(sy)) > 1e-6:
                         tr["root_yaw_scale_model"].set_value(float(sy))
+                    if int(tr["root_roll_euler_model"].get_value_as_int()) != int(ir):
+                        tr["root_roll_euler_model"].set_value(int(ir))
+                    if int(tr["root_pitch_euler_model"].get_value_as_int()) != int(ip):
+                        tr["root_pitch_euler_model"].set_value(int(ip))
+                    if int(tr["root_yaw_euler_model"].get_value_as_int()) != int(iy):
+                        tr["root_yaw_euler_model"].set_value(int(iy))
                 except Exception:
                     pass
                 finally:
                     _root_quat_sync_suppress_set = False
+
+            if _root_rot_bone_name_provider is not None:
+                try:
+                    bone_nm = str(_root_rot_bone_name_provider() or "")
+                except Exception:
+                    bone_nm = ""
+                lbl = tr.get("root_rot_bone_label")
+                if lbl is not None:
+                    romaji = MMD_BONE_TO_ROMAJI.get(bone_nm, bone_nm) if bone_nm else "-"
+                    lbl.text = f"Rot bone: {romaji}" if bone_nm else "Rot bone: (none)"
+
+            for _rk, _ck in [
+                ("root_R_value_label", "__root_rpy_deg_r"),
+                ("root_P_value_label", "__root_rpy_deg_p"),
+                ("root_Y_value_label", "__root_rpy_deg_y"),
+            ]:
+                _lw = tr.get(_rk)
+                if _lw is None:
+                    continue
+                _vv = values.get(_ck) if isinstance(values, dict) else None
+                if _vv is None:
+                    _lw.text = "N/A"
+                else:
+                    try:
+                        _lw.text = f"{float(_vv):.2f}deg"
+                    except (TypeError, ValueError):
+                        _lw.text = "N/A"
 
         rr = _retarget_tune_refs
         if rr is not None and isinstance(values, dict):
@@ -605,7 +748,7 @@ def create_mapping_ui():
 
     def _create_window():
         global _joint_models_ref, _playback_title_ref, _playback_transport_ref
-        window = ui.Window(WINDOW_TITLE, width=620, height=700)
+        window = ui.Window(WINDOW_TITLE, width=620, height=720)
         with window.frame:
             _joint_models_ref, _playback_title_ref, _playback_transport_ref = _build_mapping_window(ui)
         window.visible = True

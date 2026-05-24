@@ -56,33 +56,48 @@ def quat_inv(q: list[float]) -> list[float]:
     return [qn[0], -qn[1], -qn[2], -qn[3]]
 
 
-def quat_from_euler_xyz(roll: float, pitch: float, yaw: float) -> list[float]:
-    """欧拉角 XYZ -> 四元数 wxyz。"""
-    cr, sr = math.cos(roll / 2.0), math.sin(roll / 2.0)
-    cp, sp = math.cos(pitch / 2.0), math.sin(pitch / 2.0)
-    cy, sy = math.cos(yaw / 2.0), math.sin(yaw / 2.0)
-    x = sr * cp * cy - cr * sp * sy
-    y = cr * sp * cy + sr * cp * sy
-    z = cr * cp * sy - sr * sp * cy
-    w = cr * cp * cy + sr * sp * sy
-    return quat_normalize([w, x, y, z])
+def remap_root_csv_euler_xyz(
+    roll: float,
+    pitch: float,
+    yaw: float,
+    axis_idx_out: tuple[int, int, int],
+    scale_out: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    """Per output row (X/Y/Z physical-angle triple): pick source component then scale."""
+    src = (float(roll), float(pitch), float(yaw))
+    out: list[float] = []
+    for i in range(3):
+        si = max(0, min(2, int(axis_idx_out[i])))
+        out.append(src[si] * float(scale_out[i]))
+    return out[0], out[1], out[2]
 
 
-def quat_to_euler_xyz(q_wxyz: list[float]) -> tuple[float, float, float]:
-    """四元数 wxyz -> 欧拉角 XYZ（roll, pitch, yaw）。"""
-    w, x, y, z = quat_normalize(q_wxyz)
-    sinr_cosp = 2.0 * (w * x + y * z)
-    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
-    roll = math.atan2(sinr_cosp, cosr_cosp)
+def quat_from_waist_extrinsic_xyz(theta_x: float, theta_y: float, theta_z: float) -> list[float]:
+    """Physical-axis (X, Y, Z) angles -> quat(wxyz) using waist-style extrinsic chain.
 
-    sinp = 2.0 * (w * y - z * x)
-    sinp = max(-1.0, min(1.0, sinp))
-    pitch = math.asin(sinp)
-
-    siny_cosp = 2.0 * (w * z + x * y)
-    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-    yaw = math.atan2(siny_cosp, cosy_cosp)
-    return roll, pitch, yaw
+    Waist chain uses fixed-axis order Z -> X -> Y, equivalent matrix product:
+    ``R = Ry(theta_y) * Rx(theta_x) * Rz(theta_z)``.
+    """
+    cx, sx = math.cos(theta_x), math.sin(theta_x)
+    cy, sy = math.cos(theta_y), math.sin(theta_y)
+    cz, sz = math.cos(theta_z), math.sin(theta_z)
+    r_x = [
+        [1.0, 0.0, 0.0],
+        [0.0, cx, -sx],
+        [0.0, sx, cx],
+    ]
+    r_y = [
+        [cy, 0.0, sy],
+        [0.0, 1.0, 0.0],
+        [-sy, 0.0, cy],
+    ]
+    r_z = [
+        [cz, -sz, 0.0],
+        [sz, cz, 0.0],
+        [0.0, 0.0, 1.0],
+    ]
+    r = _mat3_mul(r_y, _mat3_mul(r_x, r_z))
+    return rotmat_to_quat(r)
 
 
 def _mat3_mul(a: list[list[float]], b: list[list[float]]) -> list[list[float]]:

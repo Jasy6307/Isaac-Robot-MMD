@@ -5,6 +5,10 @@ isaac_workspace/IsaacSim
 
 # ============ MMD 媒体文件 ============
 robot_mmd/media/
+robot_mmd/docs/
+
+# ============ cursor 相关 ============
+.cursor/
 
 # ============ Python ============
 __pycache__/

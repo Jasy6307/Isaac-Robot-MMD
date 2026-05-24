@@ -12,12 +12,22 @@ G1 关节 -> MMD 骨骼的紧凑轴映射（轴索引 0/1/2 对应 x/y/z，见 c
   - ankle (左/右 ankle_*) 走 ``retarget_leg.compute_ankle_angles``，axis_idx: **0=pitch, 1=roll**。
 - 腰部 (waist_*) 走 ``extrinsic_euler.euler_xyz_rad_waist_extrinsic``：
   axis_idx 直接是物理 X/Y/Z (0/1/2) → (roll, pitch, yaw) 对应 0/1/2 在腰部下分别为绕 X/Y/Z。
+  两骨骼在合成 **q_上半身·q_上半身2** 之前，可按 ``MMD_WAIST_UPPER_PAIR_QUAT_CONJUGATE`` 分别对该骨四元数取**共轭（逆旋转）**，便于与 UI 双按钮联动试方向。
 - 单骨骼 (肘/腕/膝等) 仍按 Swing-Twist 单轴提取。
 """
 
 from __future__ import annotations
 
 AxisMapRawEntry = tuple[str | list[str], int, float]
+
+# CSV 根四元数 → world 后 ``quat_to_euler_xyz`` 得 (roll,pitch,yaw)，按下行选分量×scale 再拼回四元数。
+# 三行 root R/P/Y：axis_idx 选源分量 0/1/2，scale 为符号/增益。
+MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT: tuple[int, int, int] = (0, 1, 2)
+MMD_ROOT_QUAT_RPY_SCALE_DEFAULT: tuple[float, float, float] = (1.0, 1.0, -1.0)
+
+# 腰链 [上半身, 上半身2]：在 q_first * q_second 之前是否对该骨骼局部四元数取共轭（逆旋转）。
+# True = 该骨先取逆再参与相乘；映射 UI 中「Waist」标题下两枚按钮可运行时覆盖，Reset 时回到此处。
+MMD_WAIST_UPPER_PAIR_QUAT_CONJUGATE: tuple[bool, bool] = (False, False)
 
 # G1 关节（紧凑写法） -> (MMD 骨骼或 [肩, 腕] 列表, 轴索引(0/1/2), 缩放系数)
 G1_JOINT_AXIS_MAP_RAW: dict[str, AxisMapRawEntry] = {
@@ -47,13 +57,13 @@ G1_JOINT_AXIS_MAP_RAW: dict[str, AxisMapRawEntry] = {
 
     "right_hip_pitch_joint": ("右足", 0, 1.0),
     "right_hip_roll_joint": ("右足", 1, 1.0),
-    "right_hip_yaw_joint": ("右足", 2, -1.0),
+    "right_hip_yaw_joint": ("右足", 2, 1.0),
     "right_knee_joint": ("右ひざ", 0, -1.0),
     "right_ankle_pitch_joint": ("右足首", 0, 1.0),
     "right_ankle_roll_joint": ("右足首", 1, 1.0),
 
     # 躯干：上半身+上半身2 外旋 szxy，与 yaw(Z)/roll(X)/pitch(Y) 对齐 → yaw/roll/pitch 对应 2/0/1
-    "waist_pitch_joint": (["上半身", "上半身2"], 1, -1.0),
-    "waist_roll_joint": (["上半身", "上半身2"], 0, -1.0),
-    "waist_yaw_joint": (["上半身", "上半身2"], 2, -1.0),
+    "waist_pitch_joint": (["上半身", "上半身2"], 0, -1.0),
+    "waist_roll_joint": (["上半身", "上半身2"], 2, 1.0),
+    "waist_yaw_joint": (["上半身", "上半身2"], 1, -1.0),
 }
