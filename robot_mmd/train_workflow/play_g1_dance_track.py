@@ -1,0 +1,165 @@
+# Copyright (c) 2022-2025.
+# SPDX-License-Identifier: BSD-3-Clause
+
+"""Play / evaluate a trained G1 dance tracking checkpoint and report joint
+tracking error against the reference HDF5 motion.
+
+Example
+-------
+.. code-block:: powershell
+
+    & C:/Users/Administrator/.conda/envs/env_isaaclab_mmd/python.exe `
+      i:/robot_isaac/robot_mmd/train_workflow/scripts/play_g1_dance_track.py `
+      --task Isaac-G1-Dance-Track-C0-v0 --num_envs 16
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_WORKSPACE_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", ".."))
+if _WORKSPACE_ROOT not in sys.path:
+    sys.path.insert(0, _WORKSPACE_ROOT)
+
+from isaaclab.app import AppLauncher  # noqa: E402
+
+parser = argparse.ArgumentParser(description="Play a G1 dance tracking checkpoint.")
+parser.add_argument("--task", type=str, default="Isaac-G1-Dance-Track-C0-v0")
+parser.add_argument("--num_envs", type=int, default=16)
+parser.add_argument(
+    "--checkpoint",
+    type=str,
+    default=None,
+    help="Explicit checkpoint .pt file. If omitted, the latest under logs/ is used.",
+)
+parser.add_argument("--load_run", type=str, default=None)
+parser.add_argument(
+    "--num_episodes", type=int, default=1, help="Number of full 10s episodes to play."
+)
+parser.add_argument("--real_time", action="store_true", default=False)
+parser.add_argument(
+    "--action_smooth_alpha",
+    type=float,
+    default=1.0,
+    help=(
+        "EMA action smoothing in (0, 1]. 1.0 = off (raw policy output). "
+        "Try 0.25~0.5 to reduce play-time jitter; lowers apparent tracking sharpness."
+    ),
+)
+AppLauncher.add_app_launcher_args(parser)
+args_cli = parser.parse_args()
+
+app_launcher = AppLauncher(args_cli)
+simulation_app = app_launcher.app
+
+import time  # noqa: E402
+
+import gymnasium as gym  # noqa: E402
+import torch  # noqa: E402
+
+from rsl_rl.runners import OnPolicyRunner  # noqa: E402
+
+from isaaclab.envs import ManagerBasedRLEnvCfg  # noqa: E402
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper  # noqa: E402
+from isaaclab_tasks.utils import get_checkpoint_path  # noqa: E402
+from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry  # noqa: E402
+
+import robot_mmd.my_task  # noqa: F401, E402
+
+from robot_mmd.my_task.mdp.observations import joint_pos_tracking_error  # noqa: E402
+from robot_mmd.my_task.motion_reference import get_or_create_motion_buffer  # noqa: E402
+
+
+def _find_h5_window(env_cfg: ManagerBasedRLEnvCfg) -> tuple[str, float]:
+    """Recover (h5_path, window_seconds) from the env cfg's reward term params."""
+    tracking = env_cfg.rewards.joint_pos_tracking
+    return str(tracking.params["h5_path"]), float(tracking.params["window_seconds"])
+
+
+def main() -> None:
+    env_cfg: ManagerBasedRLEnvCfg = load_cfg_from_registry(  # type: ignore[assignment]
+        args_cli.task, "env_cfg_entry_point"
+    )
+    agent_cfg: RslRlOnPolicyRunnerCfg = load_cfg_from_registry(  # type: ignore[assignment]
+        args_cli.task, "rsl_rl_cfg_entry_point"
+    )
+
+    env_cfg.scene.num_envs = int(args_cli.num_envs)
+    if args_cli.device is not None:
+        env_cfg.sim.device = args_cli.device
+
+    log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
+    print(f"[INFO] Looking for checkpoints under: {log_root_path}")
+    if args_cli.checkpoint:
+        resume_path = os.path.abspath(args_cli.checkpoint)
+    else:
+        run_dir = args_cli.load_run if args_cli.load_run is not None else agent_cfg.load_run
+        resume_path = get_checkpoint_path(
+            log_root_path, run_dir, agent_cfg.load_checkpoint
+        )
+    print(f"[INFO] Loading checkpoint: {resume_path}")
+
+    env_cfg.log_dir = os.path.dirname(resume_path)
+    env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
+    env_unwrapped = env.unwrapped
+    wrapped = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+
+    runner = OnPolicyRunner(wrapped, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+    runner.load(resume_path)
+    policy = runner.get_inference_policy(device=env_unwrapped.device)
+
+    h5_path, window_s = _find_h5_window(env_cfg)
+    buf = get_or_create_motion_buffer(env_unwrapped, h5_path, window_s)
+    T = buf.num_steps
+    print(f"[INFO] Reference window steps = {T}; control_hz = {buf.control_hz:.1f}")
+
+    obs = wrapped.get_observations()
+    dt = env_unwrapped.step_dt
+    smooth_alpha = float(args_cli.action_smooth_alpha)
+    if not (0.0 < smooth_alpha <= 1.0):
+        raise ValueError(f"--action_smooth_alpha must be in (0, 1], got {smooth_alpha}")
+    if smooth_alpha < 1.0:
+        print(f"[INFO] Action EMA smoothing enabled: alpha={smooth_alpha:.3f}")
+
+    for episode in range(int(args_cli.num_episodes)):
+        # All envs have just been reset by gym.make / previous done; episode_length_buf == 0.
+        err_accum = torch.zeros(env_unwrapped.num_envs, device=env_unwrapped.device)
+        max_per_step = torch.zeros(env_unwrapped.num_envs, device=env_unwrapped.device)
+        steps_done = 0
+        smoothed_actions: torch.Tensor | None = None
+        for _ in range(T):
+            start_time = time.time()
+            with torch.inference_mode():
+                actions = policy(obs)
+                if smooth_alpha < 1.0:
+                    if smoothed_actions is None:
+                        smoothed_actions = actions.clone()
+                    else:
+                        smoothed_actions = smooth_alpha * actions + (1.0 - smooth_alpha) * smoothed_actions
+                    actions = smoothed_actions
+                obs, _, _, _ = wrapped.step(actions)
+            err = joint_pos_tracking_error(env_unwrapped, h5_path, window_s)
+            rms = torch.sqrt(torch.mean(err.pow(2), dim=1))
+            err_accum += rms
+            max_per_step = torch.maximum(max_per_step, rms)
+            steps_done += 1
+            sleep_time = dt - (time.time() - start_time)
+            if args_cli.real_time and sleep_time > 0:
+                time.sleep(sleep_time)
+
+        mean_rms = (err_accum / max(steps_done, 1)).mean().item()
+        max_rms = max_per_step.mean().item()
+        print(
+            f"[EVAL] episode={episode} steps={steps_done} "
+            f"mean_joint_rms={mean_rms:.4f} rad   peak_joint_rms={max_rms:.4f} rad"
+        )
+
+    wrapped.close()
+
+
+if __name__ == "__main__":
+    main()
+    simulation_app.close()

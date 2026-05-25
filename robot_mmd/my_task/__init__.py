@@ -17,3 +17,23 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1StandPPORunnerCfg",
     },
 )
+
+gym.register(
+    id="Isaac-G1-Dance-Track-C0-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.g1_dance_track_env_cfg:G1DanceTrackC0EnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1DanceTrackC0PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Isaac-G1-Dance-Track-C1-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.g1_dance_track_env_cfg:G1DanceTrackC1EnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1DanceTrackC1PPORunnerCfg",
+    },
+)

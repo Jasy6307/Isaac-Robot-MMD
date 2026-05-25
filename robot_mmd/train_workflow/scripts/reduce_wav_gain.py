@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-_DEFAULT_IN = Path(__file__).resolve().parent.parent / "media" / "dance" / "deepbluetown.wav"
+_DEFAULT_IN = Path(__file__).resolve().parent.parent.parent / "media" / "dance" / "IRIS_OUT.wav"
 
 
 def _scale_pcm16_wav(in_path: Path, out_path: Path, gain: float) -> None:

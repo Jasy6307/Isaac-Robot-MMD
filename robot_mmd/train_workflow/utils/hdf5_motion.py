@@ -306,7 +306,7 @@ def compile_csv_motion_to_hdf5_motion(
         if is_pose:
             pos = np.array([-dx, +dz, +dy], dtype=np.float32)
         else:
-            pos = np.array([-dx, -dz, -dy], dtype=np.float32)
+            pos = np.array([-dx, -dz, +dy], dtype=np.float32)
 
         q_w = mmd_root_offset_quat_to_world(csv_root_quat_wxyz)
         qx, qy, qz, qw = q_w[1], q_w[2], q_w[3], q_w[0]

@@ -228,7 +228,7 @@ def compute_targets_for_motion_frame(
                 if is_pose:
                     target_root_pos = (ox - dx, oy + dz, oz + dy)
                 else:
-                    target_root_pos = (ox - dx, oy - dz, oz - dy)
+                    target_root_pos = (ox - dx, oy - dz, oz + dy)
                 target_root_quat_wxyz = list(state.root_quat_wxyz) if state.root_quat_wxyz else None
                 csv_root_bone, csv_root_quat_wxyz = get_csv_root_quat_with_bone(
                     frame, frames, bone_frame_lists

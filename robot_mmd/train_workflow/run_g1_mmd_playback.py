@@ -9,8 +9,10 @@ G1 MMD 动作回放主入口（Isaac Sim）。
 2) 支持关节映射 UI，实时显示当前关节角度；
 3) 有 audio 的 dance 播 WAV，与动作同一「逻辑帧时间轴」；
 4) 在重置和切换动作时维护控制参考姿态，避免姿态回弹。
+5) ``--pd_probe``：重力下纯 PD 驱动摸底（不写 root/关节 teleport）。
 
 启动：``python robot_mmd/train_workflow/run_g1_mmd_playback.py``
+PD 摸底 Step 1：``python robot_mmd/train_workflow/run_g1_mmd_playback.py --pd_probe``
 """
 
 from __future__ import annotations
@@ -111,6 +113,7 @@ VMD_FPS = 30
 
 def main():
     """零动作运行 G1 站立环境。"""
+    pd_probe = bool(getattr(args_cli, "pd_probe", False))
     pose_cycle_key = (args_cli.pose_cycle_key or "P").strip().upper()[:1]
     pose_motions = load_pose_motion_dir(POSE_DIR)
     dance_motion_by_key, dance_wav_by_key = load_dances_from_yaml(
@@ -131,9 +134,12 @@ def main():
 
     env_cfg.scene.robot.init_state = G1_TPOSE_INIT_STATE
     env_cfg.scene.robot.spawn.articulation_props.fix_root_link = False
-    env_cfg.scene.robot.spawn.rigid_props.disable_gravity = True
-    env_cfg.scene.robot.spawn.rigid_props.linear_damping = 10.0
-    env_cfg.scene.robot.spawn.rigid_props.angular_damping = 10.0
+    if pd_probe:
+        env_cfg.scene.robot.spawn.rigid_props.disable_gravity = False
+    else:
+        env_cfg.scene.robot.spawn.rigid_props.disable_gravity = True
+        env_cfg.scene.robot.spawn.rigid_props.linear_damping = 10.0
+        env_cfg.scene.robot.spawn.rigid_props.angular_damping = 10.0
 
     joint_pos_deg_cache: dict[str, float] = {}
     ui_debug = PlaybackUiDebugState()
@@ -155,6 +161,11 @@ def main():
     dance_hint = ", ".join(f"{k}=dance" for k in dance_motion_by_key.keys()) or "无 dance 键"
     h5_hint = ", ".join(f"Shift+{k}=H5" for k in dance_hdf5_motion_by_key.keys()) or "无 H5 快捷键"
     print(f"[INFO] L=重置, {pose_cycle_key}=按序播放 pose, {dance_hint}, {h5_hint}")
+    if pd_probe:
+        print(
+            "[INFO] PD probe: gravity ON, no root/joint teleport — joint_pos PD only. "
+            f"Step 1 static test: {pose_cycle_key}=pose cycle, I=joint_mapping_test"
+        )
     if dance_wav_by_key:
         audio_util.warn_if_no_pygame_sync()
 
@@ -217,6 +228,7 @@ def main():
     motion_has_wav = False
     root_quat_rpy_scale = list(MMD_ROOT_QUAT_RPY_SCALE_DEFAULT)
     root_quat_rpy_axis_idx = list(MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT)
+    pd_probe_hold_action: torch.Tensor | None = None
 
     def _on_mapping_ui_changed():
         nonlocal mapping_reapply_requested
@@ -365,8 +377,10 @@ def main():
         nonlocal motion_track, playback_default_joint_pos
         nonlocal last_csv_motion_frame, mapping_reapply_requested
         nonlocal playback_paused, pause_hold_frame, pending_playback_toggle, pending_seek_frame
+        nonlocal pd_probe_hold_action
         if data is None:
             return
+        pd_probe_hold_action = None
         last_csv_motion_frame = None
         mapping_reapply_requested = False
         playback_paused = False
@@ -390,7 +404,7 @@ def main():
         if initial_default_joint_pos is None:
             return
         _set_control_reference_pose(initial_default_joint_pos)
-        if joint_ids is not None:
+        if not pd_probe and joint_ids is not None:
             apply_joint_state_instant(env, initial_default_joint_pos, joint_ids)
         if sync_ui_cache and default_joint_pos is not None and joint_names:
             _update_joint_pos_cache(default_joint_pos)
@@ -451,6 +465,7 @@ def main():
                 reset_requested = False
                 audio_util.stop_wav()
                 motion_has_wav = False
+                pd_probe_hold_action = None
                 env.reset()
                 keyboard.reset()
                 is_playing = False
@@ -561,7 +576,7 @@ def main():
                     motion_track_state=motion_track,
                 )
 
-                if target_root_pos is not None and target_root_quat_wxyz is not None:
+                if not pd_probe and target_root_pos is not None and target_root_quat_wxyz is not None:
                     if csv_root_rotation_lookup is False and not csv_root_track_warned:
                         print("[WARN] 当前 motion 未找到可用根旋转轨迹，root 朝向将保持动作起始值")
                         csv_root_track_warned = True
@@ -597,7 +612,7 @@ def main():
                     except Exception:
                         pass
 
-                    if joint_pos_cmd is not None:
+                    if not pd_probe and joint_pos_cmd is not None:
                         applied = apply_joint_state_instant(env, joint_pos_cmd, joint_ids)
                         if not applied and not instant_mode_warned:
                             print("[WARN] 当前环境不支持直接写关节状态，自动回退为驱动模式")
@@ -609,15 +624,22 @@ def main():
                 else:
                     actions = zero_action
                 if frame >= max_frame:
-                    if last_frame_joint_pos_cmd is not None:
+                    if not pd_probe and last_frame_joint_pos_cmd is not None:
                         _set_control_reference_pose(last_frame_joint_pos_cmd)
+                    elif pd_probe and result is not None:
+                        pd_probe_hold_action = torch.tensor(
+                            result, dtype=torch.float32, device=env.unwrapped.device
+                        ).unsqueeze(0)
                     is_playing = False
                     playback_paused = False
                     motion_has_wav = False
                     audio_util.stop_wav()
                     print(f"[INFO] 播放结束: {current_motion_label}")
             else:
-                actions = zero_action
+                if pd_probe and pd_probe_hold_action is not None:
+                    actions = pd_probe_hold_action
+                else:
+                    actions = zero_action
 
             if (
                 mapping_reapply_requested
@@ -642,16 +664,25 @@ def main():
                     joint_default=base_default,
                     motion_track_state=mt,
                 )
-                if tr_pos is not None and tr_quat is not None:
+                if not pd_probe and tr_pos is not None and tr_quat is not None:
                     apply_root_pos_instant(env, tr_pos, tr_quat)
                 if res is not None and jp_cmd is not None:
-                    _set_control_reference_pose(jp_cmd)
-                    try:
-                        _update_joint_pos_cache(jp_cmd)
-                    except Exception:
-                        pass
-                    apply_joint_state_instant(env, jp_cmd, joint_ids)
-                    actions = zero_action
+                    if pd_probe:
+                        try:
+                            _update_joint_pos_cache(jp_cmd)
+                        except Exception:
+                            pass
+                        actions = torch.tensor(
+                            res, dtype=torch.float32, device=env.unwrapped.device
+                        ).unsqueeze(0)
+                    else:
+                        _set_control_reference_pose(jp_cmd)
+                        try:
+                            _update_joint_pos_cache(jp_cmd)
+                        except Exception:
+                            pass
+                        apply_joint_state_instant(env, jp_cmd, joint_ids)
+                        actions = zero_action
                 else:
                     actions = zero_action
 

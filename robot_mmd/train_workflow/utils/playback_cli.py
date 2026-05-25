@@ -69,6 +69,14 @@ def build_arg_parser(pose_dir: str) -> argparse.ArgumentParser:
     )
     parser.add_argument("--sim_fps", type=int, default=0, help="仿真控制频率 FPS（0 使用默认）")
     parser.add_argument(
+        "--pd_probe",
+        action="store_true",
+        help=(
+            "PD 摸底模式：开启重力，不写 root/关节 teleport，仅通过 joint_pos action 驱动。"
+            "Step 1 静态测试：按 P 循环 pose，或按 I 播 joint_mapping_test。"
+        ),
+    )
+    parser.add_argument(
         "--mmd_knee_hinge_projection",
         action=argparse.BooleanOptionalAction,
         default=True,
