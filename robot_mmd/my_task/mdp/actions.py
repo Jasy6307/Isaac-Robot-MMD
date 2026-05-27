@@ -1,0 +1,85 @@
+"""Custom action terms for G1 dance tracking."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import torch
+
+from isaaclab.assets import Articulation
+from isaaclab.envs.mdp.actions.joint_actions import JointPositionAction
+from isaaclab.envs.mdp.actions.actions_cfg import JointPositionActionCfg
+from isaaclab.managers.action_manager import ActionTerm
+from isaaclab.utils import configclass
+
+from robot_mmd.my_task.mdp.joint_groups import resolve_joint_ids
+from robot_mmd.my_task.motion_reference import get_or_create_motion_buffer, motion_steps
+
+if TYPE_CHECKING:
+    from isaaclab.envs import ManagerBasedEnv
+
+
+class ReferenceFrozenJointPositionAction(JointPositionAction):
+    """Apply policy joint targets, then overwrite frozen joints with H5 reference."""
+
+    cfg: "ReferenceFrozenJointPositionActionCfg"
+
+    def __init__(self, cfg: "ReferenceFrozenJointPositionActionCfg", env: "ManagerBasedEnv") -> None:
+        super().__init__(cfg, env)
+        asset: Articulation = self._asset
+        if self.cfg.frozen_joint_name_expr:
+            self._frozen_joint_ids = resolve_joint_ids(asset, list(self.cfg.frozen_joint_name_expr))
+            # Indices within this action term's joint slice (all joints when joint_names=[".*"]).
+            if isinstance(self._joint_ids, slice):
+                self._frozen_action_cols = self._frozen_joint_ids
+            else:
+                joint_id_to_col = {int(j): i for i, j in enumerate(self._joint_ids)}
+                self._frozen_action_cols = torch.tensor(
+                    [joint_id_to_col[int(j)] for j in self._frozen_joint_ids.tolist()],
+                    device=self.device,
+                    dtype=torch.long,
+                )
+        else:
+            self._frozen_joint_ids = torch.empty(0, device=self.device, dtype=torch.long)
+            self._frozen_action_cols = torch.empty(0, device=self.device, dtype=torch.long)
+
+    def process_actions(self, actions: torch.Tensor) -> None:
+        super().process_actions(actions)
+        if self._frozen_action_cols.numel() == 0:
+            return
+        self._raw_actions[:, self._frozen_action_cols] = 0.0
+        if isinstance(self._offset, torch.Tensor):
+            self._processed_actions[:, self._frozen_action_cols] = self._offset[
+                :, self._frozen_action_cols
+            ]
+        else:
+            self._processed_actions[:, self._frozen_action_cols] = float(self._offset)
+
+    def apply_actions(self) -> None:
+        self._asset.set_joint_position_target(self.processed_actions, joint_ids=self._joint_ids)
+        if self._frozen_joint_ids.numel() == 0:
+            return
+        buf = get_or_create_motion_buffer(
+            self._env,
+            self.cfg.motion_h5_path,
+            float(self.cfg.motion_window_seconds),
+            asset_name=self.cfg.asset_name,
+        )
+        q_ref = buf.q_ref_abs(motion_steps(self._env))
+        self._asset.set_joint_position_target(
+            q_ref[:, self._frozen_joint_ids],
+            joint_ids=self._frozen_joint_ids,
+        )
+
+
+@configclass
+class ReferenceFrozenJointPositionActionCfg(JointPositionActionCfg):
+    """Joint position action with selected joints overwritten by motion reference each step."""
+
+    class_type: type[ActionTerm] = ReferenceFrozenJointPositionAction
+
+    frozen_joint_name_expr: list[str] = []
+    """Joint name expressions forced to track ``q_ref_abs`` (policy output ignored)."""
+
+    motion_h5_path: str = ""
+    motion_window_seconds: float = 10.0

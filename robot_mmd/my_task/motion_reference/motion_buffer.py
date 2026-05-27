@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 
 _ENV_BUFFER_ATTR = "_g1_dance_motion_buffers"
+_ENV_START_STEPS_ATTR = "_g1_dance_motion_start_steps"
 
 
 def _resolve_h5_path(h5_path: str) -> str:
@@ -44,6 +45,48 @@ def _resolve_h5_path(h5_path: str) -> str:
     if os.path.exists(cand):
         return cand
     raise FileNotFoundError(f"HDF5 motion file not found: {h5_path}")
+
+
+def _ensure_motion_start_steps(env: "ManagerBasedRLEnv") -> torch.Tensor:
+    steps: torch.Tensor | None = getattr(env, _ENV_START_STEPS_ATTR, None)
+    num_envs = int(env.num_envs)
+    if steps is None or steps.shape[0] != num_envs:
+        steps = torch.zeros((num_envs,), dtype=torch.long, device=env.device)
+        setattr(env, _ENV_START_STEPS_ATTR, steps)
+        return steps
+    if steps.device != torch.device(env.device):
+        steps = steps.to(device=env.device, dtype=torch.long)
+        setattr(env, _ENV_START_STEPS_ATTR, steps)
+        return steps
+    return steps
+
+
+def set_motion_start_steps(
+    env: "ManagerBasedRLEnv", env_ids: torch.Tensor, start_steps: torch.Tensor
+) -> None:
+    """Set per-env motion start indices used by reference lookups."""
+    if env_ids.numel() == 0:
+        return
+    steps = _ensure_motion_start_steps(env)
+    env_ids_i64 = env_ids.to(device=steps.device, dtype=torch.long)
+    start_i64 = start_steps.to(device=steps.device, dtype=torch.long).clamp_min(0)
+    steps[env_ids_i64] = start_i64
+
+
+def reset_motion_start_steps(env: "ManagerBasedRLEnv", env_ids: torch.Tensor) -> None:
+    """Reset selected env motion starts to frame 0."""
+    if env_ids.numel() == 0:
+        return
+    steps = _ensure_motion_start_steps(env)
+    env_ids_i64 = env_ids.to(device=steps.device, dtype=torch.long)
+    steps[env_ids_i64] = 0
+
+
+def motion_steps(env: "ManagerBasedRLEnv", offset: int = 0) -> torch.Tensor:
+    """Unified reference index: ``motion_start_step + episode_length_buf + offset``."""
+    starts = _ensure_motion_start_steps(env)
+    episode_steps = env.episode_length_buf.to(device=starts.device, dtype=torch.long)
+    return starts + episode_steps + int(offset)
 
 
 class DanceMotionReferenceBuffer:

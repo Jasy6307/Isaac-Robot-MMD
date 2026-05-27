@@ -8,11 +8,21 @@ import torch
 
 from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
+import isaaclab.utils.math as math_utils
 
-from robot_mmd.my_task.motion_reference import get_or_create_motion_buffer
+from robot_mmd.my_task.motion_reference import get_or_create_motion_buffer, motion_steps
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+
+
+def _cloner_env_origins(env: "ManagerBasedRLEnv") -> torch.Tensor:
+    """Env origins used by GridCloner (actual robot spawn grid when available)."""
+    scene = env.scene
+    cloner_origins = scene._default_env_origins  # noqa: SLF001 — intentional
+    if cloner_origins is not None:
+        return cloner_origins
+    return scene.env_origins
 
 
 def joint_pos_tracking_exp(
@@ -29,7 +39,7 @@ def joint_pos_tracking_exp(
     """
     buf = get_or_create_motion_buffer(env, h5_path, window_seconds, asset_name=asset_cfg.name)
     asset: Articulation = env.scene[asset_cfg.name]
-    q_ref_abs = buf.q_ref_abs(env.episode_length_buf)
+    q_ref_abs = buf.q_ref_abs(motion_steps(env))
     q_cur = asset.data.joint_pos
     if asset_cfg.joint_ids != slice(None):
         q_cur = q_cur[:, asset_cfg.joint_ids]
@@ -48,9 +58,68 @@ def joint_pos_tracking_l2(
     """Squared L2 joint tracking penalty (sum over joints), shape ``[num_envs]``."""
     buf = get_or_create_motion_buffer(env, h5_path, window_seconds, asset_name=asset_cfg.name)
     asset: Articulation = env.scene[asset_cfg.name]
-    q_ref_abs = buf.q_ref_abs(env.episode_length_buf)
+    q_ref_abs = buf.q_ref_abs(motion_steps(env))
     q_cur = asset.data.joint_pos
     if asset_cfg.joint_ids != slice(None):
         q_cur = q_cur[:, asset_cfg.joint_ids]
         q_ref_abs = q_ref_abs[:, asset_cfg.joint_ids]
     return torch.sum(torch.square(q_cur - q_ref_abs), dim=1)
+
+
+def root_yaw_tracking_exp(
+    env: "ManagerBasedRLEnv",
+    h5_path: str,
+    window_seconds: float = 10.0,
+    sigma: float = 0.5,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Exp-kernel reward on root yaw alignment (world-frame) against H5 root reference.
+
+    Reference root orientation is reconstructed as:
+    ``q_ref_world = q_delta_h5 * q_anchor_default`` where all quaternions are in wxyz.
+    """
+    if sigma <= 0.0:
+        raise ValueError(f"sigma must be > 0, got {sigma}")
+
+    buf = get_or_create_motion_buffer(env, h5_path, window_seconds, asset_name=asset_cfg.name)
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    q_cur_wxyz = math_utils.quat_unique(asset.data.root_quat_w)
+    q_anchor_wxyz = math_utils.quat_unique(asset.data.default_root_state[:, 3:7])
+    q_delta_wxyz = math_utils.quat_unique(buf.root_quat_wxyz(motion_steps(env)))
+    q_ref_wxyz = math_utils.quat_unique(math_utils.quat_mul(q_delta_wxyz, q_anchor_wxyz))
+
+    _, _, yaw_cur = math_utils.euler_xyz_from_quat(q_cur_wxyz)
+    _, _, yaw_ref = math_utils.euler_xyz_from_quat(q_ref_wxyz)
+    yaw_err = torch.atan2(torch.sin(yaw_cur - yaw_ref), torch.cos(yaw_cur - yaw_ref))
+    return torch.exp(-torch.square(yaw_err) / (float(sigma) ** 2))
+
+
+def root_xy_tracking_exp(
+    env: "ManagerBasedRLEnv",
+    h5_path: str,
+    window_seconds: float = 10.0,
+    sigma: float = 0.4,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Exp-kernel reward on root XY alignment (world-frame) against H5 root reference.
+
+    Reference root position is reconstructed as:
+    ``p_ref_world = p_anchor_default + env_origin + p_delta_h5``.
+    Z is intentionally ignored; only XY is tracked.
+    """
+    if sigma <= 0.0:
+        raise ValueError(f"sigma must be > 0, got {sigma}")
+
+    buf = get_or_create_motion_buffer(env, h5_path, window_seconds, asset_name=asset_cfg.name)
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    p_cur_xy = asset.data.root_state_w[:, 0:2]
+    p_anchor_xy = asset.data.default_root_state[:, 0:2]
+    env_origin_xy = _cloner_env_origins(env)[:, 0:2]
+    p_delta_xy = buf.root_pos_delta(motion_steps(env))[:, 0:2]
+    p_ref_xy = p_anchor_xy + env_origin_xy + p_delta_xy
+
+    err_sq = torch.square(p_cur_xy - p_ref_xy)
+    mse_xy = torch.mean(err_sq, dim=1)
+    return torch.exp(-mse_xy / (float(sigma) ** 2))

@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from dataclasses import dataclass
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _WORKSPACE_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", ".."))
@@ -50,7 +51,63 @@ parser.add_argument(
     "--window_seconds",
     type=float,
     default=None,
-    help="Override the reference window length (seconds). Must match episode length.",
+    help="Override reference motion window length (seconds).",
+)
+parser.add_argument(
+    "--episode_seconds",
+    type=float,
+    default=None,
+    help="Override episode length (seconds), independent from reference window.",
+)
+parser.add_argument(
+    "--random_episode_length",
+    dest="random_episode_length",
+    action="store_true",
+    default=None,
+    help="Enable per-reset random episode length sampling.",
+)
+parser.add_argument(
+    "--no_random_episode_length",
+    dest="random_episode_length",
+    action="store_false",
+    help="Disable random episode length sampling.",
+)
+parser.add_argument(
+    "--episode_min_seconds",
+    type=float,
+    default=None,
+    help="Minimum sampled episode length when random episode length is enabled.",
+)
+parser.add_argument(
+    "--episode_max_seconds",
+    type=float,
+    default=None,
+    help="Maximum sampled episode length when random episode length is enabled.",
+)
+parser.add_argument(
+    "--episode_length_curriculum",
+    action="store_true",
+    default=False,
+    help="Enable automatic episode-length curriculum in one training run.",
+)
+parser.add_argument(
+    "--episode_length_curriculum_spec",
+    type=str,
+    default=None,
+    help="Curriculum spec as start_iter:min_s:max_s, e.g. 0:2:4,3000:3:5,6000:4:7.",
+)
+parser.add_argument(
+    "--random_motion_start",
+    dest="random_motion_start",
+    action="store_true",
+    default=None,
+    help="Enable random motion start at reset (C1 random short-segment training).",
+)
+parser.add_argument(
+    "--no_random_motion_start",
+    dest="random_motion_start",
+    action="store_false",
+    help="Disable random motion start and always reset from frame 0.",
 )
 parser.add_argument(
     "--experiment_suffix",
@@ -113,9 +170,83 @@ from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry  # noqa: E402
 import robot_mmd.my_task  # noqa: F401, E402  -- register Isaac-G1-* tasks
 
 
+@dataclass(frozen=True)
+class EpisodeLengthStage:
+    start_iter: int
+    min_seconds: float
+    max_seconds: float
+
+
+def _parse_episode_length_curriculum(spec: str) -> list[EpisodeLengthStage]:
+    stages: list[EpisodeLengthStage] = []
+    for chunk in spec.split(","):
+        item = chunk.strip()
+        if not item:
+            continue
+        parts = item.split(":")
+        if len(parts) != 3:
+            raise ValueError(
+                f"Invalid curriculum chunk '{item}'. Expected format start:min:max."
+            )
+        start_iter = int(parts[0])
+        min_s = float(parts[1])
+        max_s = float(parts[2])
+        if start_iter < 0:
+            raise ValueError(f"start_iter must be >= 0, got {start_iter}")
+        if min_s <= 0.0 or max_s <= 0.0:
+            raise ValueError(f"Episode seconds must be > 0, got {min_s}, {max_s}")
+        if min_s > max_s:
+            min_s, max_s = max_s, min_s
+        stages.append(EpisodeLengthStage(start_iter=start_iter, min_seconds=min_s, max_seconds=max_s))
+    if not stages:
+        raise ValueError("Curriculum spec produced no stages.")
+    stages.sort(key=lambda s: s.start_iter)
+    if stages[0].start_iter != 0:
+        raise ValueError("Curriculum spec must start at iteration 0.")
+    for i in range(1, len(stages)):
+        if stages[i].start_iter == stages[i - 1].start_iter:
+            raise ValueError("Duplicate stage start_iter in curriculum spec.")
+    return stages
+
+
+def _curriculum_schedule(
+    stages: list[EpisodeLengthStage], total_iterations: int
+) -> list[tuple[EpisodeLengthStage, int]]:
+    total = int(total_iterations)
+    if total <= 0:
+        raise ValueError(f"total_iterations must be > 0, got {total_iterations}")
+    schedule: list[tuple[EpisodeLengthStage, int]] = []
+    for i, stage in enumerate(stages):
+        start = stage.start_iter
+        if start >= total:
+            break
+        next_start = stages[i + 1].start_iter if i + 1 < len(stages) else total
+        end = min(next_start, total)
+        count = end - start
+        if count > 0:
+            schedule.append((stage, count))
+    if not schedule:
+        raise ValueError("Curriculum schedule is empty for the requested total iterations.")
+    return schedule
+
+
+def _set_env_runtime_episode_range(env, min_seconds: float, max_seconds: float) -> None:
+    unwrapped = env.unwrapped
+    setattr(unwrapped, "_g1_episode_min_seconds", float(min_seconds))
+    setattr(unwrapped, "_g1_episode_max_seconds", float(max_seconds))
+
+
 def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
-    """Patch env_cfg with --motion_h5 / --window_seconds overrides."""
-    if args_cli.motion_h5 is None and args_cli.window_seconds is None:
+    """Patch env_cfg with reference-window/episode/random-start overrides."""
+    if (
+        args_cli.motion_h5 is None
+        and args_cli.window_seconds is None
+        and args_cli.episode_seconds is None
+        and args_cli.random_motion_start is None
+        and args_cli.random_episode_length is None
+        and args_cli.episode_min_seconds is None
+        and args_cli.episode_max_seconds is None
+    ):
         return
 
     new_h5 = (
@@ -124,8 +255,15 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
         else None
     )
     new_ws = args_cli.window_seconds
+    new_episode_s = args_cli.episode_seconds
+    new_random_start = args_cli.random_motion_start
+    new_random_episode_length = args_cli.random_episode_length
+    new_episode_min_s = args_cli.episode_min_seconds
+    new_episode_max_s = args_cli.episode_max_seconds
 
-    if new_ws is not None:
+    if new_episode_s is not None:
+        env_cfg.episode_length_s = float(new_episode_s)
+    elif new_ws is not None:
         env_cfg.episode_length_s = float(new_ws)
 
     def _patch(params: dict) -> None:
@@ -150,6 +288,26 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
         term = getattr(env_cfg.events, term_name)
         if hasattr(term, "params") and isinstance(term.params, dict):
             _patch(term.params)
+            if new_random_start is not None and "random_start" in term.params:
+                term.params["random_start"] = bool(new_random_start)
+            if new_episode_s is not None and "segment_seconds" in term.params:
+                term.params["segment_seconds"] = float(new_episode_s)
+            if (
+                new_random_episode_length is not None
+                and "random_episode_length" in term.params
+            ):
+                term.params["random_episode_length"] = bool(new_random_episode_length)
+            if new_episode_min_s is not None and "episode_min_seconds" in term.params:
+                term.params["episode_min_seconds"] = float(new_episode_min_s)
+            if new_episode_max_s is not None and "episode_max_seconds" in term.params:
+                term.params["episode_max_seconds"] = float(new_episode_max_s)
+    # C1 frozen-arm action (motion reference path)
+    joint_pos_action = getattr(env_cfg.actions, "joint_pos", None)
+    if joint_pos_action is not None:
+        if new_h5 is not None and hasattr(joint_pos_action, "motion_h5_path"):
+            joint_pos_action.motion_h5_path = new_h5
+        if new_ws is not None and hasattr(joint_pos_action, "motion_window_seconds"):
+            joint_pos_action.motion_window_seconds = float(new_ws)
 
 
 def main() -> None:
@@ -241,7 +399,40 @@ def main() -> None:
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
 
-    runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
+    if args_cli.episode_length_curriculum:
+        spec = args_cli.episode_length_curriculum_spec
+        if spec is None:
+            spec = "0:2:4,3000:3:5,6000:4:7"
+        stages = _parse_episode_length_curriculum(spec)
+        schedule = _curriculum_schedule(stages, int(agent_cfg.max_iterations))
+        print(f"[INFO] Episode-length curriculum enabled: {spec}")
+        for stage, stage_iters in schedule:
+            _set_env_runtime_episode_range(
+                env, min_seconds=stage.min_seconds, max_seconds=stage.max_seconds
+            )
+            print(
+                f"[INFO] Curriculum stage start={stage.start_iter} "
+                f"range=[{stage.min_seconds:.2f}, {stage.max_seconds:.2f}]s "
+                f"iters={stage_iters}"
+            )
+            runner.learn(
+                num_learning_iterations=stage_iters, init_at_random_ep_len=True
+            )
+    else:
+        if args_cli.episode_min_seconds is not None or args_cli.episode_max_seconds is not None:
+            min_s = (
+                float(args_cli.episode_min_seconds)
+                if args_cli.episode_min_seconds is not None
+                else float(args_cli.episode_max_seconds)
+            )
+            max_s = (
+                float(args_cli.episode_max_seconds)
+                if args_cli.episode_max_seconds is not None
+                else float(args_cli.episode_min_seconds)
+            )
+            _set_env_runtime_episode_range(env, min_seconds=min_s, max_seconds=max_s)
+            print(f"[INFO] Runtime episode range set to [{min_s:.2f}, {max_s:.2f}]s")
+        runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
     env.close()
 
 

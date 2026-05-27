@@ -7,7 +7,7 @@
   reference + observation + reward + PPO pipeline on the first 10 seconds of
   ``you_are_important.h5``.
 * ``G1DanceTrackC1EnvCfg`` - C1 floating-root env with alive/fall terminations
-  (still 10s window, no root tracking reward yet).
+  and root yaw/XY tracking rewards.
 """
 
 from __future__ import annotations
@@ -33,6 +33,17 @@ from isaaclab_assets import G1_29DOF_CFG  # isort: skip
 
 from robot_mmd.my_task import mdp
 from robot_mmd.my_task.g1_stand_env_cfg import G1_TPOSE_INIT_STATE
+from robot_mmd.my_task.mdp.actions import (
+    ReferenceFrozenJointPositionAction,
+    ReferenceFrozenJointPositionActionCfg,
+)
+from robot_mmd.my_task.mdp.joint_groups import (
+    C1_JOINT_POS_OBS_NOISE,
+    C1_JOINT_VEL_OBS_NOISE,
+    C1_OBS_NOISE_SCALE_BY_EXPR,
+    C1_RESET_NOISE_SCALE_BY_EXPR,
+    G1_ARM_JOINT_EXPR,
+)
 
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -46,9 +57,27 @@ DEFAULT_WINDOW_SECONDS = 10.0
 C0_GROUND_Z_OFFSET = -0.5
 
 # C1-only tuning (floating root): smaller action scale + stronger smoothness penalties.
-C1_ACTION_SCALE = 0.35 # 0.5
+C1_ACTION_SCALE = 0.5 # 0.5
 C1_ACTION_RATE_L2_WEIGHT = -0.05 # -0.01
-C1_ACTION_L2_WEIGHT = -1.0e-3 # -1.0e-4
+C1_ACTION_L2_WEIGHT = -1.0e-4 # -1.0e-4
+C1_ALIVE_WEIGHT = 0.8
+C1_TERMINATED_PENALTY_WEIGHT = -0.5
+C1_ROOT_YAW_TRACK_WEIGHT = 0.5
+C1_ROOT_YAW_TRACK_SIGMA = 0.25
+C1_ROOT_XY_TRACK_WEIGHT = 0.5
+C1_ROOT_XY_TRACK_SIGMA = 0.25
+# C1 terminations: relaxed for dance (squat / lean / low CoM).
+C1_FALL_MINIMUM_HEIGHT = 0.3
+C1_BAD_ORIENTATION_LIMIT_ANGLE = 1.3
+# C1 random-segment training defaults.
+C1_RANDOM_MOTION_START = True
+C1_TRAIN_SEGMENT_SECONDS = 2.0
+C1_RANDOM_EPISODE_LENGTH = True
+C1_EPISODE_MIN_SECONDS = 2.0
+C1_EPISODE_MAX_SECONDS = 4.0
+C1_EPISODE_LENGTH_CURRICULUM_SPEC = "0:2:4,3000:3:5,6000:4:7"
+# C1: arms track H5 open-loop; waist uses 20% of C0 reset/obs noise; legs unchanged.
+C1_RESET_JOINT_POS_NOISE = 0.05
 
 
 ##
@@ -205,6 +234,48 @@ class EventCfg:
     )
 
 
+def _c1_joint_pos_action_cfg() -> ReferenceFrozenJointPositionActionCfg:
+    return ReferenceFrozenJointPositionActionCfg(
+        class_type=ReferenceFrozenJointPositionAction,
+        asset_name="robot",
+        joint_names=[".*"],
+        scale=C1_ACTION_SCALE,
+        use_default_offset=True,
+        frozen_joint_name_expr=G1_ARM_JOINT_EXPR,
+        motion_h5_path=DEFAULT_DANCE_H5,
+        motion_window_seconds=DEFAULT_WINDOW_SECONDS,
+    )
+
+
+@configclass
+class C1ActionsCfg(ActionsCfg):
+    """C1: policy controls all joints for checkpoint compatibility; arms overwritten by reference."""
+
+    joint_pos = _c1_joint_pos_action_cfg()
+
+
+@configclass
+class C1EventCfg(EventCfg):
+    """C1 reset: arms exact reference; waist 20% noise; legs full noise."""
+
+    reset_robot_joints = EventTerm(
+        func=mdp.reset_to_motion_start,
+        mode="reset",
+        params={
+            "h5_path": DEFAULT_DANCE_H5,
+            "window_seconds": DEFAULT_WINDOW_SECONDS,
+            "joint_pos_noise": C1_RESET_JOINT_POS_NOISE,
+            "reset_root_to_motion_quat": True,
+            "joint_noise_scale_by_expr": C1_RESET_NOISE_SCALE_BY_EXPR,
+            "random_start": C1_RANDOM_MOTION_START,
+            "segment_seconds": C1_TRAIN_SEGMENT_SECONDS,
+            "random_episode_length": C1_RANDOM_EPISODE_LENGTH,
+            "episode_min_seconds": C1_EPISODE_MIN_SECONDS,
+            "episode_max_seconds": C1_EPISODE_MAX_SECONDS,
+        },
+    )
+
+
 ##
 # Environment configurations
 ##
@@ -232,9 +303,7 @@ class G1DanceTrackC0EnvCfg(ManagerBasedRLEnvCfg):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        # Control loop: dt=0.005s physics, decimation=4 -> 50Hz control.
-        # self.decimation = 4
-        # self.sim.dt = 0.005
+        # Control loop: dt=1/300  physics, decimation=10 -> 30Hz control.
         self.sim.dt = 1.0 / 300.0   # 物理 300 Hz
         self.decimation = 10         # 控制 300/10 = 30 Hz
         self.sim.render_interval = self.decimation
@@ -251,47 +320,84 @@ class G1DanceTrackC0EnvCfg(ManagerBasedRLEnvCfg):
 class G1DanceTrackC1EnvCfg(G1DanceTrackC0EnvCfg):
     """C1 (floating root) dance tracking env.
 
-    Root link is freed; we add an ``alive`` reward, a fall-height termination
-    and a bad-orientation termination so the policy is forced to learn balance
-    while still tracking the same 10s motion window.
+    Root link is freed; we add an ``alive`` reward, fall-height and bad-orientation
+    terminations so the policy learns balance while tracking the motion window.
 
     C1 overrides C0 action scale and smoothness reward weights (see module
     constants ``C1_ACTION_*``) to reduce jitter / launch under gravity.
+    Arms are frozen to the H5 reference; waist/upper-body reset and obs noise
+    are scaled down (see ``C1_*_NOISE_*`` in ``joint_groups``).
     Ground is at the default height (z=0), not the lowered C0 plane.
     """
 
     scene: G1DanceTrackSceneCfg = G1DanceTrackSceneCfg(num_envs=512, env_spacing=2.5)
+    actions: C1ActionsCfg = C1ActionsCfg()
+    events: C1EventCfg = C1EventCfg()
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        self.episode_length_s = C1_EPISODE_MAX_SECONDS
+        # Waist / legs keep scaled obs noise; arms get none (see joint_groups).
+        self.observations.policy.joint_pos = ObsTerm(
+            func=mdp.joint_pos_rel_group_noise,
+            noise=None,
+            params={
+                "pos_noise": C1_JOINT_POS_OBS_NOISE,
+                "joint_noise_scale_by_expr": C1_OBS_NOISE_SCALE_BY_EXPR,
+            },
+        )
+        self.observations.policy.joint_vel = ObsTerm(
+            func=mdp.joint_vel_rel_group_noise,
+            noise=None,
+            params={
+                "vel_noise": C1_JOINT_VEL_OBS_NOISE,
+                "joint_noise_scale_by_expr": C1_OBS_NOISE_SCALE_BY_EXPR,
+            },
+        )
         # Free the root link.
         if self.scene.robot.spawn is not None and self.scene.robot.spawn.articulation_props is not None:
             self.scene.robot.spawn.articulation_props.fix_root_link = False
 
-        # Add alive reward (computed lazily so we don't shadow C0 cfg).
-        self.rewards.alive = RewTerm(func=mdp.is_alive, weight=0.5)
+        # C1 shaping: lower alive bonus + explicit non-timeout termination penalty.
 
-        # Fall + bad orientation terminations.
+
+        self.rewards.alive = RewTerm(func=mdp.is_alive, weight=C1_ALIVE_WEIGHT)
+        self.rewards.terminated_penalty = RewTerm(
+            func=mdp.is_terminated_term, weight=C1_TERMINATED_PENALTY_WEIGHT
+        )
+        self.rewards.root_yaw_tracking = RewTerm(
+            func=mdp.root_yaw_tracking_exp,
+            weight=C1_ROOT_YAW_TRACK_WEIGHT,
+            params={
+                "h5_path": DEFAULT_DANCE_H5,
+                "window_seconds": DEFAULT_WINDOW_SECONDS,
+                "sigma": C1_ROOT_YAW_TRACK_SIGMA,
+            },
+        )
+        self.rewards.root_xy_tracking = RewTerm(
+            func=mdp.root_xy_tracking_exp,
+            weight=C1_ROOT_XY_TRACK_WEIGHT,
+            params={
+                "h5_path": DEFAULT_DANCE_H5,
+                "window_seconds": DEFAULT_WINDOW_SECONDS,
+                "sigma": C1_ROOT_XY_TRACK_SIGMA,
+            },
+        )
+
+        # Fall + bad orientation terminations (relaxed for exaggerated dance poses).
+        self.terminations.time_out = DoneTerm(func=mdp.random_episode_time_out, time_out=True)
         self.terminations.fall_height = DoneTerm(
             func=mdp.root_height_below_minimum,
-            params={"minimum_height": 0.4, "asset_cfg": SceneEntityCfg("robot")},
+            params={"minimum_height": C1_FALL_MINIMUM_HEIGHT, "asset_cfg": SceneEntityCfg("robot")},
         )
         self.terminations.bad_orientation = DoneTerm(
             func=mdp.bad_orientation,
-            params={"limit_angle": 1.0, "asset_cfg": SceneEntityCfg("robot")},
-        )
-        # Stop episodes early when physics diverges (launch / drift).
-        # Measured relative to per-episode spawn (cloner grid + default root).
-        self.terminations.fly_height = DoneTerm(
-            func=mdp.root_height_above_spawn,
-            params={"max_height_above_spawn": 0.55, "asset_cfg": SceneEntityCfg("robot")},
-        )
-        self.terminations.drift_xy = DoneTerm(
-            func=mdp.root_xy_drift_from_spawn,
-            params={"max_distance": 2.0, "asset_cfg": SceneEntityCfg("robot")},
+            params={"limit_angle": C1_BAD_ORIENTATION_LIMIT_ANGLE, "asset_cfg": SceneEntityCfg("robot")},
         )
 
-        # C1 action / reward overrides (C0 keeps ActionsCfg + RewardsCfg defaults).
-        self.actions.joint_pos.scale = C1_ACTION_SCALE
+        # C1 smoothness reward overrides (action scale lives in C1ActionsCfg).
         self.rewards.action_rate.weight = C1_ACTION_RATE_L2_WEIGHT
         self.rewards.action_l2.weight = C1_ACTION_L2_WEIGHT
+
+        self.rewards.joint_pos_tracking.weight = 1.2
+        self.rewards.joint_pos_tracking.params["sigma"] = 0.2

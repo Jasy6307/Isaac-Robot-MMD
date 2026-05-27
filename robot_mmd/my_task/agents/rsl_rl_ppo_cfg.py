@@ -65,5 +65,5 @@ class G1DanceTrackC1PPORunnerCfg(G1DanceTrackC0PPORunnerCfg):
 
     def __post_init__(self) -> None:
         self.experiment_name = "g1_dance_track_c1"
-        self.max_iterations = 5000
-        self.save_interval = 250
+        self.max_iterations = 10000
+        self.save_interval = 500

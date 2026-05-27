@@ -37,6 +37,18 @@ parser.add_argument(
 )
 parser.add_argument("--load_run", type=str, default=None)
 parser.add_argument(
+    "--motion_h5",
+    type=str,
+    default=None,
+    help="Override dance HDF5 path for evaluation.",
+)
+parser.add_argument(
+    "--window_seconds",
+    type=float,
+    default=None,
+    help="Override reference motion window (seconds). Full play runs this entire window.",
+)
+parser.add_argument(
     "--num_episodes", type=int, default=1, help="Number of full 10s episodes to play."
 )
 parser.add_argument("--real_time", action="store_true", default=False)
@@ -79,6 +91,43 @@ def _find_h5_window(env_cfg: ManagerBasedRLEnvCfg) -> tuple[str, float]:
     return str(tracking.params["h5_path"]), float(tracking.params["window_seconds"])
 
 
+def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
+    if args_cli.motion_h5 is None and args_cli.window_seconds is None:
+        return
+    new_h5 = os.path.abspath(args_cli.motion_h5) if args_cli.motion_h5 is not None else None
+    new_ws = args_cli.window_seconds
+
+    def _patch(params: dict) -> None:
+        if "h5_path" in params and new_h5 is not None:
+            params["h5_path"] = new_h5
+        if "window_seconds" in params and new_ws is not None:
+            params["window_seconds"] = float(new_ws)
+        if "random_start" in params:
+            params["random_start"] = False
+        if "segment_seconds" in params and new_ws is not None:
+            params["segment_seconds"] = float(new_ws)
+
+    pol = env_cfg.observations.policy
+    for term_name in dir(pol):
+        term = getattr(pol, term_name, None)
+        if term is not None and hasattr(term, "params") and isinstance(term.params, dict):
+            _patch(term.params)
+    for term_name in vars(env_cfg.rewards):
+        term = getattr(env_cfg.rewards, term_name)
+        if hasattr(term, "params") and isinstance(term.params, dict):
+            _patch(term.params)
+    for term_name in vars(env_cfg.events):
+        term = getattr(env_cfg.events, term_name)
+        if hasattr(term, "params") and isinstance(term.params, dict):
+            _patch(term.params)
+    joint_pos_action = getattr(env_cfg.actions, "joint_pos", None)
+    if joint_pos_action is not None:
+        if new_h5 is not None and hasattr(joint_pos_action, "motion_h5_path"):
+            joint_pos_action.motion_h5_path = new_h5
+        if new_ws is not None and hasattr(joint_pos_action, "motion_window_seconds"):
+            joint_pos_action.motion_window_seconds = float(new_ws)
+
+
 def main() -> None:
     env_cfg: ManagerBasedRLEnvCfg = load_cfg_from_registry(  # type: ignore[assignment]
         args_cli.task, "env_cfg_entry_point"
@@ -90,6 +139,10 @@ def main() -> None:
     env_cfg.scene.num_envs = int(args_cli.num_envs)
     if args_cli.device is not None:
         env_cfg.sim.device = args_cli.device
+    _apply_motion_overrides(env_cfg)
+
+    if args_cli.window_seconds is not None:
+        env_cfg.episode_length_s = float(args_cli.window_seconds)
 
     log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
     print(f"[INFO] Looking for checkpoints under: {log_root_path}")
