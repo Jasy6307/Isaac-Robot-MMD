@@ -236,6 +236,16 @@ def _set_env_runtime_episode_range(env, min_seconds: float, max_seconds: float) 
     setattr(unwrapped, "_g1_episode_max_seconds", float(max_seconds))
 
 
+def _set_env_runtime_start_to_end_mode(
+    env, *, enabled: bool, end_seconds: float | None = None
+) -> None:
+    """Toggle runtime mode: random start, then run until stage end."""
+    unwrapped = env.unwrapped
+    setattr(unwrapped, "_g1_episode_random_start_to_end", bool(enabled))
+    if end_seconds is not None:
+        setattr(unwrapped, "_g1_episode_end_seconds", float(end_seconds))
+
+
 def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
     """Patch env_cfg with reference-window/episode/random-start overrides."""
     if (
@@ -406,19 +416,27 @@ def main() -> None:
         stages = _parse_episode_length_curriculum(spec)
         schedule = _curriculum_schedule(stages, int(agent_cfg.max_iterations))
         print(f"[INFO] Episode-length curriculum enabled: {spec}")
-        for stage, stage_iters in schedule:
+        for stage_idx, (stage, stage_iters) in enumerate(schedule):
             _set_env_runtime_episode_range(
                 env, min_seconds=stage.min_seconds, max_seconds=stage.max_seconds
+            )
+            second_stage_start_to_end = stage_idx == 1
+            _set_env_runtime_start_to_end_mode(
+                env,
+                enabled=second_stage_start_to_end,
+                end_seconds=stage.max_seconds if second_stage_start_to_end else None,
             )
             print(
                 f"[INFO] Curriculum stage start={stage.start_iter} "
                 f"range=[{stage.min_seconds:.2f}, {stage.max_seconds:.2f}]s "
-                f"iters={stage_iters}"
+                f"iters={stage_iters} "
+                f"start_to_end={'on' if second_stage_start_to_end else 'off'}"
             )
             runner.learn(
                 num_learning_iterations=stage_iters, init_at_random_ep_len=True
             )
     else:
+        _set_env_runtime_start_to_end_mode(env, enabled=False)
         if args_cli.episode_min_seconds is not None or args_cli.episode_max_seconds is not None:
             min_s = (
                 float(args_cli.episode_min_seconds)

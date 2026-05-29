@@ -49,7 +49,23 @@ parser.add_argument(
     help="Override reference motion window (seconds). Full play runs this entire window.",
 )
 parser.add_argument(
-    "--num_episodes", type=int, default=1, help="Number of full 10s episodes to play."
+    "--full_window_episode",
+    dest="full_window_episode",
+    action="store_true",
+    default=True,
+    help="Play uses full window as episode length (disable random episode length timeout).",
+)
+parser.add_argument(
+    "--no_full_window_episode",
+    dest="full_window_episode",
+    action="store_false",
+    help="Keep env default episode-length behavior during play.",
+)
+parser.add_argument(
+    "--num_episodes",
+    type=int,
+    default=0,
+    help="Number of episodes to play. Use <= 0 for infinite loop playback.",
 )
 parser.add_argument("--real_time", action="store_true", default=False)
 parser.add_argument(
@@ -59,6 +75,15 @@ parser.add_argument(
     help=(
         "EMA action smoothing in (0, 1]. 1.0 = off (raw policy output). "
         "Try 0.25~0.5 to reduce play-time jitter; lowers apparent tracking sharpness."
+    ),
+)
+parser.add_argument(
+    "--perf_log_interval",
+    type=float,
+    default=1.0,
+    help=(
+        "Print rolling sim performance every N wall seconds. "
+        "0 disables periodic logs (episode summary still printed)."
     ),
 )
 AppLauncher.add_app_launcher_args(parser)
@@ -85,6 +110,55 @@ from robot_mmd.my_task.mdp.observations import joint_pos_tracking_error  # noqa:
 from robot_mmd.my_task.motion_reference import get_or_create_motion_buffer  # noqa: E402
 
 
+class _PlayPerfTracker:
+    """Rolling wall-clock stats to distinguish sim speed from display FPS."""
+
+    def __init__(self, *, control_hz: float, log_interval_s: float) -> None:
+        self.control_hz = float(control_hz)
+        self.log_interval_s = float(log_interval_s)
+        self._window_start = time.time()
+        self._window_steps = 0
+        self._episode_start = time.time()
+        self._episode_steps = 0
+
+    def on_step(self) -> None:
+        self._window_steps += 1
+        self._episode_steps += 1
+        if self.log_interval_s <= 0.0:
+            return
+        elapsed = time.time() - self._window_start
+        if elapsed < self.log_interval_s:
+            return
+        self._print_window(elapsed)
+        self._window_start = time.time()
+        self._window_steps = 0
+
+    def on_episode_end(self, episode: int) -> None:
+        elapsed = time.time() - self._episode_start
+        steps = max(self._episode_steps, 1)
+        steps_per_s = steps / max(elapsed, 1e-6)
+        ratio = steps_per_s / max(self.control_hz, 1e-6)
+        print(
+            f"[PERF] episode={episode} summary: "
+            f"sim_steps/s={steps_per_s:.1f}  control_hz={self.control_hz:.1f}  "
+            f"realtime_ratio={ratio:.2f}x  avg_step_ms={1000.0 * elapsed / steps:.1f}"
+        )
+        self._episode_start = time.time()
+        self._episode_steps = 0
+        self._window_start = time.time()
+        self._window_steps = 0
+
+    def _print_window(self, elapsed: float) -> None:
+        steps = max(self._window_steps, 1)
+        steps_per_s = steps / max(elapsed, 1e-6)
+        ratio = steps_per_s / max(self.control_hz, 1e-6)
+        print(
+            f"[PERF] rolling: sim_steps/s={steps_per_s:.1f}  "
+            f"control_hz={self.control_hz:.1f}  realtime_ratio={ratio:.2f}x  "
+            f"avg_step_ms={1000.0 * elapsed / steps:.1f}"
+        )
+
+
 def _find_h5_window(env_cfg: ManagerBasedRLEnvCfg) -> tuple[str, float]:
     """Recover (h5_path, window_seconds) from the env cfg's reward term params."""
     tracking = env_cfg.rewards.joint_pos_tracking
@@ -104,7 +178,15 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
             params["window_seconds"] = float(new_ws)
         if "random_start" in params:
             params["random_start"] = False
-        if "segment_seconds" in params and new_ws is not None:
+        if args_cli.full_window_episode:
+            if "random_episode_length" in params:
+                params["random_episode_length"] = False
+            if "segment_seconds" in params:
+                if new_ws is not None:
+                    params["segment_seconds"] = float(new_ws)
+                elif "window_seconds" in params:
+                    params["segment_seconds"] = float(params["window_seconds"])
+        elif "segment_seconds" in params and new_ws is not None:
             params["segment_seconds"] = float(new_ws)
 
     pol = env_cfg.observations.policy
@@ -167,17 +249,31 @@ def main() -> None:
     h5_path, window_s = _find_h5_window(env_cfg)
     buf = get_or_create_motion_buffer(env_unwrapped, h5_path, window_s)
     T = buf.num_steps
-    print(f"[INFO] Reference window steps = {T}; control_hz = {buf.control_hz:.1f}")
+    control_hz = float(buf.control_hz)
+    print(f"[INFO] Reference window steps = {T}; control_hz = {control_hz:.1f}")
+    if float(args_cli.perf_log_interval) > 0.0:
+        print(
+            f"[INFO] Perf logging every {float(args_cli.perf_log_interval):.1f}s "
+            f"(sim_steps/s vs control_hz={control_hz:.1f}; "
+            f"realtime_ratio=1.0 means real-time sim)."
+        )
 
     obs = wrapped.get_observations()
     dt = env_unwrapped.step_dt
+    perf = _PlayPerfTracker(
+        control_hz=control_hz,
+        log_interval_s=float(args_cli.perf_log_interval),
+    )
     smooth_alpha = float(args_cli.action_smooth_alpha)
     if not (0.0 < smooth_alpha <= 1.0):
         raise ValueError(f"--action_smooth_alpha must be in (0, 1], got {smooth_alpha}")
     if smooth_alpha < 1.0:
         print(f"[INFO] Action EMA smoothing enabled: alpha={smooth_alpha:.3f}")
 
-    for episode in range(int(args_cli.num_episodes)):
+    episode = 0
+    while simulation_app.is_running() and (
+        int(args_cli.num_episodes) <= 0 or episode < int(args_cli.num_episodes)
+    ):
         # All envs have just been reset by gym.make / previous done; episode_length_buf == 0.
         err_accum = torch.zeros(env_unwrapped.num_envs, device=env_unwrapped.device)
         max_per_step = torch.zeros(env_unwrapped.num_envs, device=env_unwrapped.device)
@@ -199,6 +295,7 @@ def main() -> None:
             err_accum += rms
             max_per_step = torch.maximum(max_per_step, rms)
             steps_done += 1
+            perf.on_step()
             sleep_time = dt - (time.time() - start_time)
             if args_cli.real_time and sleep_time > 0:
                 time.sleep(sleep_time)
@@ -209,6 +306,8 @@ def main() -> None:
             f"[EVAL] episode={episode} steps={steps_done} "
             f"mean_joint_rms={mean_rms:.4f} rad   peak_joint_rms={max_rms:.4f} rad"
         )
+        perf.on_episode_end(episode)
+        episode += 1
 
     wrapped.close()
 

@@ -30,6 +30,8 @@ def joint_pos_tracking_exp(
     h5_path: str,
     window_seconds: float = 10.0,
     sigma: float = 0.25,
+    joint_weight_by_expr: dict[str, float] | None = None,
+    joint_weight_default: float = 1.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     """Exp-kernel joint position tracking reward.
@@ -45,7 +47,41 @@ def joint_pos_tracking_exp(
         q_cur = q_cur[:, asset_cfg.joint_ids]
         q_ref_abs = q_ref_abs[:, asset_cfg.joint_ids]
     err_sq = torch.square(q_cur - q_ref_abs)
-    mse = torch.mean(err_sq, dim=1)
+    if joint_weight_by_expr:
+        # Build per-joint weights once and cache on env for fast reward calls.
+        cache = getattr(env, "_g1_joint_tracking_weight_cache", None)
+        if cache is None:
+            cache = {}
+            setattr(env, "_g1_joint_tracking_weight_cache", cache)
+        cache_key = (
+            asset_cfg.name,
+            tuple(sorted((str(k), float(v)) for k, v in joint_weight_by_expr.items())),
+            float(joint_weight_default),
+        )
+        weights_all: torch.Tensor | None = cache.get(cache_key)
+        if weights_all is None or weights_all.device != asset.device:
+            weights_all = torch.full(
+                (asset.num_joints,),
+                float(joint_weight_default),
+                device=asset.device,
+                dtype=torch.float32,
+            )
+            for expr, weight in joint_weight_by_expr.items():
+                joint_ids, _ = asset.find_joints(expr)
+                if len(joint_ids) == 0:
+                    continue
+                weights_all[joint_ids] = float(weight)
+            cache[cache_key] = weights_all
+
+        if asset_cfg.joint_ids != slice(None):
+            weights = weights_all[asset_cfg.joint_ids]
+        else:
+            weights = weights_all
+        weights = weights.clamp_min(0.0)
+        denom = torch.sum(weights).clamp_min(1e-8)
+        mse = torch.sum(err_sq * weights.unsqueeze(0), dim=1) / denom
+    else:
+        mse = torch.mean(err_sq, dim=1)
     return torch.exp(-mse / (float(sigma) ** 2))
 
 

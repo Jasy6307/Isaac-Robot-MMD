@@ -25,6 +25,10 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
+_ENV_START_TO_END_MODE_ATTR = "_g1_episode_random_start_to_end"
+_ENV_STAGE_END_SECONDS_ATTR = "_g1_episode_end_seconds"
+
+
 def _cloner_env_origins(env: "ManagerBasedRLEnv") -> torch.Tensor:
     """Env origins used by GridCloner (actual robot spawn grid when available)."""
     scene = env.scene
@@ -83,6 +87,33 @@ def reset_to_motion_start(
     buf = get_or_create_motion_buffer(env, h5_path, window_seconds, asset_name=asset_cfg.name)
     asset: Articulation = env.scene[asset_cfg.name]
 
+    start_to_end_mode = bool(getattr(env, _ENV_START_TO_END_MODE_ATTR, False))
+    stage_end_seconds = float(
+        getattr(env, _ENV_STAGE_END_SECONDS_ATTR, episode_max_seconds if random_episode_length else window_seconds)
+    )
+
+    if start_to_end_mode:
+        end_steps = max(1, int(round(stage_end_seconds / float(env.step_dt))))
+        end_steps = min(end_steps, int(buf.num_steps))
+        min_steps_for_start = max(1, int(round(float(episode_min_seconds) / float(env.step_dt))))
+        max_start_step = max(0, end_steps - min_steps_for_start)
+
+        start_steps = torch.zeros((env_ids.numel(),), device=asset.device, dtype=torch.long)
+        if max_start_step > 0:
+            start_steps = torch.randint(
+                low=0,
+                high=max_start_step + 1,
+                size=(env_ids.numel(),),
+                device=asset.device,
+                dtype=torch.long,
+            )
+
+        target_steps = (end_steps - start_steps).clamp_min(1)
+        set_episode_target_steps(env, env_ids, target_steps)
+        set_motion_start_steps(env, env_ids, start_steps)
+    else:
+        start_steps: torch.Tensor | None = None
+
     if random_episode_length:
         min_s, max_s = get_runtime_episode_length_seconds(env, episode_min_seconds, episode_max_seconds)
         target_steps = sample_episode_target_steps(env, env_ids, min_s, max_s)
@@ -93,9 +124,13 @@ def reset_to_motion_start(
             fixed_steps = int(round(float(segment_seconds) / float(env.step_dt)))
         fixed_steps = max(fixed_steps, 1)
         target_steps = torch.full((env_ids.numel(),), fixed_steps, device=asset.device, dtype=torch.long)
-    set_episode_target_steps(env, env_ids, target_steps)
+    if not start_to_end_mode:
+        set_episode_target_steps(env, env_ids, target_steps)
 
-    if random_start:
+    if start_to_end_mode:
+        if start_steps is None:
+            start_steps = torch.zeros((env_ids.numel(),), device=asset.device, dtype=torch.long)
+    elif random_start:
         max_start_each = (int(buf.num_steps) - target_steps).clamp_min(0)
         start_steps = torch.zeros((env_ids.numel(),), device=asset.device, dtype=torch.long)
         has_room = max_start_each > 0

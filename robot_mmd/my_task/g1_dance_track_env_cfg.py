@@ -61,11 +61,14 @@ C1_ACTION_SCALE = 0.5 # 0.5
 C1_ACTION_RATE_L2_WEIGHT = -0.05 # -0.01
 C1_ACTION_L2_WEIGHT = -1.0e-4 # -1.0e-4
 C1_ALIVE_WEIGHT = 0.8
-C1_TERMINATED_PENALTY_WEIGHT = -0.5
-C1_ROOT_YAW_TRACK_WEIGHT = 0.5
-C1_ROOT_YAW_TRACK_SIGMA = 0.25
-C1_ROOT_XY_TRACK_WEIGHT = 0.5
-C1_ROOT_XY_TRACK_SIGMA = 0.25
+C1_TERMINATED_PENALTY_WEIGHT = -0.4
+C1_ROOT_YAW_TRACK_WEIGHT = 2.0
+C1_ROOT_YAW_TRACK_SIGMA = 0.10
+C1_ROOT_XY_TRACK_WEIGHT = 5.0
+C1_ROOT_XY_TRACK_SIGMA = 0.05
+# C1 joint tracking group weights (lower body): ankles are down-weighted.
+C1_TRACKING_LOWER_BODY_WEIGHT = 1.0
+C1_TRACKING_ANKLE_WEIGHT = 0.2
 # C1 terminations: relaxed for dance (squat / lean / low CoM).
 C1_FALL_MINIMUM_HEIGHT = 0.3
 C1_BAD_ORIENTATION_LIMIT_ANGLE = 1.3
@@ -399,5 +402,12 @@ class G1DanceTrackC1EnvCfg(G1DanceTrackC0EnvCfg):
         self.rewards.action_rate.weight = C1_ACTION_RATE_L2_WEIGHT
         self.rewards.action_l2.weight = C1_ACTION_L2_WEIGHT
 
-        self.rewards.joint_pos_tracking.weight = 1.2
-        self.rewards.joint_pos_tracking.params["sigma"] = 0.2
+        self.rewards.joint_pos_tracking.weight = 5.0
+        self.rewards.joint_pos_tracking.params["sigma"] = 0.08
+        self.rewards.joint_pos_tracking.params["joint_weight_default"] = 0.0
+        self.rewards.joint_pos_tracking.params["joint_weight_by_expr"] = {
+            "waist_.*_joint": C1_TRACKING_LOWER_BODY_WEIGHT,
+            ".*_hip_.*_joint": C1_TRACKING_LOWER_BODY_WEIGHT,
+            ".*_knee_joint": C1_TRACKING_LOWER_BODY_WEIGHT,
+            ".*_ankle_.*_joint": C1_TRACKING_ANKLE_WEIGHT,
+        }
