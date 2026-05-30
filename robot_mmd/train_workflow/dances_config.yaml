@@ -17,9 +17,19 @@ dances:
     motion: dance/you_are_important.csv
     audio: dance/you_are_important.wav
 
+  - id: you are important_z_editted
+    key: J
+    motion: dance/you_are_important_z_editted.csv
+    audio: dance/you_are_important.wav
+
   - id: iris out
     key: U
     motion: dance/IRIS_OUT.csv
+    audio: dance/IRIS_OUT.wav
+
+  - id: iris out_z_editted
+    key: H
+    motion: dance/IRIS_OUT_z_editted.csv
     audio: dance/IRIS_OUT.wav
 
   - id: deep blue town

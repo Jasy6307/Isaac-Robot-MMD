@@ -67,7 +67,7 @@ C1_ROOT_YAW_TRACK_SIGMA = 0.10
 C1_ROOT_XY_TRACK_WEIGHT = 5.0
 C1_ROOT_XY_TRACK_SIGMA = 0.05
 # C1 joint tracking group weights (lower body): ankles are down-weighted.
-C1_TRACKING_LOWER_BODY_WEIGHT = 1.0
+C1_TRACKING_LOWER_BODY_WEIGHT = 1.5
 C1_TRACKING_ANKLE_WEIGHT = 0.2
 # C1 terminations: relaxed for dance (squat / lean / low CoM).
 C1_FALL_MINIMUM_HEIGHT = 0.3

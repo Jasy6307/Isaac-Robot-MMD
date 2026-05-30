@@ -401,6 +401,111 @@ ANKLE_JOINT_TO_SIDE_BONE: dict[str, tuple[str, str]] = {
 # Waist 3DOF
 # ---------------------------------------------------------------------------
 
+# G1 waist joint limits from URDF (radians).
+_WAIST_PITCH_LIMIT = (-0.52, 0.52)
+_WAIST_ROLL_LIMIT = (-0.52, 0.52)
+_WAIST_YAW_LIMIT = (-2.618, 2.618)
+
+
+def _rot_x(theta: float) -> np.ndarray:
+    c, s = math.cos(theta), math.sin(theta)
+    return np.array(
+        [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]],
+        dtype=np.float64,
+    )
+
+
+def _rot_y(theta: float) -> np.ndarray:
+    c, s = math.cos(theta), math.sin(theta)
+    return np.array(
+        [[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]],
+        dtype=np.float64,
+    )
+
+
+def _rot_z(theta: float) -> np.ndarray:
+    c, s = math.cos(theta), math.sin(theta)
+    return np.array(
+        [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+
+
+def _clamp_waist_semantic(pitch: float, roll: float, yaw: float) -> tuple[float, float, float]:
+    p = min(max(float(pitch), _WAIST_PITCH_LIMIT[0]), _WAIST_PITCH_LIMIT[1])
+    r = min(max(float(roll), _WAIST_ROLL_LIMIT[0]), _WAIST_ROLL_LIMIT[1])
+    y = min(max(float(yaw), _WAIST_YAW_LIMIT[0]), _WAIST_YAW_LIMIT[1])
+    return p, r, y
+
+
+def _waist_rot_from_semantic(pitch: float, roll: float, yaw: float) -> np.ndarray:
+    # semantic -> physical mapping used by compute_waist_angles:
+    # pitch = -theta_x, roll = theta_z, yaw = -theta_y
+    theta_x = -float(pitch)
+    theta_y = -float(yaw)
+    theta_z = float(roll)
+    # Extrinsic Z->X->Y, equivalent to matrix product Ry * Rx * Rz.
+    return _rot_y(theta_y) @ _rot_x(theta_x) @ _rot_z(theta_z)
+
+
+def _geodesic_angle_between_rotmat(r_a: np.ndarray, r_b: np.ndarray) -> float:
+    r = r_a.T @ r_b
+    tr = float(r[0, 0] + r[1, 1] + r[2, 2])
+    c = max(-1.0, min(1.0, (tr - 1.0) * 0.5))
+    return math.acos(c)
+
+
+def _project_waist_semantic_with_limits(
+    raw_pitch: float,
+    raw_roll: float,
+    raw_yaw: float,
+    r_target: np.ndarray,
+) -> tuple[float, float, float]:
+    # Initialization: raw result clipped to URDF bounds.
+    s0 = np.array(_clamp_waist_semantic(raw_pitch, raw_roll, raw_yaw), dtype=np.float64)
+    s = s0.copy()
+    reg = 1.0e-4
+    eps = 1.0e-4
+    step = 0.08
+
+    def _objective(v: np.ndarray) -> float:
+        r_model = _waist_rot_from_semantic(v[0], v[1], v[2])
+        ang = _geodesic_angle_between_rotmat(r_model, r_target)
+        dev = v - s0
+        return ang * ang + reg * float(dev @ dev)
+
+    best = _objective(s)
+    for _ in range(40):
+        grad = np.zeros((3,), dtype=np.float64)
+        for i in range(3):
+            vp = s.copy()
+            vm = s.copy()
+            vp[i] += eps
+            vm[i] -= eps
+            grad[i] = (_objective(vp) - _objective(vm)) / (2.0 * eps)
+
+        gnorm = float(np.linalg.norm(grad))
+        if gnorm < 1.0e-6:
+            break
+
+        accepted = False
+        local_step = step
+        for _ in range(8):
+            cand = s - local_step * grad
+            cand = np.array(_clamp_waist_semantic(cand[0], cand[1], cand[2]), dtype=np.float64)
+            val = _objective(cand)
+            if val <= best:
+                s = cand
+                best = val
+                step = min(0.2, local_step * 1.2)
+                accepted = True
+                break
+            local_step *= 0.5
+        if not accepted:
+            break
+
+    return float(s[0]), float(s[1]), float(s[2])
+
 
 def compute_waist_angles(
     q_upper_xyzw: QuatXYZW | None,
@@ -421,7 +526,9 @@ def compute_waist_angles(
         q = normalize_quat_xyzw_short_arc(quat_mul_xyzw(quat_conjugate_xyzw(q_lower_xyzw), q))
 
     theta_x, theta_y, theta_z = euler_xyz_rad_waist_extrinsic(q)
-    return -theta_x, theta_z, -theta_y
+    raw_pitch, raw_roll, raw_yaw = -theta_x, theta_z, -theta_y
+    r_target = quat_xyzw_to_mat3(q)
+    return _project_waist_semantic_with_limits(raw_pitch, raw_roll, raw_yaw, r_target)
 
 
 WAIST_JOINT_TO_AXIS_INDEX: dict[str, int] = {
