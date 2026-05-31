@@ -32,12 +32,12 @@ G1_LEG_JOINT_EXPR: list[str] = [
 # Multiplier on C0 base reset noise (0.05 rad) and obs noise in C1.
 C1_RESET_NOISE_SCALE_BY_EXPR: dict[str, float] = {
     **{expr: 0.0 for expr in G1_ARM_JOINT_EXPR},
-    **{expr: 0.2 for expr in G1_WAIST_JOINT_EXPR},
+    **{expr: 0.0 for expr in G1_WAIST_JOINT_EXPR},
 }
 
 C1_OBS_NOISE_SCALE_BY_EXPR: dict[str, float] = {
     **{expr: 0.0 for expr in G1_ARM_JOINT_EXPR},
-    **{expr: 0.2 for expr in G1_WAIST_JOINT_EXPR},
+    **{expr: 0.0 for expr in G1_WAIST_JOINT_EXPR},
 }
 
 C1_JOINT_POS_OBS_NOISE = 0.01

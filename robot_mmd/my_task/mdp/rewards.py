@@ -159,3 +159,32 @@ def root_xy_tracking_exp(
     err_sq = torch.square(p_cur_xy - p_ref_xy)
     mse_xy = torch.mean(err_sq, dim=1)
     return torch.exp(-mse_xy / (float(sigma) ** 2))
+
+
+def root_z_tracking_exp(
+    env: "ManagerBasedRLEnv",
+    h5_path: str,
+    window_seconds: float = 10.0,
+    sigma: float = 0.06,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Exp-kernel reward on root Z alignment (world-frame) against H5 root reference.
+
+    Reference root position is reconstructed as:
+    ``p_ref_world = p_anchor_default + env_origin + p_delta_h5``.
+    Only Z is tracked to softly keep body height close to the source motion.
+    """
+    if sigma <= 0.0:
+        raise ValueError(f"sigma must be > 0, got {sigma}")
+
+    buf = get_or_create_motion_buffer(env, h5_path, window_seconds, asset_name=asset_cfg.name)
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    p_cur_z = asset.data.root_state_w[:, 2]
+    p_anchor_z = asset.data.default_root_state[:, 2]
+    env_origin_z = _cloner_env_origins(env)[:, 2]
+    p_delta_z = buf.root_pos_delta(motion_steps(env))[:, 2]
+    p_ref_z = p_anchor_z + env_origin_z + p_delta_z
+
+    err_sq_z = torch.square(p_cur_z - p_ref_z)
+    return torch.exp(-err_sq_z / (float(sigma) ** 2))

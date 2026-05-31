@@ -77,7 +77,7 @@ def reset_to_motion_start(
     """Reset root + joints to the reference motion's first frame plus optional noise.
 
     When ``joint_noise_scale_by_expr`` is set, each joint's reset noise is
-    ``joint_pos_noise * scale`` (e.g. arms 0, waist 0.2, legs 1.0).
+    ``joint_pos_noise * scale`` (e.g. arms/waist 0, legs 1.0).
     """
     if env_ids.numel() == 0:
         return

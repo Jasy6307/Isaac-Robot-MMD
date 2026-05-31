@@ -94,7 +94,11 @@ parser.add_argument(
     "--episode_length_curriculum_spec",
     type=str,
     default=None,
-    help="Curriculum spec as start_iter:min_s:max_s, e.g. 0:2:4,3000:3:5,6000:4:7.",
+    help=(
+        "Curriculum spec: start:min_s:max_s for random-length stages, "
+        "or start alone for start-to-end (end = --window_seconds). "
+        "e.g. 0:2:4,9000"
+    ),
 )
 parser.add_argument(
     "--random_motion_start",
@@ -173,8 +177,12 @@ import robot_mmd.my_task  # noqa: F401, E402  -- register Isaac-G1-* tasks
 @dataclass(frozen=True)
 class EpisodeLengthStage:
     start_iter: int
-    min_seconds: float
-    max_seconds: float
+    min_seconds: float | None = None
+    max_seconds: float | None = None
+
+    @property
+    def start_to_end(self) -> bool:
+        return self.min_seconds is None and self.max_seconds is None
 
 
 def _parse_episode_length_curriculum(spec: str) -> list[EpisodeLengthStage]:
@@ -184,9 +192,16 @@ def _parse_episode_length_curriculum(spec: str) -> list[EpisodeLengthStage]:
         if not item:
             continue
         parts = item.split(":")
+        if len(parts) == 1:
+            start_iter = int(parts[0])
+            if start_iter < 0:
+                raise ValueError(f"start_iter must be >= 0, got {start_iter}")
+            stages.append(EpisodeLengthStage(start_iter=start_iter))
+            continue
         if len(parts) != 3:
             raise ValueError(
-                f"Invalid curriculum chunk '{item}'. Expected format start:min:max."
+                f"Invalid curriculum chunk '{item}'. "
+                "Expected start:min:max or start (start-to-end)."
             )
         start_iter = int(parts[0])
         min_s = float(parts[1])
@@ -197,7 +212,9 @@ def _parse_episode_length_curriculum(spec: str) -> list[EpisodeLengthStage]:
             raise ValueError(f"Episode seconds must be > 0, got {min_s}, {max_s}")
         if min_s > max_s:
             min_s, max_s = max_s, min_s
-        stages.append(EpisodeLengthStage(start_iter=start_iter, min_seconds=min_s, max_seconds=max_s))
+        stages.append(
+            EpisodeLengthStage(start_iter=start_iter, min_seconds=min_s, max_seconds=max_s)
+        )
     if not stages:
         raise ValueError("Curriculum spec produced no stages.")
     stages.sort(key=lambda s: s.start_iter)
@@ -239,11 +256,23 @@ def _set_env_runtime_episode_range(env, min_seconds: float, max_seconds: float) 
 def _set_env_runtime_start_to_end_mode(
     env, *, enabled: bool, end_seconds: float | None = None
 ) -> None:
-    """Toggle runtime mode: random start, then run until stage end."""
+    """Toggle runtime mode: random start, then run until motion-window end."""
     unwrapped = env.unwrapped
     setattr(unwrapped, "_g1_episode_random_start_to_end", bool(enabled))
     if end_seconds is not None:
         setattr(unwrapped, "_g1_episode_end_seconds", float(end_seconds))
+
+
+def _resolve_motion_window_seconds(env_cfg: ManagerBasedRLEnvCfg) -> float:
+    """Motion reference window length used as start-to-end episode end."""
+    if args_cli.window_seconds is not None:
+        return float(args_cli.window_seconds)
+    reset_evt = getattr(env_cfg.events, "reset_robot_joints", None)
+    if reset_evt is not None and hasattr(reset_evt, "params"):
+        ws = reset_evt.params.get("window_seconds")
+        if ws is not None:
+            return float(ws)
+    return float(env_cfg.episode_length_s)
 
 
 def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
@@ -412,26 +441,35 @@ def main() -> None:
     if args_cli.episode_length_curriculum:
         spec = args_cli.episode_length_curriculum_spec
         if spec is None:
-            spec = "0:2:4,3000:3:5,6000:4:7"
+            spec = "0:2:4,3000:3:5,6000"
+        motion_window_seconds = _resolve_motion_window_seconds(env_cfg)
         stages = _parse_episode_length_curriculum(spec)
         schedule = _curriculum_schedule(stages, int(agent_cfg.max_iterations))
         print(f"[INFO] Episode-length curriculum enabled: {spec}")
-        for stage_idx, (stage, stage_iters) in enumerate(schedule):
-            _set_env_runtime_episode_range(
-                env, min_seconds=stage.min_seconds, max_seconds=stage.max_seconds
-            )
-            second_stage_start_to_end = stage_idx == 1
-            _set_env_runtime_start_to_end_mode(
-                env,
-                enabled=second_stage_start_to_end,
-                end_seconds=stage.max_seconds if second_stage_start_to_end else None,
-            )
-            print(
-                f"[INFO] Curriculum stage start={stage.start_iter} "
-                f"range=[{stage.min_seconds:.2f}, {stage.max_seconds:.2f}]s "
-                f"iters={stage_iters} "
-                f"start_to_end={'on' if second_stage_start_to_end else 'off'}"
-            )
+        print(f"[INFO] Start-to-end stages use motion window end: {motion_window_seconds:.2f}s")
+        for stage, stage_iters in schedule:
+            if stage.start_to_end:
+                _set_env_runtime_start_to_end_mode(
+                    env,
+                    enabled=True,
+                    end_seconds=motion_window_seconds,
+                )
+                print(
+                    f"[INFO] Curriculum stage start={stage.start_iter} "
+                    f"mode=start_to_end end={motion_window_seconds:.2f}s "
+                    f"iters={stage_iters}"
+                )
+            else:
+                assert stage.min_seconds is not None and stage.max_seconds is not None
+                _set_env_runtime_episode_range(
+                    env, min_seconds=stage.min_seconds, max_seconds=stage.max_seconds
+                )
+                _set_env_runtime_start_to_end_mode(env, enabled=False)
+                print(
+                    f"[INFO] Curriculum stage start={stage.start_iter} "
+                    f"range=[{stage.min_seconds:.2f}, {stage.max_seconds:.2f}]s "
+                    f"iters={stage_iters} start_to_end=off"
+                )
             runner.learn(
                 num_learning_iterations=stage_iters, init_at_random_ep_len=True
             )

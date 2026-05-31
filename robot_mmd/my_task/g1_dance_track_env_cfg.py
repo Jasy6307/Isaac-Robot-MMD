@@ -62,10 +62,12 @@ C1_ACTION_RATE_L2_WEIGHT = -0.05 # -0.01
 C1_ACTION_L2_WEIGHT = -1.0e-4 # -1.0e-4
 C1_ALIVE_WEIGHT = 0.8
 C1_TERMINATED_PENALTY_WEIGHT = -0.4
-C1_ROOT_YAW_TRACK_WEIGHT = 2.0
+C1_ROOT_YAW_TRACK_WEIGHT = 3.0
 C1_ROOT_YAW_TRACK_SIGMA = 0.10
 C1_ROOT_XY_TRACK_WEIGHT = 5.0
 C1_ROOT_XY_TRACK_SIGMA = 0.05
+C1_ROOT_Z_TRACK_WEIGHT = 1.0
+C1_ROOT_Z_TRACK_SIGMA = 0.06
 # C1 joint tracking group weights (lower body): ankles are down-weighted.
 C1_TRACKING_LOWER_BODY_WEIGHT = 1.5
 C1_TRACKING_ANKLE_WEIGHT = 0.2
@@ -78,8 +80,8 @@ C1_TRAIN_SEGMENT_SECONDS = 2.0
 C1_RANDOM_EPISODE_LENGTH = True
 C1_EPISODE_MIN_SECONDS = 2.0
 C1_EPISODE_MAX_SECONDS = 4.0
-C1_EPISODE_LENGTH_CURRICULUM_SPEC = "0:2:4,3000:3:5,6000:4:7"
-# C1: arms track H5 open-loop; waist uses 20% of C0 reset/obs noise; legs unchanged.
+C1_EPISODE_LENGTH_CURRICULUM_SPEC = "0:2:4,3000:3:5,6000"
+# C1: arms track H5 open-loop; waist reset/obs noise disabled like arms; legs unchanged.
 C1_RESET_JOINT_POS_NOISE = 0.05
 
 
@@ -259,7 +261,7 @@ class C1ActionsCfg(ActionsCfg):
 
 @configclass
 class C1EventCfg(EventCfg):
-    """C1 reset: arms exact reference; waist 20% noise; legs full noise."""
+    """C1 reset: arms and waist exact reference; legs full noise."""
 
     reset_robot_joints = EventTerm(
         func=mdp.reset_to_motion_start,
@@ -328,8 +330,8 @@ class G1DanceTrackC1EnvCfg(G1DanceTrackC0EnvCfg):
 
     C1 overrides C0 action scale and smoothness reward weights (see module
     constants ``C1_ACTION_*``) to reduce jitter / launch under gravity.
-    Arms are frozen to the H5 reference; waist/upper-body reset and obs noise
-    are scaled down (see ``C1_*_NOISE_*`` in ``joint_groups``).
+    Arms are frozen to the H5 reference; waist reset/obs noise is disabled like arms.
+    Legs keep full reset/obs noise (see ``C1_*_NOISE_*`` in ``joint_groups``).
     Ground is at the default height (z=0), not the lowered C0 plane.
     """
 
@@ -340,7 +342,7 @@ class G1DanceTrackC1EnvCfg(G1DanceTrackC0EnvCfg):
     def __post_init__(self) -> None:
         super().__post_init__()
         self.episode_length_s = C1_EPISODE_MAX_SECONDS
-        # Waist / legs keep scaled obs noise; arms get none (see joint_groups).
+        # Legs keep scaled obs noise; arms/waist get none (see joint_groups).
         self.observations.policy.joint_pos = ObsTerm(
             func=mdp.joint_pos_rel_group_noise,
             noise=None,
@@ -384,6 +386,15 @@ class G1DanceTrackC1EnvCfg(G1DanceTrackC0EnvCfg):
                 "h5_path": DEFAULT_DANCE_H5,
                 "window_seconds": DEFAULT_WINDOW_SECONDS,
                 "sigma": C1_ROOT_XY_TRACK_SIGMA,
+            },
+        )
+        self.rewards.root_z_tracking = RewTerm(
+            func=mdp.root_z_tracking_exp,
+            weight=C1_ROOT_Z_TRACK_WEIGHT,
+            params={
+                "h5_path": DEFAULT_DANCE_H5,
+                "window_seconds": DEFAULT_WINDOW_SECONDS,
+                "sigma": C1_ROOT_Z_TRACK_SIGMA,
             },
         )
 
