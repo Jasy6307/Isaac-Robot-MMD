@@ -43,6 +43,25 @@ class ReferenceFrozenJointPositionAction(JointPositionAction):
             self._frozen_joint_ids = torch.empty(0, device=self.device, dtype=torch.long)
             self._frozen_action_cols = torch.empty(0, device=self.device, dtype=torch.long)
 
+    def _get_reference_joint_targets(self) -> torch.Tensor:
+        """Reference absolute joint targets aligned with this action term's joint slice."""
+        buf = get_or_create_motion_buffer(
+            self._env,
+            self.cfg.motion_h5_path,
+            float(self.cfg.motion_window_seconds),
+            asset_name=self.cfg.asset_name,
+        )
+        q_ref_abs_all = buf.q_ref_abs(motion_steps(self._env))
+        if isinstance(self._joint_ids, slice):
+            return q_ref_abs_all
+        return q_ref_abs_all[:, self._joint_ids]
+
+    def _scaled_raw_action(self, cols: torch.Tensor) -> torch.Tensor:
+        """Return scale * raw_action for selected action columns."""
+        if isinstance(self._scale, torch.Tensor):
+            return self._raw_actions[:, cols] * self._scale[:, cols]
+        return self._raw_actions[:, cols] * float(self._scale)
+
     def process_actions(self, actions: torch.Tensor) -> None:
         super().process_actions(actions)
         if self._frozen_action_cols.numel() == 0:
@@ -59,15 +78,9 @@ class ReferenceFrozenJointPositionAction(JointPositionAction):
         self._asset.set_joint_position_target(self.processed_actions, joint_ids=self._joint_ids)
         if self._frozen_joint_ids.numel() == 0:
             return
-        buf = get_or_create_motion_buffer(
-            self._env,
-            self.cfg.motion_h5_path,
-            float(self.cfg.motion_window_seconds),
-            asset_name=self.cfg.asset_name,
-        )
-        q_ref = buf.q_ref_abs(motion_steps(self._env))
+        q_ref = self._get_reference_joint_targets()
         self._asset.set_joint_position_target(
-            q_ref[:, self._frozen_joint_ids],
+            q_ref[:, self._frozen_action_cols],
             joint_ids=self._frozen_joint_ids,
         )
 
@@ -83,3 +96,81 @@ class ReferenceFrozenJointPositionActionCfg(JointPositionActionCfg):
 
     motion_h5_path: str = ""
     motion_window_seconds: float = 10.0
+
+
+class ReferenceResidualJointPositionAction(ReferenceFrozenJointPositionAction):
+    """Use reference targets as baseline and learn policy residuals around them.
+
+    Command equation for residual-controlled joints:
+    ``q_cmd = q_ref + residual_alpha * scale * raw_action``.
+    """
+
+    cfg: "ReferenceResidualJointPositionActionCfg"
+
+    def __init__(self, cfg: "ReferenceResidualJointPositionActionCfg", env: "ManagerBasedEnv") -> None:
+        super().__init__(cfg, env)
+        asset: Articulation = self._asset
+        if self.cfg.residual_joint_name_expr:
+            self._residual_joint_ids = resolve_joint_ids(asset, list(self.cfg.residual_joint_name_expr))
+            if isinstance(self._joint_ids, slice):
+                self._residual_action_cols = self._residual_joint_ids
+            else:
+                joint_id_to_col = {int(j): i for i, j in enumerate(self._joint_ids)}
+                self._residual_action_cols = torch.tensor(
+                    [joint_id_to_col[int(j)] for j in self._residual_joint_ids.tolist()],
+                    device=self.device,
+                    dtype=torch.long,
+                )
+        else:
+            # Empty list means "all action-controlled joints".
+            action_dim = self.action_dim
+            self._residual_action_cols = torch.arange(
+                action_dim,
+                device=self.device,
+                dtype=torch.long,
+            )
+            if isinstance(self._joint_ids, slice):
+                self._residual_joint_ids = self._residual_action_cols
+            else:
+                self._residual_joint_ids = self._joint_ids[self._residual_action_cols]
+
+    def _runtime_residual_alpha(self) -> float:
+        alpha = getattr(self._env, "_g1_residual_alpha", self.cfg.residual_alpha)
+        return max(0.0, float(alpha))
+
+    def process_actions(self, actions: torch.Tensor) -> None:
+        # Base class stores raw actions and prepares internal buffers.
+        JointPositionAction.process_actions(self, actions)
+        q_ref = self._get_reference_joint_targets()
+
+        # Keep original behavior for non-residual joints unless explicitly enabled.
+        if self.cfg.use_reference_residual and self._residual_action_cols.numel() > 0:
+            alpha = self._runtime_residual_alpha()
+            delta = self._scaled_raw_action(self._residual_action_cols)
+            self._processed_actions[:, self._residual_action_cols] = (
+                q_ref[:, self._residual_action_cols] + alpha * delta
+            )
+
+        # Frozen joints are still fully open-loop from reference.
+        if self._frozen_action_cols.numel() > 0:
+            self._raw_actions[:, self._frozen_action_cols] = 0.0
+            self._processed_actions[:, self._frozen_action_cols] = q_ref[:, self._frozen_action_cols]
+
+
+@configclass
+class ReferenceResidualJointPositionActionCfg(ReferenceFrozenJointPositionActionCfg):
+    """Reference-frozen joint action with optional residual control around reference."""
+
+    class_type: type[ActionTerm] = ReferenceResidualJointPositionAction
+
+    use_reference_residual: bool = True
+    """If True, selected joints use ``q_ref + residual_alpha * scale * raw_action``."""
+
+    residual_joint_name_expr: list[str] = []
+    """Joint name expressions controlled by residual policy around ``q_ref``.
+
+    Empty means all action-controlled joints.
+    """
+
+    residual_alpha: float = 1.0
+    """Residual gain multiplier. Can be overridden at runtime via ``_g1_residual_alpha``."""

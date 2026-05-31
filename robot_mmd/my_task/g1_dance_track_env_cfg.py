@@ -36,6 +36,8 @@ from robot_mmd.my_task.g1_stand_env_cfg import G1_TPOSE_INIT_STATE
 from robot_mmd.my_task.mdp.actions import (
     ReferenceFrozenJointPositionAction,
     ReferenceFrozenJointPositionActionCfg,
+    ReferenceResidualJointPositionAction,
+    ReferenceResidualJointPositionActionCfg,
 )
 from robot_mmd.my_task.mdp.joint_groups import (
     C1_JOINT_POS_OBS_NOISE,
@@ -43,6 +45,8 @@ from robot_mmd.my_task.mdp.joint_groups import (
     C1_OBS_NOISE_SCALE_BY_EXPR,
     C1_RESET_NOISE_SCALE_BY_EXPR,
     G1_ARM_JOINT_EXPR,
+    G1_LEG_JOINT_EXPR,
+    G1_WAIST_JOINT_EXPR,
 )
 
 
@@ -81,8 +85,13 @@ C1_RANDOM_EPISODE_LENGTH = True
 C1_EPISODE_MIN_SECONDS = 2.0
 C1_EPISODE_MAX_SECONDS = 4.0
 C1_EPISODE_LENGTH_CURRICULUM_SPEC = "0:2:4,3000:3:5,6000"
-# C1: arms track H5 open-loop; waist reset/obs noise disabled like arms; legs unchanged.
+# C1: arms+waist track H5 open-loop; legs get reset/obs noise.
 C1_RESET_JOINT_POS_NOISE = 0.05
+# C1 residual defaults: arms+waist frozen; legs learn residual around q_ref.
+C1_RESIDUAL_ALPHA = 1.0
+# Residual variant: stronger tracking signal + slightly looser sigma for gradient when balancing.
+C1_RESIDUAL_JOINT_TRACK_WEIGHT = 20.0
+C1_RESIDUAL_JOINT_TRACK_SIGMA = 0.10
 
 
 ##
@@ -259,6 +268,30 @@ class C1ActionsCfg(ActionsCfg):
     joint_pos = _c1_joint_pos_action_cfg()
 
 
+def _c1_residual_joint_pos_action_cfg() -> ReferenceResidualJointPositionActionCfg:
+    return ReferenceResidualJointPositionActionCfg(
+        class_type=ReferenceResidualJointPositionAction,
+        asset_name="robot",
+        joint_names=[".*"],
+        scale=C1_ACTION_SCALE,
+        use_default_offset=False,
+        # Arms+waist open-loop from reference; only legs learn residual.
+        frozen_joint_name_expr=G1_ARM_JOINT_EXPR + G1_WAIST_JOINT_EXPR,
+        residual_joint_name_expr=G1_LEG_JOINT_EXPR,
+        use_reference_residual=True,
+        residual_alpha=C1_RESIDUAL_ALPHA,
+        motion_h5_path=DEFAULT_DANCE_H5,
+        motion_window_seconds=DEFAULT_WINDOW_SECONDS,
+    )
+
+
+@configclass
+class C1ResidualActionsCfg(ActionsCfg):
+    """C1 residual control: legs track reference + policy residual; arms+waist frozen."""
+
+    joint_pos = _c1_residual_joint_pos_action_cfg()
+
+
 @configclass
 class C1EventCfg(EventCfg):
     """C1 reset: arms and waist exact reference; legs full noise."""
@@ -330,7 +363,8 @@ class G1DanceTrackC1EnvCfg(G1DanceTrackC0EnvCfg):
 
     C1 overrides C0 action scale and smoothness reward weights (see module
     constants ``C1_ACTION_*``) to reduce jitter / launch under gravity.
-    Arms are frozen to the H5 reference; waist reset/obs noise is disabled like arms.
+    Arms are frozen to the H5 reference; waist reset/obs noise is disabled like arms
+    (but waist is still policy-controlled in the base C1 action term).
     Legs keep full reset/obs noise (see ``C1_*_NOISE_*`` in ``joint_groups``).
     Ground is at the default height (z=0), not the lowered C0 plane.
     """
@@ -422,3 +456,15 @@ class G1DanceTrackC1EnvCfg(G1DanceTrackC0EnvCfg):
             ".*_knee_joint": C1_TRACKING_LOWER_BODY_WEIGHT,
             ".*_ankle_.*_joint": C1_TRACKING_ANKLE_WEIGHT,
         }
+
+
+@configclass
+class G1DanceTrackC1ResidualEnvCfg(G1DanceTrackC1EnvCfg):
+    """C1 residual variant for faster balance+tracking convergence."""
+
+    actions: C1ResidualActionsCfg = C1ResidualActionsCfg()
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.rewards.joint_pos_tracking.weight = C1_RESIDUAL_JOINT_TRACK_WEIGHT
+        self.rewards.joint_pos_tracking.params["sigma"] = C1_RESIDUAL_JOINT_TRACK_SIGMA

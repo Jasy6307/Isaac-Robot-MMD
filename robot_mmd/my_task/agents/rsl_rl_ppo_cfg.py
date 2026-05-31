@@ -67,3 +67,12 @@ class G1DanceTrackC1PPORunnerCfg(G1DanceTrackC0PPORunnerCfg):
         self.experiment_name = "g1_dance_track_c1"
         self.max_iterations = 10000
         self.save_interval = 500
+
+
+@configclass
+class G1DanceTrackC1ResidualPPORunnerCfg(G1DanceTrackC1PPORunnerCfg):
+    """PPO config for C1 residual-control dance tracking."""
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.experiment_name = "g1_dance_track_c1_residual"

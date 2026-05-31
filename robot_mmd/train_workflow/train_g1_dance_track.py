@@ -108,6 +108,25 @@ parser.add_argument(
     help="Enable random motion start at reset (C1 random short-segment training).",
 )
 parser.add_argument(
+    "--residual_alpha",
+    type=float,
+    default=None,
+    help="Override residual gain alpha for residual joint actions.",
+)
+parser.add_argument(
+    "--use_reference_residual",
+    dest="use_reference_residual",
+    action="store_true",
+    default=None,
+    help="Enable reference residual action mode when supported by task action cfg.",
+)
+parser.add_argument(
+    "--no_use_reference_residual",
+    dest="use_reference_residual",
+    action="store_false",
+    help="Disable reference residual action mode when supported by task action cfg.",
+)
+parser.add_argument(
     "--no_random_motion_start",
     dest="random_motion_start",
     action="store_false",
@@ -285,6 +304,8 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
         and args_cli.random_episode_length is None
         and args_cli.episode_min_seconds is None
         and args_cli.episode_max_seconds is None
+        and args_cli.residual_alpha is None
+        and args_cli.use_reference_residual is None
     ):
         return
 
@@ -299,6 +320,8 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
     new_random_episode_length = args_cli.random_episode_length
     new_episode_min_s = args_cli.episode_min_seconds
     new_episode_max_s = args_cli.episode_max_seconds
+    new_residual_alpha = args_cli.residual_alpha
+    new_use_reference_residual = args_cli.use_reference_residual
 
     if new_episode_s is not None:
         env_cfg.episode_length_s = float(new_episode_s)
@@ -347,6 +370,13 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
             joint_pos_action.motion_h5_path = new_h5
         if new_ws is not None and hasattr(joint_pos_action, "motion_window_seconds"):
             joint_pos_action.motion_window_seconds = float(new_ws)
+        if new_residual_alpha is not None and hasattr(joint_pos_action, "residual_alpha"):
+            joint_pos_action.residual_alpha = float(new_residual_alpha)
+        if (
+            new_use_reference_residual is not None
+            and hasattr(joint_pos_action, "use_reference_residual")
+        ):
+            joint_pos_action.use_reference_residual = bool(new_use_reference_residual)
 
 
 def main() -> None:

@@ -49,6 +49,25 @@ parser.add_argument(
     help="Override reference motion window (seconds). Full play runs this entire window.",
 )
 parser.add_argument(
+    "--residual_alpha",
+    type=float,
+    default=None,
+    help="Override residual gain alpha for residual joint actions.",
+)
+parser.add_argument(
+    "--use_reference_residual",
+    dest="use_reference_residual",
+    action="store_true",
+    default=None,
+    help="Enable reference residual action mode when supported by task action cfg.",
+)
+parser.add_argument(
+    "--no_use_reference_residual",
+    dest="use_reference_residual",
+    action="store_false",
+    help="Disable reference residual action mode when supported by task action cfg.",
+)
+parser.add_argument(
     "--full_window_episode",
     dest="full_window_episode",
     action="store_true",
@@ -166,10 +185,17 @@ def _find_h5_window(env_cfg: ManagerBasedRLEnvCfg) -> tuple[str, float]:
 
 
 def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
-    if args_cli.motion_h5 is None and args_cli.window_seconds is None:
+    if (
+        args_cli.motion_h5 is None
+        and args_cli.window_seconds is None
+        and args_cli.residual_alpha is None
+        and args_cli.use_reference_residual is None
+    ):
         return
     new_h5 = os.path.abspath(args_cli.motion_h5) if args_cli.motion_h5 is not None else None
     new_ws = args_cli.window_seconds
+    new_residual_alpha = args_cli.residual_alpha
+    new_use_reference_residual = args_cli.use_reference_residual
 
     def _patch(params: dict) -> None:
         if "h5_path" in params and new_h5 is not None:
@@ -208,6 +234,13 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
             joint_pos_action.motion_h5_path = new_h5
         if new_ws is not None and hasattr(joint_pos_action, "motion_window_seconds"):
             joint_pos_action.motion_window_seconds = float(new_ws)
+        if new_residual_alpha is not None and hasattr(joint_pos_action, "residual_alpha"):
+            joint_pos_action.residual_alpha = float(new_residual_alpha)
+        if (
+            new_use_reference_residual is not None
+            and hasattr(joint_pos_action, "use_reference_residual")
+        ):
+            joint_pos_action.use_reference_residual = bool(new_use_reference_residual)
 
 
 def main() -> None:
