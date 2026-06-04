@@ -88,9 +88,9 @@ C1_EPISODE_LENGTH_CURRICULUM_SPEC = "0:2:4,3000:3:5,6000"
 # C1: arms+waist track H5 open-loop; legs get reset/obs noise.
 C1_RESET_JOINT_POS_NOISE = 0.05
 # C1 residual defaults: arms+waist frozen; legs learn residual around q_ref.
-C1_RESIDUAL_ALPHA = 1.0
+C1_RESIDUAL_ALPHA = 0.3
 # Residual variant: stronger tracking signal + slightly looser sigma for gradient when balancing.
-C1_RESIDUAL_JOINT_TRACK_WEIGHT = 20.0
+C1_RESIDUAL_JOINT_TRACK_WEIGHT = 10.0
 C1_RESIDUAL_JOINT_TRACK_SIGMA = 0.10
 
 

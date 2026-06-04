@@ -54,6 +54,12 @@ parser.add_argument(
     help="Override reference motion window length (seconds).",
 )
 parser.add_argument(
+    "--window_frames",
+    type=int,
+    default=None,
+    help="Override reference motion window length by frame count (takes precedence over --window_seconds).",
+)
+parser.add_argument(
     "--episode_seconds",
     type=float,
     default=None,
@@ -191,6 +197,7 @@ from isaaclab_tasks.utils import get_checkpoint_path  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry  # noqa: E402
 
 import robot_mmd.my_task  # noqa: F401, E402  -- register Isaac-G1-* tasks
+from robot_mmd.train_workflow.utils.hdf5_motion import load_hdf5_motion  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -294,11 +301,34 @@ def _resolve_motion_window_seconds(env_cfg: ManagerBasedRLEnvCfg) -> float:
     return float(env_cfg.episode_length_s)
 
 
+def _resolve_motion_h5_path(env_cfg: ManagerBasedRLEnvCfg) -> str:
+    if args_cli.motion_h5 is not None:
+        return os.path.abspath(args_cli.motion_h5)
+    reset_evt = getattr(env_cfg.events, "reset_robot_joints", None)
+    if reset_evt is not None and hasattr(reset_evt, "params"):
+        hp = reset_evt.params.get("h5_path")
+        if hp is not None:
+            return str(hp)
+    raise ValueError("无法解析 motion_h5，请显式传入 --motion_h5")
+
+
+def _window_seconds_from_frames(h5_path: str, window_frames: int) -> float:
+    wf = int(window_frames)
+    if wf <= 0:
+        raise ValueError(f"--window_frames must be > 0, got {window_frames}")
+    motion = load_hdf5_motion(h5_path)
+    fps = float(motion.fps)
+    if fps <= 0.0:
+        raise ValueError(f"Invalid HDF5 fps={fps} for {h5_path}")
+    return float(wf) / fps
+
+
 def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
     """Patch env_cfg with reference-window/episode/random-start overrides."""
     if (
         args_cli.motion_h5 is None
         and args_cli.window_seconds is None
+        and args_cli.window_frames is None
         and args_cli.episode_seconds is None
         and args_cli.random_motion_start is None
         and args_cli.random_episode_length is None
@@ -315,6 +345,13 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
         else None
     )
     new_ws = args_cli.window_seconds
+    if args_cli.window_frames is not None:
+        h5_for_frames = new_h5 if new_h5 is not None else _resolve_motion_h5_path(env_cfg)
+        new_ws = _window_seconds_from_frames(h5_for_frames, int(args_cli.window_frames))
+        print(
+            f"[INFO] --window_frames={int(args_cli.window_frames)} "
+            f"=> window_seconds={new_ws:.6f} (h5={h5_for_frames})"
+        )
     new_episode_s = args_cli.episode_seconds
     new_random_start = args_cli.random_motion_start
     new_random_episode_length = args_cli.random_episode_length

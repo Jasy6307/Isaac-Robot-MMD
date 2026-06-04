@@ -77,6 +77,14 @@ def build_arg_parser(pose_dir: str) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--pd_drive",
+        action="store_true",
+        help=(
+            "PD 驱动模式：关闭重力；root 每帧瞬移跟踪参考，关节不写 teleport，"
+            "全身通过 joint_pos PD 跟踪 retarget 目标。"
+        ),
+    )
+    parser.add_argument(
         "--mmd_knee_hinge_projection",
         action=argparse.BooleanOptionalAction,
         default=True,

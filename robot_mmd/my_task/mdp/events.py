@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 
 _ENV_START_TO_END_MODE_ATTR = "_g1_episode_random_start_to_end"
 _ENV_STAGE_END_SECONDS_ATTR = "_g1_episode_end_seconds"
+_ENV_START_SAMPLE_LOG_COUNT_ATTR = "_g1_start_sample_log_count"
+_ENV_START_SAMPLE_LOG_INTERVAL_ATTR = "_g1_start_sample_log_interval"
 
 
 def _cloner_env_origins(env: "ManagerBasedRLEnv") -> torch.Tensor:
@@ -36,6 +38,32 @@ def _cloner_env_origins(env: "ManagerBasedRLEnv") -> torch.Tensor:
     if cloner_origins is not None:
         return cloner_origins
     return scene.env_origins
+
+
+def _maybe_log_start_steps(
+    env: "ManagerBasedRLEnv",
+    start_steps: torch.Tensor,
+    num_steps: int,
+) -> None:
+    """Low-frequency logging for reset start-step coverage."""
+    if start_steps.numel() == 0 or num_steps <= 0:
+        return
+    count = int(getattr(env, _ENV_START_SAMPLE_LOG_COUNT_ATTR, 0))
+    interval = int(getattr(env, _ENV_START_SAMPLE_LOG_INTERVAL_ATTR, 200))
+    setattr(env, _ENV_START_SAMPLE_LOG_COUNT_ATTR, count + 1)
+    if interval <= 0 or (count % interval) != 0:
+        return
+    ss = start_steps.to(dtype=torch.float32)
+    tail_threshold = max(0, int(round(0.9 * max(1, num_steps - 1))))
+    tail_ratio = float((start_steps >= tail_threshold).to(dtype=torch.float32).mean().item())
+    print(
+        "[INFO] reset random_start coverage: "
+        f"min={int(start_steps.min().item())} "
+        f"max={int(start_steps.max().item())} "
+        f"mean={float(ss.mean().item()):.1f} "
+        f"tail>=90% ratio={tail_ratio:.3f} "
+        f"(num_steps={int(num_steps)})"
+    )
 
 
 def reset_root_to_spawn(
@@ -131,15 +159,17 @@ def reset_to_motion_start(
         if start_steps is None:
             start_steps = torch.zeros((env_ids.numel(),), device=asset.device, dtype=torch.long)
     elif random_start:
-        max_start_each = (int(buf.num_steps) - target_steps).clamp_min(0)
-        start_steps = torch.zeros((env_ids.numel(),), device=asset.device, dtype=torch.long)
-        has_room = max_start_each > 0
-        if has_room.any():
-            rand_unit = torch.rand((int(has_room.sum().item()),), device=asset.device)
-            start_steps[has_room] = torch.floor(
-                rand_unit * (max_start_each[has_room].to(dtype=torch.float32) + 1.0)
-            ).to(dtype=torch.long)
+        # Tail-coverage mode: uniformly sample any start in [0, num_steps-1].
+        # Overrun segments are naturally held at the last reference frame via buffer clamping.
+        start_steps = torch.randint(
+            low=0,
+            high=max(1, int(buf.num_steps)),
+            size=(env_ids.numel(),),
+            device=asset.device,
+            dtype=torch.long,
+        )
         set_motion_start_steps(env, env_ids, start_steps)
+        _maybe_log_start_steps(env, start_steps, int(buf.num_steps))
     else:
         reset_motion_start_steps(env, env_ids)
         start_steps = torch.zeros((env_ids.numel(),), device=asset.device, dtype=torch.long)

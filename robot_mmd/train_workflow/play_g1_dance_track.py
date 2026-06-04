@@ -49,6 +49,12 @@ parser.add_argument(
     help="Override reference motion window (seconds). Full play runs this entire window.",
 )
 parser.add_argument(
+    "--window_frames",
+    type=int,
+    default=None,
+    help="Override reference motion window by frame count (takes precedence over --window_seconds).",
+)
+parser.add_argument(
     "--residual_alpha",
     type=float,
     default=None,
@@ -127,6 +133,7 @@ import robot_mmd.my_task  # noqa: F401, E402
 
 from robot_mmd.my_task.mdp.observations import joint_pos_tracking_error  # noqa: E402
 from robot_mmd.my_task.motion_reference import get_or_create_motion_buffer  # noqa: E402
+from robot_mmd.train_workflow.utils.hdf5_motion import load_hdf5_motion  # noqa: E402
 
 
 class _PlayPerfTracker:
@@ -184,16 +191,37 @@ def _find_h5_window(env_cfg: ManagerBasedRLEnvCfg) -> tuple[str, float]:
     return str(tracking.params["h5_path"]), float(tracking.params["window_seconds"])
 
 
+def _window_seconds_from_frames(h5_path: str, window_frames: int) -> float:
+    wf = int(window_frames)
+    if wf <= 0:
+        raise ValueError(f"--window_frames must be > 0, got {window_frames}")
+    motion = load_hdf5_motion(h5_path)
+    fps = float(motion.fps)
+    if fps <= 0.0:
+        raise ValueError(f"Invalid HDF5 fps={fps} for {h5_path}")
+    return float(wf) / fps
+
+
 def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
     if (
         args_cli.motion_h5 is None
         and args_cli.window_seconds is None
+        and args_cli.window_frames is None
         and args_cli.residual_alpha is None
         and args_cli.use_reference_residual is None
     ):
         return
     new_h5 = os.path.abspath(args_cli.motion_h5) if args_cli.motion_h5 is not None else None
     new_ws = args_cli.window_seconds
+    if args_cli.window_frames is not None:
+        if new_h5 is None:
+            tracking = env_cfg.rewards.joint_pos_tracking
+            new_h5 = os.path.abspath(str(tracking.params["h5_path"]))
+        new_ws = _window_seconds_from_frames(new_h5, int(args_cli.window_frames))
+        print(
+            f"[INFO] --window_frames={int(args_cli.window_frames)} "
+            f"=> window_seconds={new_ws:.6f} (h5={new_h5})"
+        )
     new_residual_alpha = args_cli.residual_alpha
     new_use_reference_residual = args_cli.use_reference_residual
 

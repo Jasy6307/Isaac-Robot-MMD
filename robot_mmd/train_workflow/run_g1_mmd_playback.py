@@ -10,9 +10,11 @@ G1 MMD 动作回放主入口（Isaac Sim）。
 3) 有 audio 的 dance 播 WAV，与动作同一「逻辑帧时间轴」；
 4) 在重置和切换动作时维护控制参考姿态，避免姿态回弹。
 5) ``--pd_probe``：重力下纯 PD 驱动摸底（不写 root/关节 teleport）。
+6) ``--pd_drive``：无重力 + root 瞬移 + 全身关节 PD（关节不写 teleport）。
 
 启动：``python robot_mmd/train_workflow/run_g1_mmd_playback.py``
 PD 摸底 Step 1：``python robot_mmd/train_workflow/run_g1_mmd_playback.py --pd_probe``
+PD 驱动（root 瞬移 + 关节 PD）：``python robot_mmd/train_workflow/run_g1_mmd_playback.py --pd_drive``
 """
 
 from __future__ import annotations
@@ -114,6 +116,11 @@ VMD_FPS = 30
 def main():
     """零动作运行 G1 站立环境。"""
     pd_probe = bool(getattr(args_cli, "pd_probe", False))
+    pd_drive = bool(getattr(args_cli, "pd_drive", False))
+    if pd_probe and pd_drive:
+        raise SystemExit("--pd_probe 与 --pd_drive 不能同时使用")
+    use_joint_pd = pd_probe or pd_drive
+    use_root_teleport = not pd_probe
     pose_cycle_key = (args_cli.pose_cycle_key or "P").strip().upper()[:1]
     pose_motions = load_pose_motion_dir(POSE_DIR)
     dance_motion_by_key, dance_wav_by_key = load_dances_from_yaml(
@@ -165,6 +172,10 @@ def main():
         print(
             "[INFO] PD probe: gravity ON, no root/joint teleport — joint_pos PD only. "
             f"Step 1 static test: {pose_cycle_key}=pose cycle, I=joint_mapping_test"
+        )
+    elif pd_drive:
+        print(
+            "[INFO] PD drive: gravity OFF, root teleport ON, all joints joint-PD (no joint teleport)."
         )
     if dance_wav_by_key:
         audio_util.warn_if_no_pygame_sync()
@@ -228,7 +239,7 @@ def main():
     motion_has_wav = False
     root_quat_rpy_scale = list(MMD_ROOT_QUAT_RPY_SCALE_DEFAULT)
     root_quat_rpy_axis_idx = list(MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT)
-    pd_probe_hold_action: torch.Tensor | None = None
+    pd_hold_joint_pos_cmd: Any = None
 
     def _on_mapping_ui_changed():
         nonlocal mapping_reapply_requested
@@ -372,15 +383,34 @@ def main():
         default_joint_pos = new_default.detach().cpu().numpy().copy()
         return True
 
+    def _apply_joint_pd_target(joint_pos_cmd: Any) -> bool:
+        """Set absolute joint PD targets via action offset; use with zero_action."""
+        if joint_pos_cmd is None or not joint_names:
+            return False
+        action_term = env.unwrapped.action_manager.get_term("joint_pos")
+        target = torch.tensor(joint_pos_cmd, dtype=torch.float32, device=env.unwrapped.device)
+        try:
+            offset_ref = getattr(action_term, "_offset", None)
+            if torch.is_tensor(offset_ref):
+                if offset_ref.ndim == 1 and offset_ref.shape[0] == target.shape[0]:
+                    offset_ref.copy_(target)
+                    return True
+                if offset_ref.ndim == 2 and offset_ref.shape[1] == target.shape[0]:
+                    offset_ref.copy_(target.unsqueeze(0).repeat(offset_ref.shape[0], 1))
+                    return True
+        except Exception as exc:
+            print(f"[WARN] 更新 joint_pos PD 目标失败: {exc}")
+        return False
+
     def _switch_to_motion(data, label: str):
         nonlocal current_motion, current_motion_label, play_start_time, is_playing, last_printed_frame
         nonlocal motion_track, playback_default_joint_pos
         nonlocal last_csv_motion_frame, mapping_reapply_requested
         nonlocal playback_paused, pause_hold_frame, pending_playback_toggle, pending_seek_frame
-        nonlocal pd_probe_hold_action
+        nonlocal pd_hold_joint_pos_cmd
         if data is None:
             return
-        pd_probe_hold_action = None
+        pd_hold_joint_pos_cmd = None
         last_csv_motion_frame = None
         mapping_reapply_requested = False
         playback_paused = False
@@ -404,7 +434,7 @@ def main():
         if initial_default_joint_pos is None:
             return
         _set_control_reference_pose(initial_default_joint_pos)
-        if not pd_probe and joint_ids is not None:
+        if not use_joint_pd and joint_ids is not None:
             apply_joint_state_instant(env, initial_default_joint_pos, joint_ids)
         if sync_ui_cache and default_joint_pos is not None and joint_names:
             _update_joint_pos_cache(default_joint_pos)
@@ -465,7 +495,7 @@ def main():
                 reset_requested = False
                 audio_util.stop_wav()
                 motion_has_wav = False
-                pd_probe_hold_action = None
+                pd_hold_joint_pos_cmd = None
                 env.reset()
                 keyboard.reset()
                 is_playing = False
@@ -576,7 +606,7 @@ def main():
                     motion_track_state=motion_track,
                 )
 
-                if not pd_probe and target_root_pos is not None and target_root_quat_wxyz is not None:
+                if use_root_teleport and target_root_pos is not None and target_root_quat_wxyz is not None:
                     if csv_root_rotation_lookup is False and not csv_root_track_warned:
                         print("[WARN] 当前 motion 未找到可用根旋转轨迹，root 朝向将保持动作起始值")
                         csv_root_track_warned = True
@@ -612,32 +642,41 @@ def main():
                     except Exception:
                         pass
 
-                    if not pd_probe and joint_pos_cmd is not None:
+                    if not use_joint_pd and joint_pos_cmd is not None:
                         applied = apply_joint_state_instant(env, joint_pos_cmd, joint_ids)
                         if not applied and not instant_mode_warned:
                             print("[WARN] 当前环境不支持直接写关节状态，自动回退为驱动模式")
                             instant_mode_warned = True
 
-                    actions = torch.tensor(
-                        result, dtype=torch.float32, device=env.unwrapped.device
-                    ).unsqueeze(0)
+                    if use_joint_pd and joint_pos_cmd is not None:
+                        _apply_joint_pd_target(joint_pos_cmd)
+                        actions = zero_action
+                    else:
+                        actions = torch.tensor(
+                            result, dtype=torch.float32, device=env.unwrapped.device
+                        ).unsqueeze(0)
                 else:
                     actions = zero_action
                 if frame >= max_frame:
-                    if not pd_probe and last_frame_joint_pos_cmd is not None:
+                    if not use_joint_pd and last_frame_joint_pos_cmd is not None:
                         _set_control_reference_pose(last_frame_joint_pos_cmd)
-                    elif pd_probe and result is not None:
-                        pd_probe_hold_action = torch.tensor(
-                            result, dtype=torch.float32, device=env.unwrapped.device
-                        ).unsqueeze(0)
+                    elif use_joint_pd and joint_pos_cmd is not None:
+                        pd_hold_joint_pos_cmd = (
+                            joint_pos_cmd.copy()
+                            if hasattr(joint_pos_cmd, "copy")
+                            else list(joint_pos_cmd)
+                        )
+                        _apply_joint_pd_target(pd_hold_joint_pos_cmd)
+                        actions = zero_action
                     is_playing = False
                     playback_paused = False
                     motion_has_wav = False
                     audio_util.stop_wav()
                     print(f"[INFO] 播放结束: {current_motion_label}")
             else:
-                if pd_probe and pd_probe_hold_action is not None:
-                    actions = pd_probe_hold_action
+                if use_joint_pd and pd_hold_joint_pos_cmd is not None:
+                    _apply_joint_pd_target(pd_hold_joint_pos_cmd)
+                    actions = zero_action
                 else:
                     actions = zero_action
 
@@ -664,17 +703,16 @@ def main():
                     joint_default=base_default,
                     motion_track_state=mt,
                 )
-                if not pd_probe and tr_pos is not None and tr_quat is not None:
+                if use_root_teleport and tr_pos is not None and tr_quat is not None:
                     apply_root_pos_instant(env, tr_pos, tr_quat)
                 if res is not None and jp_cmd is not None:
-                    if pd_probe:
+                    if use_joint_pd:
                         try:
                             _update_joint_pos_cache(jp_cmd)
                         except Exception:
                             pass
-                        actions = torch.tensor(
-                            res, dtype=torch.float32, device=env.unwrapped.device
-                        ).unsqueeze(0)
+                        _apply_joint_pd_target(jp_cmd)
+                        actions = zero_action
                     else:
                         _set_control_reference_pose(jp_cmd)
                         try:
