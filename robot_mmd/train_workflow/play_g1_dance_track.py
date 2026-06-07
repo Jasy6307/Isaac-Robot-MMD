@@ -111,6 +111,16 @@ parser.add_argument(
         "0 disables periodic logs (episode summary still printed)."
     ),
 )
+parser.add_argument(
+    "--pd_profile",
+    type=str,
+    choices=("deploy", "isaaclab"),
+    default="deploy",
+    help=(
+        "Robot actuator PD: deploy=Unitree rl_lab FixStand (default); "
+        "isaaclab=legacy G1_29DOF defaults for old checkpoints."
+    ),
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -133,7 +143,14 @@ import robot_mmd.my_task  # noqa: F401, E402
 
 from robot_mmd.my_task.mdp.observations import joint_pos_tracking_error  # noqa: E402
 from robot_mmd.my_task.motion_reference import get_or_create_motion_buffer  # noqa: E402
-from robot_mmd.train_workflow.utils.hdf5_motion import load_hdf5_motion  # noqa: E402
+from robot_mmd.train_workflow.g1_deploy_actuator_cfg import (  # noqa: E402
+    apply_pd_profile_to_scene_robot,
+    log_pd_profile_summary,
+)
+from robot_mmd.train_workflow.utils.motion_window import (  # noqa: E402
+    control_hz_from_env_cfg,
+    window_seconds_from_frames,
+)
 
 
 class _PlayPerfTracker:
@@ -191,17 +208,6 @@ def _find_h5_window(env_cfg: ManagerBasedRLEnvCfg) -> tuple[str, float]:
     return str(tracking.params["h5_path"]), float(tracking.params["window_seconds"])
 
 
-def _window_seconds_from_frames(h5_path: str, window_frames: int) -> float:
-    wf = int(window_frames)
-    if wf <= 0:
-        raise ValueError(f"--window_frames must be > 0, got {window_frames}")
-    motion = load_hdf5_motion(h5_path)
-    fps = float(motion.fps)
-    if fps <= 0.0:
-        raise ValueError(f"Invalid HDF5 fps={fps} for {h5_path}")
-    return float(wf) / fps
-
-
 def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
     if (
         args_cli.motion_h5 is None
@@ -214,13 +220,12 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
     new_h5 = os.path.abspath(args_cli.motion_h5) if args_cli.motion_h5 is not None else None
     new_ws = args_cli.window_seconds
     if args_cli.window_frames is not None:
-        if new_h5 is None:
-            tracking = env_cfg.rewards.joint_pos_tracking
-            new_h5 = os.path.abspath(str(tracking.params["h5_path"]))
-        new_ws = _window_seconds_from_frames(new_h5, int(args_cli.window_frames))
+        control_hz = control_hz_from_env_cfg(env_cfg)
+        new_ws = window_seconds_from_frames(int(args_cli.window_frames), control_hz)
         print(
             f"[INFO] --window_frames={int(args_cli.window_frames)} "
-            f"=> window_seconds={new_ws:.6f} (h5={new_h5})"
+            f"=> window_seconds={new_ws:.6f} "
+            f"(control_hz={control_hz:.1f}, steps={int(args_cli.window_frames)})"
         )
     new_residual_alpha = args_cli.residual_alpha
     new_use_reference_residual = args_cli.use_reference_residual
@@ -270,6 +275,9 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
         ):
             joint_pos_action.use_reference_residual = bool(new_use_reference_residual)
 
+    if new_ws is not None:
+        env_cfg.episode_length_s = float(new_ws)
+
 
 def main() -> None:
     env_cfg: ManagerBasedRLEnvCfg = load_cfg_from_registry(  # type: ignore[assignment]
@@ -282,10 +290,11 @@ def main() -> None:
     env_cfg.scene.num_envs = int(args_cli.num_envs)
     if args_cli.device is not None:
         env_cfg.sim.device = args_cli.device
+    env_cfg.scene.robot = apply_pd_profile_to_scene_robot(
+        env_cfg.scene.robot, args_cli.pd_profile
+    )
+    log_pd_profile_summary(args_cli.pd_profile)
     _apply_motion_overrides(env_cfg)
-
-    if args_cli.window_seconds is not None:
-        env_cfg.episode_length_s = float(args_cli.window_seconds)
 
     log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
     print(f"[INFO] Looking for checkpoints under: {log_root_path}")

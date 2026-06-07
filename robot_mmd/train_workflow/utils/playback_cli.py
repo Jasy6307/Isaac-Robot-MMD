@@ -69,19 +69,14 @@ def build_arg_parser(pose_dir: str) -> argparse.ArgumentParser:
     )
     parser.add_argument("--sim_fps", type=int, default=0, help="仿真控制频率 FPS（0 使用默认）")
     parser.add_argument(
-        "--pd_probe",
-        action="store_true",
+        "--pd_profile",
+        type=str,
+        choices=("deploy_playback", "deploy", "isaaclab"),
+        default="deploy_playback",
         help=(
-            "PD 摸底模式：开启重力，不写 root/关节 teleport，仅通过 joint_pos action 驱动。"
-            "Step 1 静态测试：按 P 循环 pose，或按 I 播 joint_mapping_test。"
-        ),
-    )
-    parser.add_argument(
-        "--pd_drive",
-        action="store_true",
-        help=(
-            "PD 驱动模式：关闭重力；root 每帧瞬移跟踪参考，关节不写 teleport，"
-            "全身通过 joint_pos PD 跟踪 retarget 目标。"
+            "Actuator PD: deploy_playback=deploy legs/ankle + stiffer arms for MMD preview (default); "
+            "deploy=pure Unitree FixStand (arms Kp=40, slow on fast motion); "
+            "isaaclab=G1_29DOF locomanipulation defaults."
         ),
     )
     parser.add_argument(

@@ -101,9 +101,9 @@ parser.add_argument(
     type=str,
     default=None,
     help=(
-        "Curriculum spec: start:min_s:max_s for random-length stages, "
+        "Curriculum spec: start:sec for fixed length, start:min:max for random range, "
         "or start alone for start-to-end (end = --window_seconds). "
-        "e.g. 0:2:4,9000"
+        "e.g. 0:3,20000:6 (3s then 6s fixed stages)"
     ),
 )
 parser.add_argument(
@@ -143,6 +143,16 @@ parser.add_argument(
     type=str,
     default=None,
     help="Optional suffix appended to the experiment name (subfolder under logs/).",
+)
+parser.add_argument(
+    "--pd_profile",
+    type=str,
+    choices=("deploy", "isaaclab"),
+    default="deploy",
+    help=(
+        "Robot actuator PD: deploy=Unitree rl_lab FixStand (default, sim-to-real); "
+        "isaaclab=G1_29DOF locomanipulation defaults (legacy checkpoints only)."
+    ),
 )
 parser.add_argument(
     "--resume", action="store_true", default=False, help="Resume from a checkpoint."
@@ -197,7 +207,14 @@ from isaaclab_tasks.utils import get_checkpoint_path  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry  # noqa: E402
 
 import robot_mmd.my_task  # noqa: F401, E402  -- register Isaac-G1-* tasks
-from robot_mmd.train_workflow.utils.hdf5_motion import load_hdf5_motion  # noqa: E402
+from robot_mmd.train_workflow.g1_deploy_actuator_cfg import (  # noqa: E402
+    apply_pd_profile_to_scene_robot,
+    log_pd_profile_summary,
+)
+from robot_mmd.train_workflow.utils.motion_window import (  # noqa: E402
+    control_hz_from_env_cfg,
+    window_seconds_from_frames,
+)
 
 
 @dataclass(frozen=True)
@@ -209,6 +226,12 @@ class EpisodeLengthStage:
     @property
     def start_to_end(self) -> bool:
         return self.min_seconds is None and self.max_seconds is None
+
+    @property
+    def is_fixed_length(self) -> bool:
+        if self.start_to_end or self.min_seconds is None or self.max_seconds is None:
+            return False
+        return abs(self.min_seconds - self.max_seconds) < 1e-6
 
 
 def _parse_episode_length_curriculum(spec: str) -> list[EpisodeLengthStage]:
@@ -224,10 +247,24 @@ def _parse_episode_length_curriculum(spec: str) -> list[EpisodeLengthStage]:
                 raise ValueError(f"start_iter must be >= 0, got {start_iter}")
             stages.append(EpisodeLengthStage(start_iter=start_iter))
             continue
+        if len(parts) == 2:
+            start_iter = int(parts[0])
+            fixed_s = float(parts[1])
+            if start_iter < 0:
+                raise ValueError(f"start_iter must be >= 0, got {start_iter}")
+            if fixed_s <= 0.0:
+                raise ValueError(f"Episode seconds must be > 0, got {fixed_s}")
+            stages.append(
+                EpisodeLengthStage(
+                    start_iter=start_iter, min_seconds=fixed_s, max_seconds=fixed_s
+                )
+            )
+            continue
         if len(parts) != 3:
             raise ValueError(
                 f"Invalid curriculum chunk '{item}'. "
-                "Expected start:min:max or start (start-to-end)."
+                "Expected start:seconds (fixed), start:min:max (random range), "
+                "or start alone (start-to-end)."
             )
         start_iter = int(parts[0])
         min_s = float(parts[1])
@@ -312,17 +349,6 @@ def _resolve_motion_h5_path(env_cfg: ManagerBasedRLEnvCfg) -> str:
     raise ValueError("无法解析 motion_h5，请显式传入 --motion_h5")
 
 
-def _window_seconds_from_frames(h5_path: str, window_frames: int) -> float:
-    wf = int(window_frames)
-    if wf <= 0:
-        raise ValueError(f"--window_frames must be > 0, got {window_frames}")
-    motion = load_hdf5_motion(h5_path)
-    fps = float(motion.fps)
-    if fps <= 0.0:
-        raise ValueError(f"Invalid HDF5 fps={fps} for {h5_path}")
-    return float(wf) / fps
-
-
 def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
     """Patch env_cfg with reference-window/episode/random-start overrides."""
     if (
@@ -346,11 +372,12 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
     )
     new_ws = args_cli.window_seconds
     if args_cli.window_frames is not None:
-        h5_for_frames = new_h5 if new_h5 is not None else _resolve_motion_h5_path(env_cfg)
-        new_ws = _window_seconds_from_frames(h5_for_frames, int(args_cli.window_frames))
+        control_hz = control_hz_from_env_cfg(env_cfg)
+        new_ws = window_seconds_from_frames(int(args_cli.window_frames), control_hz)
         print(
             f"[INFO] --window_frames={int(args_cli.window_frames)} "
-            f"=> window_seconds={new_ws:.6f} (h5={h5_for_frames})"
+            f"=> window_seconds={new_ws:.6f} "
+            f"(control_hz={control_hz:.1f}, steps={int(args_cli.window_frames)})"
         )
     new_episode_s = args_cli.episode_seconds
     new_random_start = args_cli.random_motion_start
@@ -432,6 +459,10 @@ def main() -> None:
     env_cfg.seed = int(args_cli.seed)
     if args_cli.device is not None:
         env_cfg.sim.device = args_cli.device
+    env_cfg.scene.robot = apply_pd_profile_to_scene_robot(
+        env_cfg.scene.robot, args_cli.pd_profile
+    )
+    log_pd_profile_summary(args_cli.pd_profile)
     _apply_motion_overrides(env_cfg)
 
     if args_cli.max_iterations is not None:
@@ -532,10 +563,15 @@ def main() -> None:
                     env, min_seconds=stage.min_seconds, max_seconds=stage.max_seconds
                 )
                 _set_env_runtime_start_to_end_mode(env, enabled=False)
+                if stage.is_fixed_length:
+                    length_msg = f"fixed={stage.min_seconds:.2f}s"
+                else:
+                    length_msg = (
+                        f"random=[{stage.min_seconds:.2f}, {stage.max_seconds:.2f}]s"
+                    )
                 print(
                     f"[INFO] Curriculum stage start={stage.start_iter} "
-                    f"range=[{stage.min_seconds:.2f}, {stage.max_seconds:.2f}]s "
-                    f"iters={stage_iters} start_to_end=off"
+                    f"{length_msg} iters={stage_iters} start_to_end=off"
                 )
             runner.learn(
                 num_learning_iterations=stage_iters, init_at_random_ep_len=True

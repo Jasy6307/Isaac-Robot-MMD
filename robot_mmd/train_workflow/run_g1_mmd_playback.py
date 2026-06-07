@@ -9,12 +9,9 @@ G1 MMD 动作回放主入口（Isaac Sim）。
 2) 支持关节映射 UI，实时显示当前关节角度；
 3) 有 audio 的 dance 播 WAV，与动作同一「逻辑帧时间轴」；
 4) 在重置和切换动作时维护控制参考姿态，避免姿态回弹。
-5) ``--pd_probe``：重力下纯 PD 驱动摸底（不写 root/关节 teleport）。
-6) ``--pd_drive``：无重力 + root 瞬移 + 全身关节 PD（关节不写 teleport）。
+5) 映射 UI 顶部 ``PD Drive`` 复选框：勾选=全身关节 PD，不勾选=关节瞬移写入。
 
 启动：``python robot_mmd/train_workflow/run_g1_mmd_playback.py``
-PD 摸底 Step 1：``python robot_mmd/train_workflow/run_g1_mmd_playback.py --pd_probe``
-PD 驱动（root 瞬移 + 关节 PD）：``python robot_mmd/train_workflow/run_g1_mmd_playback.py --pd_drive``
 """
 
 from __future__ import annotations
@@ -66,6 +63,10 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab.devices import Se3Keyboard, Se3KeyboardCfg
 from isaaclab_tasks.utils import parse_env_cfg
 
+from robot_mmd.train_workflow.g1_deploy_actuator_cfg import (
+    apply_robot_pd_profile,
+    log_pd_profile_summary,
+)
 from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
     MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
     MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
@@ -73,8 +74,10 @@ from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
 from robot_mmd.train_workflow.ui.mapping import (
     create_mapping_ui,
     create_retarget_tune_ui,
+    set_dance_play_callbacks,
     set_joint_value_provider,
     set_mapping_changed_callback,
+    set_pd_drive_callbacks,
     set_playback_status_provider,
     set_playback_transport_callbacks,
     set_root_rot_bone_name_provider,
@@ -115,12 +118,7 @@ VMD_FPS = 30
 
 def main():
     """零动作运行 G1 站立环境。"""
-    pd_probe = bool(getattr(args_cli, "pd_probe", False))
-    pd_drive = bool(getattr(args_cli, "pd_drive", False))
-    if pd_probe and pd_drive:
-        raise SystemExit("--pd_probe 与 --pd_drive 不能同时使用")
-    use_joint_pd = pd_probe or pd_drive
-    use_root_teleport = not pd_probe
+    use_root_teleport = True
     pose_cycle_key = (args_cli.pose_cycle_key or "P").strip().upper()[:1]
     pose_motions = load_pose_motion_dir(POSE_DIR)
     dance_motion_by_key, dance_wav_by_key = load_dances_from_yaml(
@@ -140,13 +138,16 @@ def main():
     from robot_mmd.my_task.g1_stand_env_cfg import G1_TPOSE_INIT_STATE
 
     env_cfg.scene.robot.init_state = G1_TPOSE_INIT_STATE
-    env_cfg.scene.robot.spawn.articulation_props.fix_root_link = False
-    if pd_probe:
-        env_cfg.scene.robot.spawn.rigid_props.disable_gravity = False
-    else:
-        env_cfg.scene.robot.spawn.rigid_props.disable_gravity = True
-        env_cfg.scene.robot.spawn.rigid_props.linear_damping = 10.0
-        env_cfg.scene.robot.spawn.rigid_props.angular_damping = 10.0
+    env_cfg.scene.robot = apply_robot_pd_profile(env_cfg.scene.robot, args_cli.pd_profile)
+    log_pd_profile_summary(args_cli.pd_profile)
+    robot_spawn = env_cfg.scene.robot.spawn
+    if robot_spawn is not None:
+        if robot_spawn.articulation_props is not None:
+            robot_spawn.articulation_props.fix_root_link = False
+        if robot_spawn.rigid_props is not None:
+            robot_spawn.rigid_props.disable_gravity = True
+            robot_spawn.rigid_props.linear_damping = 10.0
+            robot_spawn.rigid_props.angular_damping = 10.0
 
     joint_pos_deg_cache: dict[str, float] = {}
     ui_debug = PlaybackUiDebugState()
@@ -168,15 +169,9 @@ def main():
     dance_hint = ", ".join(f"{k}=dance" for k in dance_motion_by_key.keys()) or "无 dance 键"
     h5_hint = ", ".join(f"Shift+{k}=H5" for k in dance_hdf5_motion_by_key.keys()) or "无 H5 快捷键"
     print(f"[INFO] L=重置, {pose_cycle_key}=按序播放 pose, {dance_hint}, {h5_hint}")
-    if pd_probe:
-        print(
-            "[INFO] PD probe: gravity ON, no root/joint teleport — joint_pos PD only. "
-            f"Step 1 static test: {pose_cycle_key}=pose cycle, I=joint_mapping_test"
-        )
-    elif pd_drive:
-        print(
-            "[INFO] PD drive: gravity OFF, root teleport ON, all joints joint-PD (no joint teleport)."
-        )
+    print(
+        "[INFO] PD Drive mode is controlled by Mapping UI checkbox (top bar)."
+    )
     if dance_wav_by_key:
         audio_util.warn_if_no_pygame_sync()
 
@@ -198,6 +193,16 @@ def main():
         nonlocal pending_dance_key, pending_dance_prefer_hdf5
         pending_dance_key = key
         pending_dance_prefer_hdf5 = bool(prefer_hdf5)
+
+    def _dance_entries_for_ui() -> list[tuple[str, str]]:
+        entries: list[tuple[str, str]] = []
+        for key in dance_motion_by_key.keys():
+            filename, _data = dance_motion_by_key[key]
+            entries.append((str(key), f"[{key}] {filename}"))
+        return entries
+
+    def _on_dance_request_from_ui(key: str, prefer_hdf5: bool) -> None:
+        _request_dance_play(str(key), prefer_hdf5=bool(prefer_hdf5))
 
     keyboard.add_callback("L", _on_reset)
     keyboard.add_callback(pose_cycle_key, _request_cycle_play)
@@ -240,10 +245,23 @@ def main():
     root_quat_rpy_scale = list(MMD_ROOT_QUAT_RPY_SCALE_DEFAULT)
     root_quat_rpy_axis_idx = list(MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT)
     pd_hold_joint_pos_cmd: Any = None
+    pd_drive_enabled_ui = False
 
     def _on_mapping_ui_changed():
         nonlocal mapping_reapply_requested
         mapping_reapply_requested = True
+
+    def _get_pd_drive_for_ui() -> bool:
+        return bool(pd_drive_enabled_ui)
+
+    def _set_pd_drive_from_ui(enabled: bool) -> None:
+        nonlocal pd_drive_enabled_ui, pd_hold_joint_pos_cmd
+        prev = bool(pd_drive_enabled_ui)
+        pd_drive_enabled_ui = bool(enabled)
+        if prev != pd_drive_enabled_ui:
+            pd_hold_joint_pos_cmd = None
+            mode = "PD drive" if pd_drive_enabled_ui else "instant teleport"
+            print(f"[INFO] Joint control mode -> {mode}")
 
     def _playback_status_for_ui() -> dict[str, Any]:
         if not is_playing or not current_motion or not (current_motion_label or "").strip():
@@ -305,6 +323,8 @@ def main():
     set_joint_value_provider(lambda: joint_pos_deg_cache)
     set_playback_status_provider(_playback_status_for_ui)
     set_playback_transport_callbacks(_ui_toggle_pause, _ui_seek_frame)
+    set_dance_play_callbacks(_dance_entries_for_ui, _on_dance_request_from_ui)
+    set_pd_drive_callbacks(_get_pd_drive_for_ui, _set_pd_drive_from_ui)
     set_root_quat_rpy_callbacks(_get_root_quat_rpy_for_ui, _set_root_quat_rpy_from_ui)
     set_root_rot_bone_name_provider(lambda: str(ui_debug.root_rot_bone_name or ""))
     set_mapping_changed_callback(_on_mapping_ui_changed)
@@ -434,7 +454,7 @@ def main():
         if initial_default_joint_pos is None:
             return
         _set_control_reference_pose(initial_default_joint_pos)
-        if not use_joint_pd and joint_ids is not None:
+        if (not pd_drive_enabled_ui) and joint_ids is not None:
             apply_joint_state_instant(env, initial_default_joint_pos, joint_ids)
         if sync_ui_cache and default_joint_pos is not None and joint_names:
             _update_joint_pos_cache(default_joint_pos)
@@ -642,13 +662,13 @@ def main():
                     except Exception:
                         pass
 
-                    if not use_joint_pd and joint_pos_cmd is not None:
+                    if (not pd_drive_enabled_ui) and joint_pos_cmd is not None:
                         applied = apply_joint_state_instant(env, joint_pos_cmd, joint_ids)
                         if not applied and not instant_mode_warned:
                             print("[WARN] 当前环境不支持直接写关节状态，自动回退为驱动模式")
                             instant_mode_warned = True
 
-                    if use_joint_pd and joint_pos_cmd is not None:
+                    if pd_drive_enabled_ui and joint_pos_cmd is not None:
                         _apply_joint_pd_target(joint_pos_cmd)
                         actions = zero_action
                     else:
@@ -658,9 +678,9 @@ def main():
                 else:
                     actions = zero_action
                 if frame >= max_frame:
-                    if not use_joint_pd and last_frame_joint_pos_cmd is not None:
+                    if (not pd_drive_enabled_ui) and last_frame_joint_pos_cmd is not None:
                         _set_control_reference_pose(last_frame_joint_pos_cmd)
-                    elif use_joint_pd and joint_pos_cmd is not None:
+                    elif pd_drive_enabled_ui and joint_pos_cmd is not None:
                         pd_hold_joint_pos_cmd = (
                             joint_pos_cmd.copy()
                             if hasattr(joint_pos_cmd, "copy")
@@ -674,7 +694,7 @@ def main():
                     audio_util.stop_wav()
                     print(f"[INFO] 播放结束: {current_motion_label}")
             else:
-                if use_joint_pd and pd_hold_joint_pos_cmd is not None:
+                if pd_drive_enabled_ui and pd_hold_joint_pos_cmd is not None:
                     _apply_joint_pd_target(pd_hold_joint_pos_cmd)
                     actions = zero_action
                 else:
@@ -706,7 +726,7 @@ def main():
                 if use_root_teleport and tr_pos is not None and tr_quat is not None:
                     apply_root_pos_instant(env, tr_pos, tr_quat)
                 if res is not None and jp_cmd is not None:
-                    if use_joint_pd:
+                    if pd_drive_enabled_ui:
                         try:
                             _update_joint_pos_cache(jp_cmd)
                         except Exception:

@@ -410,8 +410,14 @@ HINGE_SWING_ABSORB_JOINTS: frozenset[str] = frozenset(
         "right_knee_joint",
     }
 )
-_DEFAULT_HINGE_SWING_ABSORB: dict[str, float] = {k: 1.0 for k in HINGE_SWING_ABSORB_JOINTS}
+# Knee hinge projection can inject high-frequency hip compensation on noisy frames.
+# Keep projection enabled by default, but make it less aggressive.
+_DEFAULT_HINGE_SWING_ABSORB: dict[str, float] = {k: 0.6 for k in HINGE_SWING_ABSORB_JOINTS}
 _hinge_swing_absorb: dict[str, float] = dict(_DEFAULT_HINGE_SWING_ABSORB)
+
+# Per-frame cap for swing component merged from knee to hip.
+# Prevents sudden large compensation spikes that appear as lower-body jitter.
+_KNEE_PROJECTION_MAX_SWING_DEG: float = 20.0
 
 _waist_upper_pair_use_conj: list[bool] = [
     bool(MMD_WAIST_UPPER_PAIR_QUAT_CONJUGATE[0]),
@@ -648,6 +654,11 @@ def _apply_knee_hinge_projection(
 
     q_swing, _q_twist = _swing_twist_decompose_xyzw(q_knee, axis)
     absorb = get_hinge_swing_absorb(knee_joint)
+    swing_deg = _quat_rotation_magnitude_deg_xyzw(q_swing)
+    if swing_deg > 1e-6 and _KNEE_PROJECTION_MAX_SWING_DEG > 0.0:
+        # Scale absorb down when swing is too large, keeping projection continuous
+        # while avoiding impulsive hip correction.
+        absorb *= min(1.0, float(_KNEE_PROJECTION_MAX_SWING_DEG / swing_deg))
     q_s_applied = _quat_pow_xyzw(q_swing, absorb)
     q_knee_new = _quat_normalize(_quat_multiply(_quat_conjugate(q_s_applied), q_knee))
     _write_bone_quat_xyzw(frame_data, knee_bone, q_knee_new)

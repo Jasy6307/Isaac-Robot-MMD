@@ -50,12 +50,12 @@ class G1DanceTrackC0PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         entropy_coef=0.005,
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=1.0e-3,
-        schedule="adaptive",
-        gamma=0.99,
-        lam=0.95,
-        desired_kl=0.01,
-        max_grad_norm=1.0,
+        learning_rate=2.0e-3, #原1.0e-3
+        schedule="adaptive", #原adaptive
+        gamma=0.99, #原0.99
+        lam=0.95, #原0.95
+        desired_kl=0.01, #原0.01
+        max_grad_norm=1.0, #原1.0
     )
 
 

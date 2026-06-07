@@ -14,11 +14,12 @@ if TYPE_CHECKING:
     from isaaclab.assets import Articulation
 
 # Default root pose PD gains for --pd_drive (no gravity, external wrench on pelvis).
-# Kept moderate: high gains + leg contact/root coupling caused lower-body jitter.
-ROOT_PD_KP_POS = 280.0
-ROOT_PD_KD_POS = 56.0
-ROOT_PD_KP_ROT = 70.0
-ROOT_PD_KD_ROT = 14.0
+# Raised from conservative values to improve large-displacement root tracking.
+# Keep kd roughly proportional to kp to avoid underdamped oscillation.
+ROOT_PD_KP_POS = 420.0
+ROOT_PD_KD_POS = 84.0
+ROOT_PD_KP_ROT = 120.0
+ROOT_PD_KD_ROT = 24.0
 ROOT_PD_BODY_ID = 0
 
 
@@ -51,7 +52,7 @@ def apply_root_pos_instant(
     root_pos_xyz: tuple[float, float, float],
     root_quat_wxyz: Any = None,
 ) -> bool:
-    """Write robot root pose into simulation and zero root velocities."""
+    """Write robot root pose into simulation while preserving root velocities."""
     robot: Articulation = env.unwrapped.scene["robot"]
     device = env.unwrapped.device
     num_envs = robot.data.joint_pos.shape[0]
@@ -73,7 +74,8 @@ def apply_root_pos_instant(
     if state[:, 3:7].abs().sum() < 1e-6:
         state[:, 3:7] = 0.0
         state[:, 6] = 1.0
-    state[:, 7:13] = 0.0
+    # Keep current root linear/angular velocity to reduce teleport-induced impulses.
+    state[:, 7:13] = root_state[:, 7:13]
     robot.write_root_state_to_sim(state)
     return True
 

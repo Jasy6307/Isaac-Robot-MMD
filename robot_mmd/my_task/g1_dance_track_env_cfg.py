@@ -33,6 +33,7 @@ from isaaclab_assets import G1_29DOF_CFG  # isort: skip
 
 from robot_mmd.my_task import mdp
 from robot_mmd.my_task.g1_stand_env_cfg import G1_TPOSE_INIT_STATE
+from robot_mmd.train_workflow.g1_deploy_actuator_cfg import apply_robot_pd_profile
 from robot_mmd.my_task.mdp.actions import (
     ReferenceFrozenJointPositionAction,
     ReferenceFrozenJointPositionActionCfg,
@@ -64,20 +65,20 @@ C0_GROUND_Z_OFFSET = -0.5
 C1_ACTION_SCALE = 0.5 # 0.5
 C1_ACTION_RATE_L2_WEIGHT = -0.05 # -0.01
 C1_ACTION_L2_WEIGHT = -1.0e-4 # -1.0e-4
-C1_ALIVE_WEIGHT = 0.8
-C1_TERMINATED_PENALTY_WEIGHT = -0.4
-C1_ROOT_YAW_TRACK_WEIGHT = 3.0
-C1_ROOT_YAW_TRACK_SIGMA = 0.10
+C1_ALIVE_WEIGHT = 2.0
+C1_TERMINATED_PENALTY_WEIGHT = -0.5
+C1_ROOT_YAW_TRACK_WEIGHT = 6.0
+C1_ROOT_YAW_TRACK_SIGMA = 0.15
 C1_ROOT_XY_TRACK_WEIGHT = 5.0
-C1_ROOT_XY_TRACK_SIGMA = 0.05
+C1_ROOT_XY_TRACK_SIGMA = 0.15
 C1_ROOT_Z_TRACK_WEIGHT = 1.0
-C1_ROOT_Z_TRACK_SIGMA = 0.06
+C1_ROOT_Z_TRACK_SIGMA = 0.10
 # C1 joint tracking group weights (lower body): ankles are down-weighted.
-C1_TRACKING_LOWER_BODY_WEIGHT = 1.5
-C1_TRACKING_ANKLE_WEIGHT = 0.2
+C1_TRACKING_LOWER_BODY_WEIGHT = 2.0
+C1_TRACKING_ANKLE_WEIGHT = 0.5
 # C1 terminations: relaxed for dance (squat / lean / low CoM).
 C1_FALL_MINIMUM_HEIGHT = 0.3
-C1_BAD_ORIENTATION_LIMIT_ANGLE = 1.3
+C1_BAD_ORIENTATION_LIMIT_ANGLE = 1.5
 # C1 random-segment training defaults.
 C1_RANDOM_MOTION_START = True
 C1_TRAIN_SEGMENT_SECONDS = 2.0
@@ -90,7 +91,7 @@ C1_RESET_JOINT_POS_NOISE = 0.05
 # C1 residual defaults: arms+waist frozen; legs learn residual around q_ref.
 C1_RESIDUAL_ALPHA = 0.3
 # Residual variant: stronger tracking signal + slightly looser sigma for gradient when balancing.
-C1_RESIDUAL_JOINT_TRACK_WEIGHT = 10.0
+C1_RESIDUAL_JOINT_TRACK_WEIGHT = 15.0
 C1_RESIDUAL_JOINT_TRACK_SIGMA = 0.10
 
 
@@ -122,16 +123,24 @@ def _dance_track_terrain_cfg(*, ground_z_offset: float) -> LoweredGroundTerrainI
     )
 
 
+def _g1_dance_track_robot_cfg() -> ArticulationCfg:
+    """G1 29DoF with Unitree deploy FixStand actuator PD (sim-to-real training default)."""
+    return apply_robot_pd_profile(
+        G1_29DOF_CFG.replace(
+            prim_path="{ENV_REGEX_NS}/Robot",
+            init_state=G1_TPOSE_INIT_STATE,
+        ),
+        "deploy",
+    )
+
+
 @configclass
 class G1DanceTrackSceneCfg(InteractiveSceneCfg):
     """G1 dance scene: flat ground + single G1 with the T-pose init state."""
 
     terrain = _dance_track_terrain_cfg(ground_z_offset=0.0)
 
-    robot: ArticulationCfg = G1_29DOF_CFG.replace(
-        prim_path="{ENV_REGEX_NS}/Robot",
-        init_state=G1_TPOSE_INIT_STATE,
-    )
+    robot: ArticulationCfg = _g1_dance_track_robot_cfg()
 
     sky_light = AssetBaseCfg(
         prim_path="/World/skyLight",

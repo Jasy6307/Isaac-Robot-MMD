@@ -43,6 +43,11 @@ _playback_status_provider: Callable[[], dict[str, Any]] | None = None
 # Transport: pause/resume, seek to frame index (only while clip loaded in g1_mmd_playback)
 _playback_toggle_cb: Callable[[], None] | None = None
 _playback_seek_cb: Callable[[int], None] | None = None
+DanceUiEntry = tuple[str, str]  # (dance_key, combo_label)
+_dance_entries_provider: Callable[[], list[DanceUiEntry]] | None = None
+_dance_request_cb: Callable[[str, bool], None] | None = None
+_pd_drive_provider: Callable[[], bool] | None = None
+_pd_drive_setter: Callable[[bool], None] | None = None
 _root_quat_rpy_provider: Callable[
     [], tuple[tuple[float, float, float], tuple[int, int, int]]
 ] | None = None
@@ -54,6 +59,7 @@ _root_rot_bone_name_provider: Callable[[], str] | None = None
 # True while refresh assigns scrub IntField from sim; blocks value_changed -> seek storm
 _scrub_sync_suppress_seek: bool = False
 _root_quat_sync_suppress_set: bool = False
+_pd_drive_sync_suppress_set: bool = False
 
 # 映射表被用户修改后通知主循环（例如在非播放状态下按新映射重算当前姿势）
 _mapping_changed_cb: Callable[[], None] | None = None
@@ -79,6 +85,30 @@ def set_playback_transport_callbacks(
     global _playback_toggle_cb, _playback_seek_cb
     _playback_toggle_cb = toggle_pause
     _playback_seek_cb = seek_frame
+
+
+def set_dance_play_callbacks(
+    entries_provider: Callable[[], list[DanceUiEntry]] | None,
+    on_dance_request: Callable[[str, bool], None] | None,
+) -> None:
+    """Set dance list provider and play request callback for UI controls.
+
+    ``entries_provider`` returns ``(dance_key, display_label)`` pairs; combo shows labels,
+    play callback receives the dance key.
+    """
+    global _dance_entries_provider, _dance_request_cb
+    _dance_entries_provider = entries_provider
+    _dance_request_cb = on_dance_request
+
+
+def set_pd_drive_callbacks(
+    provider: Callable[[], bool] | None,
+    setter: Callable[[bool], None] | None,
+) -> None:
+    """Set PD drive mode callbacks for the mapping UI checkbox."""
+    global _pd_drive_provider, _pd_drive_setter
+    _pd_drive_provider = provider
+    _pd_drive_setter = setter
 
 
 def set_root_quat_rpy_callbacks(
@@ -351,6 +381,61 @@ def _build_mapping_window(ui):
                 except Exception:
                     pass
 
+        pd_drive_model = ui.SimpleBoolModel(False)
+        def _dance_entries() -> list[DanceUiEntry]:
+            if _dance_entries_provider is None:
+                return []
+            try:
+                out: list[DanceUiEntry] = []
+                for item in _dance_entries_provider() or []:
+                    if isinstance(item, (tuple, list)) and len(item) >= 2:
+                        key = str(item[0]).strip()
+                        label = str(item[1]).strip()
+                        if key and label:
+                            out.append((key, label))
+                    elif isinstance(item, str) and str(item).strip():
+                        k = str(item).strip()
+                        out.append((k, k))
+                return out
+            except Exception:
+                return []
+
+        dance_entries = _dance_entries()
+        dance_combo_labels = [lbl for _k, lbl in dance_entries] if dance_entries else ["(none)"]
+        dance_combo = ui.ComboBox(0, *dance_combo_labels, width=360, height=24)
+
+        def _selected_dance_key() -> str | None:
+            entries = _dance_entries()
+            if not entries:
+                return None
+            try:
+                idx = int(dance_combo.model.get_item_value_model().as_int)
+            except Exception:
+                idx = 0
+            idx = max(0, min(len(entries) - 1, idx))
+            return entries[idx][0]
+
+        def _request_selected_dance(prefer_hdf5: bool) -> None:
+            if _dance_request_cb is None:
+                return
+            selected_key = _selected_dance_key()
+            if not selected_key:
+                return
+            try:
+                _dance_request_cb(selected_key, bool(prefer_hdf5))
+            except Exception:
+                pass
+
+        def _on_pd_drive_changed(m: Any) -> None:
+            if _pd_drive_sync_suppress_set:
+                return
+            if _pd_drive_setter is None:
+                return
+            try:
+                _pd_drive_setter(bool(m.get_value_as_bool()))
+            except Exception:
+                pass
+
         def _push_root_quat_rpy() -> None:
             if _root_quat_sync_suppress_set:
                 return
@@ -373,7 +458,15 @@ def _build_mapping_window(ui):
             except Exception:
                 pass
 
+        pd_drive_model.add_value_changed_fn(_on_pd_drive_changed)
+
         with ui.HStack(height=28):
+            ui.Label("Dance File", width=74, height=22)
+            ui.Spacer(width=6)
+            dance_combo
+            ui.Button("Play CSV", width=72, height=24, clicked_fn=lambda: _request_selected_dance(False))
+            ui.Button("Play H5", width=62, height=24, clicked_fn=lambda: _request_selected_dance(True))
+            ui.Spacer(width=8)
             playback_title_label = ui.Label("Playback: (idle)", width=188, height=22)
             ui.IntField(model=scrub_model, width=64, height=22)
             max_frame_label = ui.Label("/ -", width=40, height=22)
@@ -404,6 +497,18 @@ def _build_mapping_window(ui):
         # ========== 可滚动区域：Root + 关节映射（统一滑块行布局） ==========
         with ui.ScrollingFrame():
             with ui.VStack(spacing=2):
+                ui.Label(
+                    "--- Dance Option ---",
+                    height=22,
+                    style={"font_size": 17, "font_style": "bold", "color": 0xFFFFFF00},
+                )
+                with ui.HStack(height=28):
+                    ui.Label("PD Drive", width=118)
+                    ui.Label("joint PD mode", width=102)
+                    ui.CheckBox(model=pd_drive_model, width=24, height=22)
+                    ui.Spacer()
+                ui.Spacer(height=4)
+
                 ui.Label(
                     "--- Root ---",
                     height=22,
@@ -570,6 +675,7 @@ def _build_mapping_window(ui):
 
     transport_refs = {
         "scrub_model": scrub_model,
+        "pd_drive_model": pd_drive_model,
         "max_label": max_frame_label,
         "btn_prev": btn_prev,
         "btn_next": btn_next,
@@ -601,7 +707,7 @@ def schedule_mapping_ui_refresh_loop() -> None:
 async def _mapping_ui_refresh_loop() -> None:
     import omni.kit.app
 
-    global _scrub_sync_suppress_seek, _root_quat_sync_suppress_set
+    global _scrub_sync_suppress_seek, _root_quat_sync_suppress_set, _pd_drive_sync_suppress_set
     while True:
         await omni.kit.app.get_app().next_update_async()
         if _joint_models_ref is None and _retarget_tune_refs is None:
@@ -627,6 +733,19 @@ async def _mapping_ui_refresh_loop() -> None:
                 _playback_title_ref.text = f"Playback: {tag}  "
         if _playback_transport_ref is not None:
             tr = _playback_transport_ref
+            if _pd_drive_provider is not None:
+                try:
+                    pd_on = bool(_pd_drive_provider())
+                except Exception:
+                    pd_on = False
+                _pd_drive_sync_suppress_set = True
+                try:
+                    if bool(tr["pd_drive_model"].get_value_as_bool()) != pd_on:
+                        tr["pd_drive_model"].set_value(pd_on)
+                except Exception:
+                    pass
+                finally:
+                    _pd_drive_sync_suppress_set = False
             playing = bool(st.get("playing"))
             paused = bool(st.get("playback_paused"))
             mx = st.get("max_frame")
