@@ -30,7 +30,7 @@ class G1StandPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 class G1DanceTrackC0PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     """PPO config for the C0 (fixed-root) dance tracking smoke env."""
 
-    num_steps_per_env = 24
+    num_steps_per_env = 120
     max_iterations = 3000
     save_interval = 200
     experiment_name = "g1_dance_track_c0"
@@ -61,18 +61,18 @@ class G1DanceTrackC0PPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 @configclass
 class G1DanceTrackC1PPORunnerCfg(G1DanceTrackC0PPORunnerCfg):
-    """PPO config for the C1 (floating-root) dance tracking env."""
+    """PPO config for the C1 (floating-root residual) dance tracking env."""
 
     def __post_init__(self) -> None:
-        self.experiment_name = "g1_dance_track_c1"
+        self.experiment_name = "g1_dance_track_c1_residual"
         self.max_iterations = 10000
         self.save_interval = 1000
 
 
 @configclass
-class G1DanceTrackC1ResidualPPORunnerCfg(G1DanceTrackC1PPORunnerCfg):
-    """PPO config for C1 residual-control dance tracking."""
+class G1DanceTrackC2PPORunnerCfg(G1DanceTrackC1PPORunnerCfg):
+    """PPO config for C2 full-window dance tracking."""
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        self.experiment_name = "g1_dance_track_c1_residual"
+        self.experiment_name = "g1_dance_track_c2_residual"

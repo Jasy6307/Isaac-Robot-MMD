@@ -71,11 +71,10 @@ def build_arg_parser(pose_dir: str) -> argparse.ArgumentParser:
     parser.add_argument(
         "--pd_profile",
         type=str,
-        choices=("deploy_playback", "deploy", "isaaclab"),
-        default="deploy_playback",
+        choices=("deploy", "isaaclab"),
+        default="deploy",
         help=(
-            "Actuator PD: deploy_playback=deploy legs/ankle + stiffer arms for MMD preview (default); "
-            "deploy=pure Unitree FixStand (arms Kp=40, slow on fast motion); "
+            "Actuator PD: deploy=deploy legs/ankle + stiffer arms/waist for dance tracking (default); "
             "isaaclab=G1_29DOF locomanipulation defaults."
         ),
     )

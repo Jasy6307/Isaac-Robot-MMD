@@ -6,8 +6,10 @@
 * ``G1DanceTrackC0EnvCfg`` - C0 fixed-root smoke env to validate the H5
   reference + observation + reward + PPO pipeline on the first 10 seconds of
   ``you_are_important.h5``.
-* ``G1DanceTrackC1EnvCfg`` - C1 floating-root env with alive/fall terminations
-  and root yaw/XY tracking rewards.
+* ``G1DanceTrackC1EnvCfg`` - C1 floating-root residual env (legs learn around
+  H5 reference; arms+waist frozen) with alive/fall terminations and root tracking.
+* ``G1DanceTrackC2EnvCfg`` - C2 full-window env with end-of-motion hold timeout
+  and stronger root tracking rewards.
 """
 
 from __future__ import annotations
@@ -35,8 +37,6 @@ from robot_mmd.my_task import mdp
 from robot_mmd.my_task.g1_stand_env_cfg import G1_TPOSE_INIT_STATE
 from robot_mmd.train_workflow.g1_deploy_actuator_cfg import apply_robot_pd_profile
 from robot_mmd.my_task.mdp.actions import (
-    ReferenceFrozenJointPositionAction,
-    ReferenceFrozenJointPositionActionCfg,
     ReferenceResidualJointPositionAction,
     ReferenceResidualJointPositionActionCfg,
 )
@@ -66,10 +66,10 @@ C1_ACTION_SCALE = 0.5 # 0.5
 C1_ACTION_RATE_L2_WEIGHT = -0.05 # -0.01
 C1_ACTION_L2_WEIGHT = -1.0e-4 # -1.0e-4
 C1_ALIVE_WEIGHT = 2.0
-C1_TERMINATED_PENALTY_WEIGHT = -0.5
-C1_ROOT_YAW_TRACK_WEIGHT = 6.0
+C1_TERMINATED_PENALTY_WEIGHT = -1.0
+C1_ROOT_YAW_TRACK_WEIGHT = 10.0
 C1_ROOT_YAW_TRACK_SIGMA = 0.15
-C1_ROOT_XY_TRACK_WEIGHT = 5.0
+C1_ROOT_XY_TRACK_WEIGHT = 8.0
 C1_ROOT_XY_TRACK_SIGMA = 0.15
 C1_ROOT_Z_TRACK_WEIGHT = 1.0
 C1_ROOT_Z_TRACK_SIGMA = 0.10
@@ -93,7 +93,14 @@ C1_RESIDUAL_ALPHA = 0.3
 # Residual variant: stronger tracking signal + slightly looser sigma for gradient when balancing.
 C1_RESIDUAL_JOINT_TRACK_WEIGHT = 15.0
 C1_RESIDUAL_JOINT_TRACK_SIGMA = 0.10
-
+# C2 defaults: full-window (no random start/length) + stronger root XY/yaw tracking.
+C2_ROOT_YAW_TRACK_WEIGHT = 8.0
+C2_ROOT_XY_TRACK_WEIGHT = 7.0
+# C2_ALIVE_WEIGHT = 10.0
+# C2_TERMINATED_PENALTY_WEIGHT = -5.0
+C2_ALIVE_WEIGHT = 20.0
+C2_TERMINATED_PENALTY_WEIGHT = -5.0
+C2_END_HOLD_SECONDS = 2.0
 
 ##
 # Scene definition
@@ -257,27 +264,7 @@ class EventCfg:
     )
 
 
-def _c1_joint_pos_action_cfg() -> ReferenceFrozenJointPositionActionCfg:
-    return ReferenceFrozenJointPositionActionCfg(
-        class_type=ReferenceFrozenJointPositionAction,
-        asset_name="robot",
-        joint_names=[".*"],
-        scale=C1_ACTION_SCALE,
-        use_default_offset=True,
-        frozen_joint_name_expr=G1_ARM_JOINT_EXPR,
-        motion_h5_path=DEFAULT_DANCE_H5,
-        motion_window_seconds=DEFAULT_WINDOW_SECONDS,
-    )
-
-
-@configclass
-class C1ActionsCfg(ActionsCfg):
-    """C1: policy controls all joints for checkpoint compatibility; arms overwritten by reference."""
-
-    joint_pos = _c1_joint_pos_action_cfg()
-
-
-def _c1_residual_joint_pos_action_cfg() -> ReferenceResidualJointPositionActionCfg:
+def _c1_joint_pos_action_cfg() -> ReferenceResidualJointPositionActionCfg:
     return ReferenceResidualJointPositionActionCfg(
         class_type=ReferenceResidualJointPositionAction,
         asset_name="robot",
@@ -295,10 +282,10 @@ def _c1_residual_joint_pos_action_cfg() -> ReferenceResidualJointPositionActionC
 
 
 @configclass
-class C1ResidualActionsCfg(ActionsCfg):
+class C1ActionsCfg(ActionsCfg):
     """C1 residual control: legs track reference + policy residual; arms+waist frozen."""
 
-    joint_pos = _c1_residual_joint_pos_action_cfg()
+    joint_pos = _c1_joint_pos_action_cfg()
 
 
 @configclass
@@ -344,15 +331,15 @@ class G1DanceTrackC0EnvCfg(ManagerBasedRLEnvCfg):
     events: EventCfg = EventCfg()
 
     viewer: ViewerCfg = ViewerCfg(
-        eye=(0.0, 3.0, 1.0),
+        eye=(0.0, 5.0, 1.0),
         lookat=(0.0, 0.0, 1.0),
     )
 
     def __post_init__(self) -> None:
         super().__post_init__()
         # Control loop: dt=1/300  physics, decimation=10 -> 30Hz control.
-        self.sim.dt = 1.0 / 300.0   # 物理 300 Hz
-        self.decimation = 10         # 控制 300/10 = 30 Hz
+        self.sim.dt = 1.0 / 60.0   # 物理 300 Hz
+        self.decimation = 2         # 控制 300/10 = 30 Hz
         self.sim.render_interval = self.decimation
         self.sim.physics_material = self.scene.terrain.physics_material
         # Window length must match the reference buffer window seconds.
@@ -365,16 +352,15 @@ class G1DanceTrackC0EnvCfg(ManagerBasedRLEnvCfg):
 
 @configclass
 class G1DanceTrackC1EnvCfg(G1DanceTrackC0EnvCfg):
-    """C1 (floating root) dance tracking env.
+    """C1 (floating root) residual dance tracking env.
 
-    Root link is freed; we add an ``alive`` reward, fall-height and bad-orientation
-    terminations so the policy learns balance while tracking the motion window.
+    Root link is freed; legs learn a residual around the H5 reference while
+    arms+waist follow the reference open-loop. Adds ``alive`` reward, fall-height
+    and bad-orientation terminations so the policy learns balance while tracking.
 
     C1 overrides C0 action scale and smoothness reward weights (see module
-    constants ``C1_ACTION_*``) to reduce jitter / launch under gravity.
-    Arms are frozen to the H5 reference; waist reset/obs noise is disabled like arms
-    (but waist is still policy-controlled in the base C1 action term).
-    Legs keep full reset/obs noise (see ``C1_*_NOISE_*`` in ``joint_groups``).
+    constants ``C1_ACTION_*``). Legs keep full reset/obs noise; arms/waist noise
+    is disabled (see ``C1_*_NOISE_*`` in ``joint_groups``).
     Ground is at the default height (z=0), not the lowered C0 plane.
     """
 
@@ -456,8 +442,8 @@ class G1DanceTrackC1EnvCfg(G1DanceTrackC0EnvCfg):
         self.rewards.action_rate.weight = C1_ACTION_RATE_L2_WEIGHT
         self.rewards.action_l2.weight = C1_ACTION_L2_WEIGHT
 
-        self.rewards.joint_pos_tracking.weight = 5.0
-        self.rewards.joint_pos_tracking.params["sigma"] = 0.08
+        self.rewards.joint_pos_tracking.weight = C1_RESIDUAL_JOINT_TRACK_WEIGHT
+        self.rewards.joint_pos_tracking.params["sigma"] = C1_RESIDUAL_JOINT_TRACK_SIGMA
         self.rewards.joint_pos_tracking.params["joint_weight_default"] = 0.0
         self.rewards.joint_pos_tracking.params["joint_weight_by_expr"] = {
             "waist_.*_joint": C1_TRACKING_LOWER_BODY_WEIGHT,
@@ -468,12 +454,33 @@ class G1DanceTrackC1EnvCfg(G1DanceTrackC0EnvCfg):
 
 
 @configclass
-class G1DanceTrackC1ResidualEnvCfg(G1DanceTrackC1EnvCfg):
-    """C1 residual variant for faster balance+tracking convergence."""
-
-    actions: C1ResidualActionsCfg = C1ResidualActionsCfg()
+class G1DanceTrackC2EnvCfg(G1DanceTrackC1EnvCfg):
+    """C2 full-window dance tracking with stronger root tracking and end hold."""
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        self.rewards.joint_pos_tracking.weight = C1_RESIDUAL_JOINT_TRACK_WEIGHT
-        self.rewards.joint_pos_tracking.params["sigma"] = C1_RESIDUAL_JOINT_TRACK_SIGMA
+        # C2: always reset from frame 0 and run full window to end.
+        self.episode_length_s = DEFAULT_WINDOW_SECONDS
+        evt = self.events.reset_robot_joints
+        evt.params["random_start"] = False
+        evt.params["random_episode_length"] = False
+        evt.params["segment_seconds"] = DEFAULT_WINDOW_SECONDS
+        evt.params["episode_min_seconds"] = DEFAULT_WINDOW_SECONDS
+        evt.params["episode_max_seconds"] = DEFAULT_WINDOW_SECONDS
+        # C2: keep training for extra hold time after reaching the last motion frame.
+        self.terminations.time_out = DoneTerm(
+            func=mdp.motion_end_with_hold_time_out,
+            params={
+                "h5_path": DEFAULT_DANCE_H5,
+                "window_seconds": DEFAULT_WINDOW_SECONDS,
+                "hold_seconds": C2_END_HOLD_SECONDS,
+                "asset_name": "robot",
+            },
+            time_out=True,
+        )
+        # C2: increase root tracking priorities.
+        self.rewards.alive.weight = C2_ALIVE_WEIGHT
+        self.rewards.root_yaw_tracking.weight = C2_ROOT_YAW_TRACK_WEIGHT
+        self.rewards.root_xy_tracking.weight = C2_ROOT_XY_TRACK_WEIGHT
+        # C2: explicit failure penalties to push convergence toward timeout completion.
+        self.rewards.terminated_penalty.weight = C2_TERMINATED_PENALTY_WEIGHT

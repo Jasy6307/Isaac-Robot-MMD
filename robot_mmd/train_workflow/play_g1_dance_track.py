@@ -30,6 +30,24 @@ parser = argparse.ArgumentParser(description="Play a G1 dance tracking checkpoin
 parser.add_argument("--task", type=str, default="Isaac-G1-Dance-Track-C0-v0")
 parser.add_argument("--num_envs", type=int, default=16)
 parser.add_argument(
+    "--benchmark_inference",
+    action="store_true",
+    default=False,
+    help="Only benchmark policy forward pass (no env.step loop) and exit.",
+)
+parser.add_argument(
+    "--benchmark_steps",
+    type=int,
+    default=2000,
+    help="Forward iterations for --benchmark_inference.",
+)
+parser.add_argument(
+    "--benchmark_warmup",
+    type=int,
+    default=200,
+    help="Warmup forward iterations before --benchmark_inference timing.",
+)
+parser.add_argument(
     "--checkpoint",
     type=str,
     default=None,
@@ -208,6 +226,144 @@ def _find_h5_window(env_cfg: ManagerBasedRLEnvCfg) -> tuple[str, float]:
     return str(tracking.params["h5_path"]), float(tracking.params["window_seconds"])
 
 
+def _infer_obs_device(obs_obj) -> torch.device:
+    """Best-effort infer device from nested obs object."""
+    if torch.is_tensor(obs_obj):
+        return obs_obj.device
+    if hasattr(obs_obj, "get"):
+        try:
+            pol = obs_obj.get("policy", None)
+            if torch.is_tensor(pol):
+                return pol.device
+        except Exception:
+            pass
+    if hasattr(obs_obj, "values"):
+        try:
+            for value in obs_obj.values():
+                try:
+                    return _infer_obs_device(value)
+                except ValueError:
+                    pass
+        except Exception:
+            pass
+    if isinstance(obs_obj, dict):
+        for value in obs_obj.values():
+            try:
+                return _infer_obs_device(value)
+            except ValueError:
+                pass
+    if isinstance(obs_obj, (tuple, list)):
+        for item in obs_obj:
+            try:
+                return _infer_obs_device(item)
+            except ValueError:
+                pass
+    raise ValueError(f"Cannot infer device from obs type: {type(obs_obj)}")
+
+
+def _benchmark_policy_forward(policy, obs_obj, *, warmup: int, steps: int) -> None:
+    warmup_i = max(0, int(warmup))
+    steps_i = max(1, int(steps))
+    device = _infer_obs_device(obs_obj)
+    is_cuda = device.type == "cuda"
+    print(
+        f"[BENCH] Running policy forward benchmark: warmup={warmup_i}, steps={steps_i}, device={device}"
+    )
+    with torch.inference_mode():
+        for _ in range(warmup_i):
+            _ = policy(obs_obj)
+        if is_cuda:
+            torch.cuda.synchronize(device=device)
+        t0 = time.perf_counter()
+        for _ in range(steps_i):
+            _ = policy(obs_obj)
+        if is_cuda:
+            torch.cuda.synchronize(device=device)
+        elapsed = max(time.perf_counter() - t0, 1e-9)
+    ms = 1000.0 * elapsed / steps_i
+    hz = steps_i / elapsed
+    print(f"[BENCH] policy_forward: avg={ms:.3f} ms  hz={hz:.1f}")
+
+
+def _build_policy_obs_adapter(policy, sample_obs, sample_tensor: torch.Tensor):
+    """Build an adapter so policy(...) accepts tensor or group-style obs."""
+    with torch.inference_mode():
+        accepts_tensor = False
+        accepts_group = False
+        try:
+            _ = policy(sample_tensor)
+            accepts_tensor = True
+        except Exception:
+            pass
+        try:
+            _ = policy({"policy": sample_tensor})
+            accepts_group = True
+        except Exception:
+            pass
+        if accepts_tensor and not accepts_group:
+            def _as_tensor(x):
+                return x if torch.is_tensor(x) else _extract_policy_obs_tensor(x)
+            return _as_tensor
+        if accepts_group and not accepts_tensor:
+            def _as_group(x):
+                if isinstance(x, dict) or hasattr(x, "get"):
+                    return x
+                return {"policy": x}
+            return _as_group
+        if accepts_tensor and accepts_group:
+            # Prefer tensor path to avoid dictionary packing overhead.
+            def _prefer_tensor(x):
+                return x if torch.is_tensor(x) else _extract_policy_obs_tensor(x)
+            return _prefer_tensor
+    raise ValueError(
+        f"Unable to adapt observation format for policy input type: {type(sample_obs)}"
+    )
+
+
+def _extract_policy_obs_tensor(obs_obj) -> torch.Tensor:
+    """Normalize wrapped.get_observations() output to a policy tensor."""
+    if torch.is_tensor(obs_obj):
+        return obs_obj
+    # RSL-RL wrappers may return a TensorDict-like object.
+    if hasattr(obs_obj, "get"):
+        try:
+            pol = obs_obj.get("policy", None)
+            if torch.is_tensor(pol):
+                return pol
+        except Exception:
+            pass
+    if hasattr(obs_obj, "values"):
+        try:
+            for value in obs_obj.values():
+                if torch.is_tensor(value):
+                    return value
+                if isinstance(value, (dict, tuple, list)) or hasattr(value, "get") or hasattr(value, "values"):
+                    try:
+                        return _extract_policy_obs_tensor(value)
+                    except ValueError:
+                        pass
+        except Exception:
+            pass
+    if isinstance(obs_obj, dict):
+        if "policy" in obs_obj and torch.is_tensor(obs_obj["policy"]):
+            return obs_obj["policy"]
+        for value in obs_obj.values():
+            if torch.is_tensor(value):
+                return value
+            if isinstance(value, (dict, tuple, list)):
+                try:
+                    return _extract_policy_obs_tensor(value)
+                except ValueError:
+                    pass
+    if isinstance(obs_obj, (tuple, list)):
+        for item in obs_obj:
+            try:
+                return _extract_policy_obs_tensor(item)
+            except ValueError:
+                pass
+    raise ValueError(f"Cannot extract policy observation tensor from type: {type(obs_obj)}")
+
+
 def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
     if (
         args_cli.motion_h5 is None
@@ -315,6 +471,19 @@ def main() -> None:
     runner = OnPolicyRunner(wrapped, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     runner.load(resume_path)
     policy = runner.get_inference_policy(device=env_unwrapped.device)
+    obs_raw = wrapped.get_observations()
+    obs = _extract_policy_obs_tensor(obs_raw)
+    obs_adapter = _build_policy_obs_adapter(policy, obs_raw, obs)
+
+    if args_cli.benchmark_inference:
+        _benchmark_policy_forward(
+            policy,
+            obs_adapter(obs_raw),
+            warmup=int(args_cli.benchmark_warmup),
+            steps=int(args_cli.benchmark_steps),
+        )
+        wrapped.close()
+        return
 
     h5_path, window_s = _find_h5_window(env_cfg)
     buf = get_or_create_motion_buffer(env_unwrapped, h5_path, window_s)
@@ -328,7 +497,6 @@ def main() -> None:
             f"realtime_ratio=1.0 means real-time sim)."
         )
 
-    obs = wrapped.get_observations()
     dt = env_unwrapped.step_dt
     perf = _PlayPerfTracker(
         control_hz=control_hz,
@@ -352,7 +520,7 @@ def main() -> None:
         for _ in range(T):
             start_time = time.time()
             with torch.inference_mode():
-                actions = policy(obs)
+                actions = policy(obs_adapter(obs))
                 if smooth_alpha < 1.0:
                     if smoothed_actions is None:
                         smoothed_actions = actions.clone()

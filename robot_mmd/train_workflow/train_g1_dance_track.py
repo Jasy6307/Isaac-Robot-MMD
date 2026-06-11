@@ -418,6 +418,8 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
                 term.params["random_start"] = bool(new_random_start)
             if new_episode_s is not None and "segment_seconds" in term.params:
                 term.params["segment_seconds"] = float(new_episode_s)
+            elif new_ws is not None and "segment_seconds" in term.params:
+                term.params["segment_seconds"] = float(new_ws)
             if (
                 new_random_episode_length is not None
                 and "random_episode_length" in term.params
@@ -425,9 +427,20 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
                 term.params["random_episode_length"] = bool(new_random_episode_length)
             if new_episode_min_s is not None and "episode_min_seconds" in term.params:
                 term.params["episode_min_seconds"] = float(new_episode_min_s)
+            elif new_ws is not None and "episode_min_seconds" in term.params:
+                term.params["episode_min_seconds"] = float(new_ws)
             if new_episode_max_s is not None and "episode_max_seconds" in term.params:
                 term.params["episode_max_seconds"] = float(new_episode_max_s)
-    # C1 frozen-arm action (motion reference path)
+            elif new_ws is not None and "episode_max_seconds" in term.params:
+                term.params["episode_max_seconds"] = float(new_ws)
+    # terminations (C2 motion_end_with_hold_time_out must share motion h5/window)
+    terminations_cfg = getattr(env_cfg, "terminations", None)
+    if terminations_cfg is not None:
+        for term_name in vars(terminations_cfg):
+            term = getattr(terminations_cfg, term_name)
+            if hasattr(term, "params") and isinstance(term.params, dict):
+                _patch(term.params)
+    # C1 residual action (motion reference path)
     joint_pos_action = getattr(env_cfg.actions, "joint_pos", None)
     if joint_pos_action is not None:
         if new_h5 is not None and hasattr(joint_pos_action, "motion_h5_path"):

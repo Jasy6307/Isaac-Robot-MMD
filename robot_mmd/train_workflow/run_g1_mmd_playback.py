@@ -63,6 +63,7 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab.devices import Se3Keyboard, Se3KeyboardCfg
 from isaaclab_tasks.utils import parse_env_cfg
 
+from robot_mmd.my_task.g1_29dof_o6_cfg import G1_29DOF_O6_CFG
 from robot_mmd.train_workflow.g1_deploy_actuator_cfg import (
     apply_robot_pd_profile,
     log_pd_profile_summary,
@@ -138,6 +139,10 @@ def main():
     from robot_mmd.my_task.g1_stand_env_cfg import G1_TPOSE_INIT_STATE
 
     env_cfg.scene.robot.init_state = G1_TPOSE_INIT_STATE
+    env_cfg.scene.robot = G1_29DOF_O6_CFG.replace(
+        prim_path=env_cfg.scene.robot.prim_path,
+        init_state=env_cfg.scene.robot.init_state,
+    )
     env_cfg.scene.robot = apply_robot_pd_profile(env_cfg.scene.robot, args_cli.pd_profile)
     log_pd_profile_summary(args_cli.pd_profile)
     robot_spawn = env_cfg.scene.robot.spawn
@@ -155,6 +160,7 @@ def main():
     if args_cli.sim_fps > 0:
         control_dt = 1.0 / args_cli.sim_fps
         env_cfg.sim.dt = control_dt / 2
+        # env_cfg.sim.dt = control_dt
         env_cfg.decimation = 2
         env_cfg.sim.render_interval = env_cfg.decimation
         print(f"[INFO] 仿真控制: {args_cli.sim_fps} FPS")

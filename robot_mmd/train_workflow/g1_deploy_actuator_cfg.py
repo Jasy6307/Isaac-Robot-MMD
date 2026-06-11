@@ -1,15 +1,12 @@
-"""G1 actuator PD profiles for MMD playback.
+"""G1 actuator PD profiles used by playback/training scripts.
 
 Profiles
 --------
-``deploy``
-    Pure Unitree ``unitree_rl_lab`` FixStand Kp/Kd (sim-to-real for legs/waist).
+``deploy`` (default)
+    Deploy legs/feet gains + stiffer upper body for better dance tracking.
 
-``deploy_playback`` (recommended for ``run_g1_mmd_playback.py``)
-    Lower body = deploy FixStand; upper body uses higher implicit Kp for MMD tracking.
-
-Reference:
-  unitree_rl_lab/deploy/robots/g1_29dof/config/config.yaml  (FixStand kp/kd)
+``isaaclab``
+    Isaac Lab `G1_29DOF_CFG` default gains.
 """
 
 from __future__ import annotations
@@ -20,64 +17,7 @@ from isaaclab_assets import G1_29DOF_CFG
 
 
 def build_g1_deploy_actuators() -> dict[str, DCMotorCfg | ImplicitActuatorCfg]:
-    """Build G1_29DOF actuators with Unitree deploy FixStand Kp/Kd."""
-    base = G1_29DOF_CFG.actuators
-    legs_base: DCMotorCfg = base["legs"]
-    feet_base: DCMotorCfg = base["feet"]
-    waist_base: ImplicitActuatorCfg = base["waist"]
-    arms_base: ImplicitActuatorCfg = base["arms"]
-    hands_base: ImplicitActuatorCfg = base["hands"]
-
-    return {
-        "legs": legs_base.replace(
-            stiffness={
-                ".*_hip_yaw_joint": 100.0,
-                ".*_hip_roll_joint": 100.0,
-                ".*_hip_pitch_joint": 100.0,
-                ".*_knee_joint": 150.0,
-            },
-            damping={
-                ".*_hip_yaw_joint": 2.0,
-                ".*_hip_roll_joint": 2.0,
-                ".*_hip_pitch_joint": 2.0,
-                ".*_knee_joint": 4.0,
-            },
-        ),
-        "feet": feet_base.replace(
-            stiffness={
-                ".*_ankle_pitch_joint": 40.0,
-                ".*_ankle_roll_joint": 40.0,
-            },
-            damping={
-                ".*_ankle_pitch_joint": 2.0,
-                ".*_ankle_roll_joint": 2.0,
-            },
-        ),
-        "waist": waist_base.replace(
-            stiffness={
-                "waist_yaw_joint": 200.0,
-                "waist_roll_joint": 200.0,
-                "waist_pitch_joint": 200.0,
-            },
-            damping={
-                "waist_yaw_joint": 5.0,
-                "waist_roll_joint": 5.0,
-                "waist_pitch_joint": 5.0,
-            },
-        ),
-        "arms": arms_base.replace(
-            stiffness=40.0,
-            damping=10.0,
-        ),
-        "hands": hands_base.replace(
-            stiffness=40.0,
-            damping=10.0,
-        ),
-    }
-
-
-def build_g1_deploy_playback_actuators() -> dict[str, DCMotorCfg | ImplicitActuatorCfg]:
-    """Deploy legs/feet + stiffer implicit upper body for per-frame MMD tracking."""
+    """Build merged deploy profile (fast upper-body tracking)."""
     base = G1_29DOF_CFG.actuators
     legs_base: DCMotorCfg = base["legs"]
     feet_base: DCMotorCfg = base["feet"]
@@ -133,46 +73,56 @@ def build_g1_deploy_playback_actuators() -> dict[str, DCMotorCfg | ImplicitActua
     }
 
 
+def build_g1_deploy_playback_actuators() -> dict[str, DCMotorCfg | ImplicitActuatorCfg]:
+    """Backward-compat alias. Kept for old imports/configs."""
+    return build_g1_deploy_actuators()
+
+
+def _normalize_pd_profile_key(profile: str) -> str:
+    key = str(profile or "deploy").strip().lower()
+    if key in ("deploy_playback", "playback", "mmd"):
+        print(
+            "[WARN] pd_profile 'deploy_playback' 已合并到 'deploy'；"
+            "请后续改用 --pd_profile deploy"
+        )
+        return "deploy"
+    return key
+
+
+def _is_deploy_profile(key: str) -> bool:
+    return key in ("deploy", "unitree", "real", "hardware")
+
+
 def apply_robot_pd_profile(robot_cfg: ArticulationCfg, profile: str) -> ArticulationCfg:
     """Return robot cfg with the selected actuator PD profile."""
-    key = str(profile or "deploy_playback").strip().lower()
+    key = _normalize_pd_profile_key(profile)
     if key in ("isaaclab", "default"):
         return robot_cfg
-    if key in ("deploy", "unitree", "real", "hardware"):
+    if _is_deploy_profile(key):
         return robot_cfg.replace(actuators=build_g1_deploy_actuators())
-    if key in ("deploy_playback", "playback", "mmd"):
-        return robot_cfg.replace(actuators=build_g1_deploy_playback_actuators())
     raise ValueError(
-        f"Unknown pd_profile '{profile}'. Expected: isaaclab, deploy, deploy_playback"
+        f"Unknown pd_profile '{profile}'. Expected: isaaclab, deploy"
     )
 
 
 def apply_pd_profile_to_scene_robot(robot_cfg: ArticulationCfg, profile: str) -> ArticulationCfg:
-    """Re-base on G1_29DOF spawn/init, then apply PD (train/play entry points)."""
-    base = G1_29DOF_CFG.replace(
-        prim_path=robot_cfg.prim_path,
-        init_state=robot_cfg.init_state,
-    )
-    return apply_robot_pd_profile(base, profile)
+    """Apply PD profile while preserving scene-specific robot settings."""
+    # Important: do not rebuild from G1_29DOF_CFG here.
+    # C0/C1 env configs may already customize spawn.articulation_props
+    # (e.g. C0 fix_root_link=True). We only want to swap actuator gains.
+    return apply_robot_pd_profile(robot_cfg, profile)
 
 
 def log_pd_profile_summary(profile: str) -> None:
     """Print a short summary of the active PD profile."""
-    key = str(profile or "deploy_playback").strip().lower()
+    key = _normalize_pd_profile_key(profile)
     if key in ("isaaclab", "default"):
         print("[INFO] Actuator PD profile: isaaclab (G1_29DOF_CFG defaults)")
         print("[INFO]   legs/feet=DCMotor (hip~100-200, ankle~20), arms/waist implicit (~3000/5000)")
         return
-    if key in ("deploy", "unitree", "real", "hardware"):
-        print("[INFO] Actuator PD profile: deploy (Unitree rl_lab FixStand, all joints)")
+    if _is_deploy_profile(key):
+        print("[INFO] Actuator PD profile: deploy (merged fast-tracking profile)")
         print("[INFO]   legs: hip Kp/Kd=100/2, knee 150/4; ankle 40/2")
-        print("[INFO]   waist Kp/Kd=200/5; arms/hands Kp/Kd=40/10")
-        print(
-            "[WARN]   Pure deploy arms (Kp=40) lag on fast MMD playback; "
-            "use --pd_profile deploy_playback for dance preview."
-        )
+        print("[INFO]   waist Kp/Kd=600/30; arms/hands Kp/Kd=500/50")
         return
-    print("[INFO] Actuator PD profile: deploy_playback (deploy legs + fast upper body)")
-    print("[INFO]   legs: hip Kp/Kd=100/2, knee 150/4; ankle 40/2")
-    print("[INFO]   waist Kp/Kd=600/30; arms/hands Kp/Kd=500/50")
-    print("[INFO]   Toggle Mapping UI 'PD Drive' to drive joints with these sim actuators.")
+    print("[WARN] Unknown pd_profile, fallback summary unavailable.")

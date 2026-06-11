@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from robot_mmd.my_task.motion_reference import get_or_create_motion_buffer
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
@@ -98,4 +100,31 @@ def random_episode_time_out(env: "ManagerBasedRLEnv") -> torch.Tensor:
     targets = episode_target_steps(env)
     steps = env.episode_length_buf.to(device=targets.device, dtype=torch.long)
     return steps >= targets
+
+
+def motion_end_with_hold_time_out(
+    env: "ManagerBasedRLEnv",
+    h5_path: str,
+    window_seconds: float = 10.0,
+    hold_seconds: float = 2.0,
+    asset_name: str = "robot",
+) -> torch.Tensor:
+    """Timeout after reaching motion end and holding for extra seconds.
+
+    This is designed for C2-style full-window training:
+    - reference runs to the end frame (buffer clamps at last frame),
+    - then continues in training mode for ``hold_seconds``,
+    - timeout triggers only after this extra hold duration.
+    """
+    buf = get_or_create_motion_buffer(
+        env,
+        h5_path,
+        float(window_seconds),
+        asset_name=asset_name,
+    )
+    hold_steps = max(0, int(round(float(hold_seconds) / float(env.step_dt))))
+    # Reaching last frame corresponds to step (num_steps - 1).
+    timeout_steps = max(1, int(buf.num_steps) - 1 + hold_steps)
+    steps = env.episode_length_buf.to(device=env.device, dtype=torch.long)
+    return steps >= timeout_steps
 

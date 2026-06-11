@@ -6,8 +6,8 @@ import torch
 
 from isaaclab.assets import Articulation
 
-# Arms (+ hands): frozen in C1-Residual action — follow H5 reference, no policy output.
-# Waist: reset/obs noise off like arms; action-frozen only in C1-Residual (see env cfg).
+# Arms (+ hands): frozen in C1 action — follow H5 reference, no policy output.
+# Waist: reset/obs noise off like arms; action-frozen in C1 (see env cfg).
 G1_ARM_JOINT_EXPR: list[str] = [
     ".*_shoulder_pitch_joint",
     ".*_shoulder_roll_joint",
