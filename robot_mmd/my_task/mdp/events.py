@@ -27,8 +27,6 @@ if TYPE_CHECKING:
 
 _ENV_START_TO_END_MODE_ATTR = "_g1_episode_random_start_to_end"
 _ENV_STAGE_END_SECONDS_ATTR = "_g1_episode_end_seconds"
-_ENV_START_SAMPLE_LOG_COUNT_ATTR = "_g1_start_sample_log_count"
-_ENV_START_SAMPLE_LOG_INTERVAL_ATTR = "_g1_start_sample_log_interval"
 
 
 def _cloner_env_origins(env: "ManagerBasedRLEnv") -> torch.Tensor:
@@ -38,32 +36,6 @@ def _cloner_env_origins(env: "ManagerBasedRLEnv") -> torch.Tensor:
     if cloner_origins is not None:
         return cloner_origins
     return scene.env_origins
-
-
-def _maybe_log_start_steps(
-    env: "ManagerBasedRLEnv",
-    start_steps: torch.Tensor,
-    num_steps: int,
-) -> None:
-    """Low-frequency logging for reset start-step coverage."""
-    if start_steps.numel() == 0 or num_steps <= 0:
-        return
-    count = int(getattr(env, _ENV_START_SAMPLE_LOG_COUNT_ATTR, 0))
-    interval = int(getattr(env, _ENV_START_SAMPLE_LOG_INTERVAL_ATTR, 200))
-    setattr(env, _ENV_START_SAMPLE_LOG_COUNT_ATTR, count + 1)
-    if interval <= 0 or (count % interval) != 0:
-        return
-    ss = start_steps.to(dtype=torch.float32)
-    tail_threshold = max(0, int(round(0.9 * max(1, num_steps - 1))))
-    tail_ratio = float((start_steps >= tail_threshold).to(dtype=torch.float32).mean().item())
-    print(
-        "[INFO] reset random_start coverage: "
-        f"min={int(start_steps.min().item())} "
-        f"max={int(start_steps.max().item())} "
-        f"mean={float(ss.mean().item()):.1f} "
-        f"tail>=90% ratio={tail_ratio:.3f} "
-        f"(num_steps={int(num_steps)})"
-    )
 
 
 def reset_root_to_spawn(
@@ -94,6 +66,7 @@ def reset_to_motion_start(
     joint_pos_noise: float = 0.05,
     joint_vel_noise: float = 0.0,
     reset_root_to_motion_quat: bool = False,
+    reset_root_to_motion_pose: bool = False,
     joint_noise_scale_by_expr: dict[str, float] | None = None,
     random_start: bool = False,
     segment_seconds: float | None = None,
@@ -169,39 +142,51 @@ def reset_to_motion_start(
             dtype=torch.long,
         )
         set_motion_start_steps(env, env_ids, start_steps)
-        _maybe_log_start_steps(env, start_steps, int(buf.num_steps))
     else:
         reset_motion_start_steps(env, env_ids)
         start_steps = torch.zeros((env_ids.numel(),), device=asset.device, dtype=torch.long)
 
-    if reset_root_to_motion_quat:
+    if reset_root_to_motion_pose or reset_root_to_motion_quat:
         root_pose = asset.data.root_state_w[env_ids, :7].clone()
-        default_root_quat = asset.data.default_root_state[env_ids, 3:7]
-        q_delta0 = buf.root_quat_wxyz(start_steps)
-        q_target = torch.stack(
-            (
-                q_delta0[:, 0] * default_root_quat[:, 0]
-                - q_delta0[:, 1] * default_root_quat[:, 1]
-                - q_delta0[:, 2] * default_root_quat[:, 2]
-                - q_delta0[:, 3] * default_root_quat[:, 3],
-                q_delta0[:, 0] * default_root_quat[:, 1]
-                + q_delta0[:, 1] * default_root_quat[:, 0]
-                + q_delta0[:, 2] * default_root_quat[:, 3]
-                - q_delta0[:, 3] * default_root_quat[:, 2],
-                q_delta0[:, 0] * default_root_quat[:, 2]
-                - q_delta0[:, 1] * default_root_quat[:, 3]
-                + q_delta0[:, 2] * default_root_quat[:, 0]
-                + q_delta0[:, 3] * default_root_quat[:, 1],
-                q_delta0[:, 0] * default_root_quat[:, 3]
-                + q_delta0[:, 1] * default_root_quat[:, 2]
-                - q_delta0[:, 2] * default_root_quat[:, 1]
-                + q_delta0[:, 3] * default_root_quat[:, 0],
-            ),
-            dim=-1,
-        )
-        q_target = q_target / torch.linalg.norm(q_target, dim=-1, keepdim=True).clamp_min(1e-8)
-        root_pose[:, 3:7] = q_target
+        env_origin = _cloner_env_origins(env)[env_ids]
+
+        if reset_root_to_motion_pose:
+            p_anchor = asset.data.default_root_state[env_ids, 0:3]
+            p_delta = buf.root_pos_delta(start_steps).to(asset.device)
+            root_pose[:, 0:3] = p_anchor + env_origin + p_delta
+
+        if reset_root_to_motion_quat:
+            default_root_quat = asset.data.default_root_state[env_ids, 3:7]
+            q_delta0 = buf.root_quat_wxyz(start_steps)
+            q_target = torch.stack(
+                (
+                    q_delta0[:, 0] * default_root_quat[:, 0]
+                    - q_delta0[:, 1] * default_root_quat[:, 1]
+                    - q_delta0[:, 2] * default_root_quat[:, 2]
+                    - q_delta0[:, 3] * default_root_quat[:, 3],
+                    q_delta0[:, 0] * default_root_quat[:, 1]
+                    + q_delta0[:, 1] * default_root_quat[:, 0]
+                    + q_delta0[:, 2] * default_root_quat[:, 3]
+                    - q_delta0[:, 3] * default_root_quat[:, 2],
+                    q_delta0[:, 0] * default_root_quat[:, 2]
+                    - q_delta0[:, 1] * default_root_quat[:, 3]
+                    + q_delta0[:, 2] * default_root_quat[:, 0]
+                    + q_delta0[:, 3] * default_root_quat[:, 1],
+                    q_delta0[:, 0] * default_root_quat[:, 3]
+                    + q_delta0[:, 1] * default_root_quat[:, 2]
+                    - q_delta0[:, 2] * default_root_quat[:, 1]
+                    + q_delta0[:, 3] * default_root_quat[:, 0],
+                ),
+                dim=-1,
+            )
+            q_target = q_target / torch.linalg.norm(q_target, dim=-1, keepdim=True).clamp_min(1e-8)
+            root_pose[:, 3:7] = q_target
+
         asset.write_root_pose_to_sim(root_pose, env_ids=env_ids)
+        asset.write_root_velocity_to_sim(
+            torch.zeros((env_ids.numel(), 6), device=asset.device, dtype=torch.float32),
+            env_ids=env_ids,
+        )
 
     q0 = buf.q_ref_abs(start_steps).to(asset.device)  # [N, J]
     target_q = q0.clone()

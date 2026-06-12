@@ -49,6 +49,62 @@ from robot_mmd.train_workflow.retarget_unitreeG1 import (
 Axis3 = tuple[float, float, float]
 AxisMapEntry = tuple[str | list[str], Axis3, float]
 
+MMD_FINGER_PREFIXES: tuple[str, ...] = (
+    "右親指",
+    "左親指",
+    "右人指",
+    "左人指",
+    "右人差指",
+    "左人差指",
+    "右中指",
+    "左中指",
+    "右薬指",
+    "左薬指",
+    "右小指",
+    "左小指",
+)
+
+_HAND_JOINT_NAME_PARTS: tuple[str, ...] = (
+    "_thumb_",
+    "_index_",
+    "_middle_",
+    "_ring_",
+    "_pinky_",
+    "_little_",
+    "_finger_",
+)
+
+
+def is_mmd_finger_bone(bone_name: str) -> bool:
+    """Return True when bone name belongs to hand/finger chains."""
+    name = str(bone_name or "")
+    return any(name.startswith(p) for p in MMD_FINGER_PREFIXES)
+
+
+def frame_has_hand_data(frame_data: dict[str, dict] | None) -> bool:
+    """Return True when one frame contains any MMD finger bone."""
+    if not frame_data:
+        return False
+    return any(is_mmd_finger_bone(name) for name in frame_data.keys())
+
+
+def frames_have_hand_data(frames: dict[int, dict[str, dict]] | None) -> bool:
+    """Return True when motion frames include at least one finger bone."""
+    if not frames:
+        return False
+    for frame_data in frames.values():
+        if frame_has_hand_data(frame_data):
+            return True
+    return False
+
+
+def is_hand_joint_name(joint_name: str) -> bool:
+    """Return True for runtime robot hand/finger joint names."""
+    name = str(joint_name or "")
+    if name.startswith("lh_") or name.startswith("rh_"):
+        return True
+    return any(part in name for part in _HAND_JOINT_NAME_PARTS)
+
 
 def _euler_to_quat(roll: float, pitch: float, yaw: float) -> tuple[float, float, float, float]:
     """欧拉角 (XYZ 顺序) 转四元数 (x, y, z, w)"""
@@ -789,6 +845,7 @@ def build_joint_positions_from_frame(
     joint_names: list[str],
     default_joint_pos: np.ndarray,
     knee_hinge_projection: bool = True,
+    enable_hand: bool = True,
 ) -> np.ndarray:
     """
     从一帧的骨骼数据构建 G1 关节位置数组。
@@ -811,6 +868,8 @@ def build_joint_positions_from_frame(
 
     result = default_joint_pos.copy()
     for i, jname in enumerate(joint_names):
+        if (not enable_hand) and is_hand_joint_name(jname):
+            continue
         angle = get_g1_angle_from_frame(jname, source_frame_data)
         if angle is not None:
             result[i] = default_joint_pos[i] + angle

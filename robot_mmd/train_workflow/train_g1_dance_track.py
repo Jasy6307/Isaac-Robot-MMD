@@ -48,16 +48,10 @@ parser.add_argument(
     help="Override the dance HDF5 path. Defaults to env cfg's value.",
 )
 parser.add_argument(
-    "--window_seconds",
-    type=float,
-    default=None,
-    help="Override reference motion window length (seconds).",
-)
-parser.add_argument(
     "--window_frames",
     type=int,
     default=None,
-    help="Override reference motion window length by frame count (takes precedence over --window_seconds).",
+    help="Override reference motion window length (control-step frame count).",
 )
 parser.add_argument(
     "--episode_seconds",
@@ -102,7 +96,7 @@ parser.add_argument(
     default=None,
     help=(
         "Curriculum spec: start:sec for fixed length, start:min:max for random range, "
-        "or start alone for start-to-end (end = --window_seconds). "
+        "or start alone for start-to-end (end = --window_frames). "
         "e.g. 0:3,20000:6 (3s then 6s fixed stages)"
     ),
 )
@@ -213,7 +207,9 @@ from robot_mmd.train_workflow.g1_deploy_actuator_cfg import (  # noqa: E402
 )
 from robot_mmd.train_workflow.utils.motion_window import (  # noqa: E402
     control_hz_from_env_cfg,
-    window_seconds_from_frames,
+    default_window_seconds_from_env_cfg,
+    log_window_frames_override,
+    resolve_motion_window_seconds,
 )
 
 
@@ -328,14 +324,10 @@ def _set_env_runtime_start_to_end_mode(
 
 def _resolve_motion_window_seconds(env_cfg: ManagerBasedRLEnvCfg) -> float:
     """Motion reference window length used as start-to-end episode end."""
-    if args_cli.window_seconds is not None:
-        return float(args_cli.window_seconds)
-    reset_evt = getattr(env_cfg.events, "reset_robot_joints", None)
-    if reset_evt is not None and hasattr(reset_evt, "params"):
-        ws = reset_evt.params.get("window_seconds")
-        if ws is not None:
-            return float(ws)
-    return float(env_cfg.episode_length_s)
+    ws = resolve_motion_window_seconds(env_cfg, window_frames=args_cli.window_frames)
+    if ws is not None:
+        return ws
+    return default_window_seconds_from_env_cfg(env_cfg)
 
 
 def _resolve_motion_h5_path(env_cfg: ManagerBasedRLEnvCfg) -> str:
@@ -353,7 +345,6 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
     """Patch env_cfg with reference-window/episode/random-start overrides."""
     if (
         args_cli.motion_h5 is None
-        and args_cli.window_seconds is None
         and args_cli.window_frames is None
         and args_cli.episode_seconds is None
         and args_cli.random_motion_start is None
@@ -370,14 +361,12 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
         if args_cli.motion_h5 is not None
         else None
     )
-    new_ws = args_cli.window_seconds
-    if args_cli.window_frames is not None:
-        control_hz = control_hz_from_env_cfg(env_cfg)
-        new_ws = window_seconds_from_frames(int(args_cli.window_frames), control_hz)
-        print(
-            f"[INFO] --window_frames={int(args_cli.window_frames)} "
-            f"=> window_seconds={new_ws:.6f} "
-            f"(control_hz={control_hz:.1f}, steps={int(args_cli.window_frames)})"
+    new_ws = resolve_motion_window_seconds(env_cfg, window_frames=args_cli.window_frames)
+    if new_ws is not None and args_cli.window_frames is not None:
+        log_window_frames_override(
+            int(args_cli.window_frames),
+            new_ws,
+            control_hz_from_env_cfg(env_cfg),
         )
     new_episode_s = args_cli.episode_seconds
     new_random_start = args_cli.random_motion_start
@@ -473,9 +462,9 @@ def main() -> None:
     if args_cli.device is not None:
         env_cfg.sim.device = args_cli.device
     env_cfg.scene.robot = apply_pd_profile_to_scene_robot(
-        env_cfg.scene.robot, args_cli.pd_profile
+        env_cfg.scene.robot, args_cli.pd_profile, o6_hands=True
     )
-    log_pd_profile_summary(args_cli.pd_profile)
+    log_pd_profile_summary(args_cli.pd_profile, o6_hands=True)
     _apply_motion_overrides(env_cfg)
 
     if args_cli.max_iterations is not None:

@@ -3,17 +3,47 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 from isaaclab.app import AppLauncher
+
+
+def _merge_kit_args(ns: argparse.Namespace, fragments: list[str]) -> None:
+    existing = str(getattr(ns, "kit_args", "") or "").strip()
+    merged = (existing + " " + " ".join(fragments)).strip()
+    ns.kit_args = merged
+
+
+def apply_renderer_stability_kit_flags(ns: argparse.Namespace) -> None:
+    """Kit flags that reduce intermittent hangs on Windows hybrid-GPU systems.
+
+    Symptom: startup stops forever at ``omni.kit.viewport.window`` / ``omni.appwindow``
+    with no further log output (~20% of launches on iGPU + NVIDIA laptops/desktops).
+    """
+    if sys.platform != "win32":
+        return
+    _merge_kit_args(
+        ns,
+        [
+            # Force discrete GPU (log lists RTX 4070 Ti as GPU 0; AMD iGPU is skipped).
+            "--/renderer/activeGpu=0",
+            "--/renderer/multiGpu/enabled=false",
+            "--/renderer/multiGpu/autoEnable=false",
+            # Avoid async render path races during viewport bring-up.
+            "--/app/asyncRenderingEnabled=false",
+        ],
+    )
 
 
 def apply_app_window_kit_flags(ns: argparse.Namespace) -> None:
     """Merge Omniverse main-window carb settings into kit_args."""
     fragments: list[str] = []
     app_window_width = getattr(ns, "app_window_width", None)
-    app_window_width = 1920
+    if app_window_width is None:
+        app_window_width = int(getattr(ns, "width", 1920))
     app_window_height = getattr(ns, "app_window_height", None)
-    app_window_height = 1080
+    if app_window_height is None:
+        app_window_height = int(getattr(ns, "height", 1080))
     if app_window_width is not None:
         fragments.append(f"--/app/window/width={int(app_window_width)}")
         fragments.append(f"--/persistent/app/window/width={int(app_window_width)}")
@@ -35,8 +65,8 @@ def apply_app_window_kit_flags(ns: argparse.Namespace) -> None:
         fragments.append("--/persistent/app/window/maximized=false")
         fragments.append("--/app/window/fullscreen=false")
         fragments.append("--/persistent/app/window/fullscreen=false")
-    existing = str(getattr(ns, "kit_args", "") or "").strip()
-    ns.kit_args = (existing + " " + " ".join(fragments)).strip()
+    _merge_kit_args(ns, fragments)
+    apply_renderer_stability_kit_flags(ns)
 
 
 def build_arg_parser(pose_dir: str) -> argparse.ArgumentParser:

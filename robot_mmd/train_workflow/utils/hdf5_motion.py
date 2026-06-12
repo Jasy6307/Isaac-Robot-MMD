@@ -14,8 +14,10 @@ import numpy as np
 
 from robot_mmd.train_workflow.utils.csv_motion_loader import (
     build_joint_positions_from_frame,
+    frames_have_hand_data,
     get_bone_frame_lists,
     get_frame_indices,
+    is_hand_joint_name,
     interpolate_bone,
     load_csv_motion,
 )
@@ -44,6 +46,7 @@ class Hdf5Motion:
     root_rot_bone: list[str]  # len F
     root_rpy_deg: np.ndarray  # float32 [F, 3]
     source_csv: str = ""
+    has_hand_data: bool = False
     fps: float = HDF5_DEFAULT_FPS
     knee_hinge_projection: bool = True
     root_quat_rpy_scale: tuple[float, float, float] = (1.0, 1.0, -1.0)
@@ -85,6 +88,22 @@ class Hdf5Motion:
         return idx
 
 
+def infer_hdf5_has_hand_data(motion: Hdf5Motion) -> bool:
+    """True when HDF5 metadata or compiled hand-joint deltas indicate finger motion."""
+    if bool(getattr(motion, "has_hand_data", False)):
+        return True
+    try:
+        arr = np.asarray(motion.joint_pos_delta)
+        for i, jn in enumerate(motion.joint_names):
+            if not is_hand_joint_name(str(jn)):
+                continue
+            if float(np.max(np.abs(arr[:, i]))) > 1e-6:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _ensure_h5py():
     try:
         import h5py
@@ -113,6 +132,7 @@ def write_hdf5_motion(path: str, motion: Hdf5Motion) -> str:
         f.attrs["schema_version"] = HDF5_SCHEMA_VERSION
         f.attrs["fps"] = float(motion.fps)
         f.attrs["source_csv"] = str(motion.source_csv)
+        f.attrs["has_hand_data"] = bool(motion.has_hand_data)
         f.attrs["knee_hinge_projection"] = bool(motion.knee_hinge_projection)
         f.attrs["root_quat_rpy_scale"] = np.asarray(motion.root_quat_rpy_scale, dtype=np.float32)
         f.attrs["root_quat_rpy_axis_idx"] = np.asarray(motion.root_quat_rpy_axis_idx, dtype=np.int32)
@@ -182,6 +202,7 @@ def load_hdf5_motion(path: str) -> Hdf5Motion:
             root_rot_bone=root_rot_bone,
             root_rpy_deg=root_rpy_deg,
             source_csv=str(f.attrs.get("source_csv", "")),
+            has_hand_data=bool(f.attrs.get("has_hand_data", False)),
             fps=float(f.attrs.get("fps", HDF5_DEFAULT_FPS)),
             knee_hinge_projection=bool(f.attrs.get("knee_hinge_projection", True)),
             root_quat_rpy_scale=(rq_scale[0], rq_scale[1], rq_scale[2]),
@@ -256,6 +277,7 @@ def compile_csv_motion_to_hdf5_motion(
     root_quat_rpy_axis_idx: tuple[int, int, int] = (0, 1, 2),
 ) -> Hdf5Motion:
     frames_map = load_csv_motion(csv_path)
+    has_hand_data = bool(frames_have_hand_data(frames_map))
     frame_list = get_frame_indices(frames_map)
     if not frame_list:
         raise ValueError(f"CSV 无有效帧: {csv_path}")
@@ -291,6 +313,7 @@ def compile_csv_motion_to_hdf5_motion(
                 joint_names,
                 zero_default,
                 knee_hinge_projection=knee_hinge_projection,
+                enable_hand=has_hand_data,
             )
             joint_pos_delta[int(frame), :] = target_pos.astype(np.float32, copy=False)
 
@@ -339,6 +362,7 @@ def compile_csv_motion_to_hdf5_motion(
         root_rot_bone=root_rot_bone,
         root_rpy_deg=root_rpy_deg,
         source_csv=os.path.abspath(csv_path),
+        has_hand_data=has_hand_data,
         fps=float(fps),
         knee_hinge_projection=bool(knee_hinge_projection),
         root_quat_rpy_scale=(
@@ -377,6 +401,10 @@ def sample_hdf5_frame(
     valid = idx >= 0
     if np.any(valid):
         delta[valid] = motion.joint_pos_delta[f, idx[valid]]
+    if not bool(getattr(motion, "has_hand_data", False)):
+        for i, jn in enumerate(runtime_joint_names):
+            if is_hand_joint_name(jn):
+                delta[i] = 0.0
     joint_pos_cmd = np.asarray(default_joint_pos, dtype=np.float32) + np.asarray(delta, dtype=np.float32)
 
     root_pos: tuple[float, float, float] | None = None

@@ -71,6 +71,7 @@ def compute_action_for_frame(
     default_joint_pos: Any,
     action_scale: float,
     knee_hinge_projection: bool = True,
+    enable_hand: bool = True,
 ) -> tuple[Any | None, dict[str, dict]]:
     """Interpolate one frame and return (action_delta, interpolated bone dict)."""
     frame_data: dict[str, dict] = {}
@@ -87,6 +88,7 @@ def compute_action_for_frame(
         joint_names,
         default_joint_pos,
         knee_hinge_projection=knee_hinge_projection,
+        enable_hand=enable_hand,
     )
     target_action = (target_pos - default_joint_pos) / action_scale
     return target_action.copy(), frame_data
@@ -184,6 +186,7 @@ def compute_targets_for_motion_frame(
     mmd_center_to_root_offset_local_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0),
     root_quat_rpy_scale: tuple[float, float, float] = MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
     root_quat_rpy_axis_idx: tuple[int, int, int] = MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
+    enable_hand: bool = True,
 ) -> tuple[Any, tuple[float, float, float] | None, list[float] | None, Any, str | None, bool | None]:
     """Compute joint/root targets for one CSV motion frame."""
     ui_debug.root_rpy_euler_scaled_deg = (None, None, None)
@@ -197,6 +200,7 @@ def compute_targets_for_motion_frame(
         default_joint_pos,
         action_scale,
         knee_hinge_projection=knee_hinge_projection,
+        enable_hand=enable_hand,
     )
     ui_debug.last_interp_frame_data = interp_fd
     if result is not None:

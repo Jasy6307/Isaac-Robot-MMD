@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import replace
 from typing import Any
 
 from robot_mmd.train_workflow.utils.csv_motion_loader import (
+    frames_have_hand_data,
     get_bone_frame_lists,
     get_frame_indices,
     load_csv_motion,
 )
-from robot_mmd.train_workflow.utils.hdf5_motion import load_hdf5_motion
+from robot_mmd.train_workflow.utils.hdf5_motion import infer_hdf5_has_hand_data, load_hdf5_motion
 
 MotionBundle = dict[str, Any]
 MOTION_EXTENSIONS = (".csv", ".h5", ".hdf5")
@@ -39,7 +41,16 @@ def load_motion(filepath: str) -> MotionBundle | None:
         if motion.frames.size <= 0:
             return None
         frame_list = [int(v) for v in motion.frames.tolist()]
-        return {"kind": "hdf5", "path": filepath, "frame_list": frame_list, "hdf5": motion}
+        has_hand_data = infer_hdf5_has_hand_data(motion)
+        if has_hand_data and not bool(motion.has_hand_data):
+            motion = replace(motion, has_hand_data=True)
+        return {
+            "kind": "hdf5",
+            "path": filepath,
+            "frame_list": frame_list,
+            "hdf5": motion,
+            "has_hand_data": has_hand_data,
+        }
     if ext == ".csv":
         frames = load_csv_motion(filepath)
         frame_list = get_frame_indices(frames)
@@ -47,6 +58,7 @@ def load_motion(filepath: str) -> MotionBundle | None:
         for f in frames.values():
             all_bones.update(f.keys())
         bone_frame_lists = get_bone_frame_lists(frames, frame_list, all_bones)
+        csv_has_finger_bones = bool(frames_have_hand_data(frames))
         return {
             "kind": "csv",
             "path": filepath,
@@ -54,6 +66,7 @@ def load_motion(filepath: str) -> MotionBundle | None:
             "frames": frames,
             "bone_frame_lists": bone_frame_lists,
             "all_bones": all_bones,
+            "has_hand_data": csv_has_finger_bones,
         }
     print(f"[WARN] 不支持的 motion 扩展名: {filepath}")
     return None
@@ -175,6 +188,7 @@ def load_dances_from_yaml(
         print(
             f"[INFO] 已绑定 dance 键 [{key}] -> {os.path.basename(motion_p)}"
             f"（{len(data['frame_list'])} 帧）{brief}"
+            + (" [hand]" if data.get("has_hand_data") else "")
         )
         motion_by_key[key] = (os.path.basename(motion_p), data)
         raw_audio = ent.get("audio", None)
@@ -204,6 +218,60 @@ def build_dance_hdf5_motion_by_key(
         stem = os.path.splitext(path)[0]
         for ext in (".h5", ".hdf5"):
             alt_path = stem + ext
+            if not os.path.isfile(alt_path):
+                continue
+            alt_data = load_motion(alt_path)
+            if alt_data is None or str(alt_data.get("kind", "")) != "hdf5":
+                continue
+            out[dkey] = (os.path.basename(alt_path), alt_data)
+            break
+    return out
+
+
+def _replace_ext(path: str, ext: str) -> str:
+    stem = os.path.splitext(path)[0]
+    return stem + ext
+
+
+def build_dance_hand_motion_by_key(
+    dance_motion_by_key: dict[str, tuple[str, MotionBundle]],
+) -> dict[str, tuple[str, MotionBundle]]:
+    """Map each dance key to a sibling *_hand.csv when available."""
+    out: dict[str, tuple[str, MotionBundle]] = {}
+    for dkey, (_name, data) in dance_motion_by_key.items():
+        kind = str(data.get("kind", ""))
+        path = str(data.get("path", ""))
+        if kind != "csv" or not path:
+            continue
+        stem, ext = os.path.splitext(path)
+        if stem.endswith("_hand"):
+            out[dkey] = (_name, data)
+            continue
+        hand_csv = stem + "_hand" + ext
+        if not os.path.isfile(hand_csv):
+            continue
+        hand_data = load_motion(hand_csv)
+        if hand_data is None or str(hand_data.get("kind", "")) != "csv":
+            continue
+        out[dkey] = (os.path.basename(hand_csv), hand_data)
+    return out
+
+
+def build_dance_hand_hdf5_motion_by_key(
+    dance_hand_motion_by_key: dict[str, tuple[str, MotionBundle]],
+) -> dict[str, tuple[str, MotionBundle]]:
+    """Map each hand-csv dance key to sibling .h5/.hdf5 when available."""
+    out: dict[str, tuple[str, MotionBundle]] = {}
+    for dkey, (_name, data) in dance_hand_motion_by_key.items():
+        kind = str(data.get("kind", ""))
+        path = str(data.get("path", ""))
+        if kind == "hdf5":
+            out[dkey] = (_name, data)
+            continue
+        if kind != "csv" or not path:
+            continue
+        for ext in (".h5", ".hdf5"):
+            alt_path = _replace_ext(path, ext)
             if not os.path.isfile(alt_path):
                 continue
             alt_data = load_motion(alt_path)

@@ -31,9 +31,8 @@ from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR, ISAAC_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
-from isaaclab_assets import G1_29DOF_CFG  # isort: skip
-
 from robot_mmd.my_task import mdp
+from robot_mmd.my_task.g1_29dof_o6_cfg import G1_29DOF_O6_CFG
 from robot_mmd.my_task.g1_stand_env_cfg import G1_TPOSE_INIT_STATE
 from robot_mmd.train_workflow.g1_deploy_actuator_cfg import apply_robot_pd_profile
 from robot_mmd.my_task.mdp.actions import (
@@ -45,8 +44,11 @@ from robot_mmd.my_task.mdp.joint_groups import (
     C1_JOINT_VEL_OBS_NOISE,
     C1_OBS_NOISE_SCALE_BY_EXPR,
     C1_RESET_NOISE_SCALE_BY_EXPR,
-    G1_ARM_JOINT_EXPR,
+    C1_OBS_NOISE_SCALE_BY_EXPR,
+    G1_ARM_ONLY_JOINT_EXPR,
+    G1_HAND_JOINT_EXPR,
     G1_LEG_JOINT_EXPR,
+    G1_POLICY_BODY_JOINT_EXPR,
     G1_WAIST_JOINT_EXPR,
 )
 
@@ -67,14 +69,14 @@ C1_ACTION_RATE_L2_WEIGHT = -0.05 # -0.01
 C1_ACTION_L2_WEIGHT = -1.0e-4 # -1.0e-4
 C1_ALIVE_WEIGHT = 2.0
 C1_TERMINATED_PENALTY_WEIGHT = -1.0
-C1_ROOT_YAW_TRACK_WEIGHT = 10.0
+C1_ROOT_YAW_TRACK_WEIGHT = 12.0
 C1_ROOT_YAW_TRACK_SIGMA = 0.15
 C1_ROOT_XY_TRACK_WEIGHT = 8.0
 C1_ROOT_XY_TRACK_SIGMA = 0.15
 C1_ROOT_Z_TRACK_WEIGHT = 1.0
 C1_ROOT_Z_TRACK_SIGMA = 0.10
 # C1 joint tracking group weights (lower body): ankles are down-weighted.
-C1_TRACKING_LOWER_BODY_WEIGHT = 2.0
+C1_TRACKING_LOWER_BODY_WEIGHT = 2.5
 C1_TRACKING_ANKLE_WEIGHT = 0.5
 # C1 terminations: relaxed for dance (squat / lean / low CoM).
 C1_FALL_MINIMUM_HEIGHT = 0.3
@@ -94,11 +96,7 @@ C1_RESIDUAL_ALPHA = 0.3
 C1_RESIDUAL_JOINT_TRACK_WEIGHT = 15.0
 C1_RESIDUAL_JOINT_TRACK_SIGMA = 0.10
 # C2 defaults: full-window (no random start/length) + stronger root XY/yaw tracking.
-C2_ROOT_YAW_TRACK_WEIGHT = 8.0
-C2_ROOT_XY_TRACK_WEIGHT = 7.0
-# C2_ALIVE_WEIGHT = 10.0
-# C2_TERMINATED_PENALTY_WEIGHT = -5.0
-C2_ALIVE_WEIGHT = 20.0
+C2_ALIVE_WEIGHT = 10.0
 C2_TERMINATED_PENALTY_WEIGHT = -5.0
 C2_END_HOLD_SECONDS = 2.0
 
@@ -131,13 +129,14 @@ def _dance_track_terrain_cfg(*, ground_z_offset: float) -> LoweredGroundTerrainI
 
 
 def _g1_dance_track_robot_cfg() -> ArticulationCfg:
-    """G1 29DoF with Unitree deploy FixStand actuator PD (sim-to-real training default)."""
+    """G1 O6 (29DoF) with deploy PD profile for training."""
     return apply_robot_pd_profile(
-        G1_29DOF_CFG.replace(
+        G1_29DOF_O6_CFG.replace(
             prim_path="{ENV_REGEX_NS}/Robot",
             init_state=G1_TPOSE_INIT_STATE,
         ),
         "deploy",
+        o6_hands=True,
     )
 
 
@@ -268,16 +267,19 @@ def _c1_joint_pos_action_cfg() -> ReferenceResidualJointPositionActionCfg:
     return ReferenceResidualJointPositionActionCfg(
         class_type=ReferenceResidualJointPositionAction,
         asset_name="robot",
-        joint_names=[".*"],
+        joint_names=G1_POLICY_BODY_JOINT_EXPR,
         scale=C1_ACTION_SCALE,
         use_default_offset=False,
-        # Arms+waist open-loop from reference; only legs learn residual.
-        frozen_joint_name_expr=G1_ARM_JOINT_EXPR + G1_WAIST_JOINT_EXPR,
+        # Arms+waist in policy action (frozen); legs learn residual; hands reference-only.
+        frozen_joint_name_expr=G1_ARM_ONLY_JOINT_EXPR + G1_WAIST_JOINT_EXPR,
+        reference_only_joint_name_expr=G1_HAND_JOINT_EXPR,
         residual_joint_name_expr=G1_LEG_JOINT_EXPR,
         use_reference_residual=True,
         residual_alpha=C1_RESIDUAL_ALPHA,
         motion_h5_path=DEFAULT_DANCE_H5,
         motion_window_seconds=DEFAULT_WINDOW_SECONDS,
+        # C1: keep root physics-driven (no per-step teleport / PD-style tracking).
+        track_root_reference=False,
     )
 
 
@@ -300,6 +302,8 @@ class C1EventCfg(EventCfg):
             "window_seconds": DEFAULT_WINDOW_SECONDS,
             "joint_pos_noise": C1_RESET_JOINT_POS_NOISE,
             "reset_root_to_motion_quat": True,
+            # Sync root translation to H5 at reset; episode root is physics-driven (not fix_root_link).
+            "reset_root_to_motion_pose": True,
             "joint_noise_scale_by_expr": C1_RESET_NOISE_SCALE_BY_EXPR,
             "random_start": C1_RANDOM_MOTION_START,
             "segment_seconds": C1_TRAIN_SEGMENT_SECONDS,
@@ -331,7 +335,7 @@ class G1DanceTrackC0EnvCfg(ManagerBasedRLEnvCfg):
     events: EventCfg = EventCfg()
 
     viewer: ViewerCfg = ViewerCfg(
-        eye=(0.0, 5.0, 1.0),
+        eye=(-2.0, 11.0, 5.0),
         lookat=(0.0, 0.0, 1.0),
     )
 
@@ -344,10 +348,11 @@ class G1DanceTrackC0EnvCfg(ManagerBasedRLEnvCfg):
         self.sim.physics_material = self.scene.terrain.physics_material
         # Window length must match the reference buffer window seconds.
         self.episode_length_s = DEFAULT_WINDOW_SECONDS
-        # Fix the root link (C0 only). Gravity stays enabled so joints feel
-        # realistic inertia, but the robot cannot fall.
+        # NOTE: O6 USD currently cannot be spawned with fix_root_link=True in Isaac Lab
+        # (root_joint path has no RigidBodyAPI for auto fixed-joint creation).
+        # Keep C0 floating-root for O6 compatibility.
         if self.scene.robot.spawn is not None and self.scene.robot.spawn.articulation_props is not None:
-            self.scene.robot.spawn.articulation_props.fix_root_link = True
+            self.scene.robot.spawn.articulation_props.fix_root_link = False
 
 
 @configclass
@@ -371,13 +376,15 @@ class G1DanceTrackC1EnvCfg(G1DanceTrackC0EnvCfg):
     def __post_init__(self) -> None:
         super().__post_init__()
         self.episode_length_s = C1_EPISODE_MAX_SECONDS
-        # Legs keep scaled obs noise; arms/waist get none (see joint_groups).
+        policy_body_cfg = SceneEntityCfg("robot", joint_names=G1_POLICY_BODY_JOINT_EXPR)
+        # Legs keep scaled obs noise; arms/waist get none (see joint_groups). Hands excluded.
         self.observations.policy.joint_pos = ObsTerm(
             func=mdp.joint_pos_rel_group_noise,
             noise=None,
             params={
                 "pos_noise": C1_JOINT_POS_OBS_NOISE,
                 "joint_noise_scale_by_expr": C1_OBS_NOISE_SCALE_BY_EXPR,
+                "asset_cfg": policy_body_cfg,
             },
         )
         self.observations.policy.joint_vel = ObsTerm(
@@ -386,6 +393,24 @@ class G1DanceTrackC1EnvCfg(G1DanceTrackC0EnvCfg):
             params={
                 "vel_noise": C1_JOINT_VEL_OBS_NOISE,
                 "joint_noise_scale_by_expr": C1_OBS_NOISE_SCALE_BY_EXPR,
+                "asset_cfg": policy_body_cfg,
+            },
+        )
+        self.observations.policy.ref_joint_pos = ObsTerm(
+            func=mdp.ref_joint_pos_rel,
+            params={
+                "h5_path": DEFAULT_DANCE_H5,
+                "window_seconds": DEFAULT_WINDOW_SECONDS,
+                "asset_cfg": policy_body_cfg,
+            },
+        )
+        self.observations.policy.ref_joint_pos_next = ObsTerm(
+            func=mdp.ref_joint_pos_rel_next,
+            params={
+                "h5_path": DEFAULT_DANCE_H5,
+                "window_seconds": DEFAULT_WINDOW_SECONDS,
+                "lookahead": 1,
+                "asset_cfg": policy_body_cfg,
             },
         )
         # Free the root link.
@@ -480,7 +505,5 @@ class G1DanceTrackC2EnvCfg(G1DanceTrackC1EnvCfg):
         )
         # C2: increase root tracking priorities.
         self.rewards.alive.weight = C2_ALIVE_WEIGHT
-        self.rewards.root_yaw_tracking.weight = C2_ROOT_YAW_TRACK_WEIGHT
-        self.rewards.root_xy_tracking.weight = C2_ROOT_XY_TRACK_WEIGHT
         # C2: explicit failure penalties to push convergence toward timeout completion.
         self.rewards.terminated_penalty.weight = C2_TERMINATED_PENALTY_WEIGHT

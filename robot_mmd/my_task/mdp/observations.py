@@ -21,6 +21,22 @@ def _policy_obs_corruption_enabled(env: "ManagerBasedRLEnv") -> bool:
     return bool(getattr(env.cfg.observations.policy, "enable_corruption", False))
 
 
+def _joint_scales_for_obs(
+    env: "ManagerBasedRLEnv",
+    asset: Articulation,
+    asset_cfg: SceneEntityCfg,
+    cache_key: str,
+    joint_noise_scale_by_expr: dict[str, float],
+) -> torch.Tensor:
+    """Per-joint noise scales aligned with ``asset_cfg`` joint selection."""
+    scales_all = get_cached_joint_scales(
+        env, asset, cache_key, joint_noise_scale_by_expr, default=1.0
+    )
+    if asset_cfg.joint_ids != slice(None):
+        return scales_all[asset_cfg.joint_ids]
+    return scales_all
+
+
 def joint_pos_rel_group_noise(
     env: "ManagerBasedRLEnv",
     pos_noise: float,
@@ -32,7 +48,7 @@ def joint_pos_rel_group_noise(
     if pos_noise <= 0.0 or not _policy_obs_corruption_enabled(env):
         return obs
     asset: Articulation = env.scene[asset_cfg.name]
-    scales = get_cached_joint_scales(env, asset, "obs_pos", joint_noise_scale_by_expr, default=1.0)
+    scales = _joint_scales_for_obs(env, asset, asset_cfg, "obs_pos", joint_noise_scale_by_expr)
     noise = (torch.rand_like(obs) * 2.0 - 1.0) * float(pos_noise) * scales.unsqueeze(0)
     return obs + noise
 
@@ -48,7 +64,7 @@ def joint_vel_rel_group_noise(
     if vel_noise <= 0.0 or not _policy_obs_corruption_enabled(env):
         return obs
     asset: Articulation = env.scene[asset_cfg.name]
-    scales = get_cached_joint_scales(env, asset, "obs_vel", joint_noise_scale_by_expr, default=1.0)
+    scales = _joint_scales_for_obs(env, asset, asset_cfg, "obs_vel", joint_noise_scale_by_expr)
     noise = (torch.rand_like(obs) * 2.0 - 1.0) * float(vel_noise) * scales.unsqueeze(0)
     return obs + noise
 

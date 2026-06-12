@@ -32,6 +32,14 @@ class DanceKeyboardListener:
             )
             if k is not None
         )
+        self._ctrl_keys = tuple(
+            k
+            for k in (
+                getattr(carb.input.KeyboardInput, "LEFT_CONTROL", None),
+                getattr(carb.input.KeyboardInput, "RIGHT_CONTROL", None),
+            )
+            if k is not None
+        )
 
     def subscribe(self) -> bool:
         import omni
@@ -68,7 +76,10 @@ class DanceKeyboardListener:
         if key_name not in self._dance_keys:
             return True
         prefer_hdf5 = self._modifier_down(self._shift_keys)
+        prefer_hand = self._modifier_down(self._ctrl_keys)
         if key_name == self._pose_cycle_key and not prefer_hdf5:
             return True
-        self._on_dance_request(key_name, prefer_hdf5)
+        # Keep callback signature stable: with Ctrl pressed, force hand variant through key suffix.
+        req_key = f"{key_name}#HAND" if prefer_hand else key_name
+        self._on_dance_request(req_key, prefer_hdf5)
         return True

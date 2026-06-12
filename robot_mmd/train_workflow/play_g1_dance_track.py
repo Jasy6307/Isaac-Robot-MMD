@@ -61,16 +61,10 @@ parser.add_argument(
     help="Override dance HDF5 path for evaluation.",
 )
 parser.add_argument(
-    "--window_seconds",
-    type=float,
-    default=None,
-    help="Override reference motion window (seconds). Full play runs this entire window.",
-)
-parser.add_argument(
     "--window_frames",
     type=int,
     default=None,
-    help="Override reference motion window by frame count (takes precedence over --window_seconds).",
+    help="Override reference motion window (control-step frame count). Full play runs this window.",
 )
 parser.add_argument(
     "--residual_alpha",
@@ -167,7 +161,8 @@ from robot_mmd.train_workflow.g1_deploy_actuator_cfg import (  # noqa: E402
 )
 from robot_mmd.train_workflow.utils.motion_window import (  # noqa: E402
     control_hz_from_env_cfg,
-    window_seconds_from_frames,
+    log_window_frames_override,
+    resolve_motion_window_seconds,
 )
 
 
@@ -367,21 +362,18 @@ def _extract_policy_obs_tensor(obs_obj) -> torch.Tensor:
 def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
     if (
         args_cli.motion_h5 is None
-        and args_cli.window_seconds is None
         and args_cli.window_frames is None
         and args_cli.residual_alpha is None
         and args_cli.use_reference_residual is None
     ):
         return
     new_h5 = os.path.abspath(args_cli.motion_h5) if args_cli.motion_h5 is not None else None
-    new_ws = args_cli.window_seconds
-    if args_cli.window_frames is not None:
-        control_hz = control_hz_from_env_cfg(env_cfg)
-        new_ws = window_seconds_from_frames(int(args_cli.window_frames), control_hz)
-        print(
-            f"[INFO] --window_frames={int(args_cli.window_frames)} "
-            f"=> window_seconds={new_ws:.6f} "
-            f"(control_hz={control_hz:.1f}, steps={int(args_cli.window_frames)})"
+    new_ws = resolve_motion_window_seconds(env_cfg, window_frames=args_cli.window_frames)
+    if new_ws is not None and args_cli.window_frames is not None:
+        log_window_frames_override(
+            int(args_cli.window_frames),
+            new_ws,
+            control_hz_from_env_cfg(env_cfg),
         )
     new_residual_alpha = args_cli.residual_alpha
     new_use_reference_residual = args_cli.use_reference_residual
@@ -447,9 +439,9 @@ def main() -> None:
     if args_cli.device is not None:
         env_cfg.sim.device = args_cli.device
     env_cfg.scene.robot = apply_pd_profile_to_scene_robot(
-        env_cfg.scene.robot, args_cli.pd_profile
+        env_cfg.scene.robot, args_cli.pd_profile, o6_hands=True
     )
-    log_pd_profile_summary(args_cli.pd_profile)
+    log_pd_profile_summary(args_cli.pd_profile, o6_hands=True)
     _apply_motion_overrides(env_cfg)
 
     log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))

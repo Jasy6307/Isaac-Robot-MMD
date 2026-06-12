@@ -6,6 +6,7 @@ VMD/VPD 到 CSV 的转换工具。
 2) 解析 VPD 单帧姿态文本；
 3) 导出四元数列格式的 CSV（frame, bone, pos_*, quat_*）。
 """
+import argparse
 import re
 import struct
 import csv
@@ -249,6 +250,7 @@ def read_motion_and_export(
     output_path: str | None = None,
     *,
     bone_filter: bool = True,
+    hand_suffix: bool = False,
 ) -> str:
     """
     统一转换入口：VMD/VPD -> CSV。
@@ -257,15 +259,47 @@ def read_motion_and_export(
     """
     path = Path(input_path)
     if output_path is None:
-        output_path = str(path.with_suffix(".csv"))
+        if hand_suffix:
+            output_path = str(path.with_name(f"{path.stem}_hand.csv"))
+        else:
+            output_path = str(path.with_suffix(".csv"))
     bones_data = read_motion(str(path))
-    return export_to_csv(bones_data, output_path, bone_filter=bone_filter)
+    exported = export_to_csv(bones_data, output_path, bone_filter=bone_filter)
+    if hand_suffix:
+        finger_count = sum(1 for r in bones_data if _should_export_bone(r["bone"]) and any(
+            r["bone"].startswith(p) for p in _EXPORT_FINGER_PREFIXES
+        ))
+        print(f"[INFO] hand 导出模式: {exported} (finger_records={finger_count})")
+    return exported
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="VMD/VPD -> CSV")
+    p.add_argument("input_path", type=str, help="输入 .vmd 或 .vpd")
+    p.add_argument("-o", "--output", type=str, default=None, help="输出 CSV 路径")
+    p.add_argument(
+        "--no-bone-filter",
+        action="store_true",
+        help="关闭骨骼白名单过滤，导出全部骨骼",
+    )
+    p.add_argument(
+        "--with-hand",
+        action="store_true",
+        help="手指导出模式：默认输出使用 *_hand.csv",
+    )
+    return p
 
 
 # 使用示例
 if __name__ == "__main__":
-    # mmd_file = Path("I:/robot_isaac/robot_mmd/media/pose/test4.vpd")
-    mmd_file = Path("I:/robot_isaac/robot_mmd/media/dance/IRIS OUT.vmd")
-    output_csv = str(mmd_file.with_suffix(".csv"))
-    read_motion_and_export(str(mmd_file), output_csv)
+    args = build_arg_parser().parse_args()
+    output = args.output
+    if output is not None and args.with_hand and not str(output).lower().endswith("_hand.csv"):
+        print("[WARN] --with-hand 启用，但 --output 未使用 _hand.csv 后缀")
+    read_motion_and_export(
+        args.input_path,
+        output_path=output,
+        bone_filter=not bool(args.no_bone_filter),
+        hand_suffix=bool(args.with_hand),
+    )
 

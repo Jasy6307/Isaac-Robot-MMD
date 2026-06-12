@@ -30,7 +30,7 @@ class G1StandPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 class G1DanceTrackC0PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     """PPO config for the C0 (fixed-root) dance tracking smoke env."""
 
-    num_steps_per_env = 120
+    num_steps_per_env = 80
     max_iterations = 3000
     save_interval = 200
     experiment_name = "g1_dance_track_c0"

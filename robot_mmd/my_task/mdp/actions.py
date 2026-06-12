@@ -13,6 +13,7 @@ from isaaclab.managers.action_manager import ActionTerm
 from isaaclab.utils import configclass
 
 from robot_mmd.my_task.mdp.joint_groups import resolve_joint_ids
+from robot_mmd.my_task.mdp.root_reference import write_root_reference_from_motion
 from robot_mmd.my_task.motion_reference import get_or_create_motion_buffer, motion_steps
 
 if TYPE_CHECKING:
@@ -42,16 +43,54 @@ class ReferenceFrozenJointPositionAction(JointPositionAction):
         else:
             self._frozen_joint_ids = torch.empty(0, device=self.device, dtype=torch.long)
             self._frozen_action_cols = torch.empty(0, device=self.device, dtype=torch.long)
+        if self.cfg.reference_only_joint_name_expr:
+            self._reference_only_joint_ids = resolve_joint_ids(
+                asset, list(self.cfg.reference_only_joint_name_expr)
+            )
+        else:
+            self._reference_only_joint_ids = torch.empty(0, device=self.device, dtype=torch.long)
+        if self._reference_only_joint_ids.numel() > 0:
+            if isinstance(self._joint_ids, slice):
+                action_joint_ids = torch.arange(asset.num_joints, device=self.device, dtype=torch.long)
+            else:
+                action_joint_ids = torch.as_tensor(self._joint_ids, device=self.device, dtype=torch.long)
+            overlap = set(action_joint_ids.tolist()) & set(self._reference_only_joint_ids.tolist())
+            if overlap:
+                raise ValueError(
+                    "reference_only_joint_name_expr overlaps policy action joints: "
+                    f"{sorted(overlap)}"
+                )
+        if self.cfg.track_root_reference and not getattr(self, "_root_track_logged", False):
+            print(
+                "[INFO] track_root_reference=True: root follows H5 each control step "
+                "(required for O6 USD without floating-base DOFs)."
+            )
+            self._root_track_logged = True
 
-    def _get_reference_joint_targets(self) -> torch.Tensor:
-        """Reference absolute joint targets aligned with this action term's joint slice."""
+    def _apply_root_reference(self) -> None:
+        if not self.cfg.track_root_reference or not self.cfg.motion_h5_path:
+            return
+        write_root_reference_from_motion(
+            self._env,
+            self._asset,
+            h5_path=self.cfg.motion_h5_path,
+            window_seconds=float(self.cfg.motion_window_seconds),
+            asset_name=self.cfg.asset_name,
+        )
+
+    def _get_reference_joint_targets_all(self) -> torch.Tensor:
+        """Reference absolute joint targets for all runtime joints."""
         buf = get_or_create_motion_buffer(
             self._env,
             self.cfg.motion_h5_path,
             float(self.cfg.motion_window_seconds),
             asset_name=self.cfg.asset_name,
         )
-        q_ref_abs_all = buf.q_ref_abs(motion_steps(self._env))
+        return buf.q_ref_abs(motion_steps(self._env))
+
+    def _get_reference_joint_targets(self) -> torch.Tensor:
+        """Reference absolute joint targets aligned with this action term's joint slice."""
+        q_ref_abs_all = self._get_reference_joint_targets_all()
         if isinstance(self._joint_ids, slice):
             return q_ref_abs_all
         return q_ref_abs_all[:, self._joint_ids]
@@ -75,6 +114,7 @@ class ReferenceFrozenJointPositionAction(JointPositionAction):
             self._processed_actions[:, self._frozen_action_cols] = float(self._offset)
 
     def apply_actions(self) -> None:
+        self._apply_root_reference()
         self._asset.set_joint_position_target(self.processed_actions, joint_ids=self._joint_ids)
         if self._frozen_joint_ids.numel() == 0:
             return
@@ -82,6 +122,13 @@ class ReferenceFrozenJointPositionAction(JointPositionAction):
         self._asset.set_joint_position_target(
             q_ref[:, self._frozen_action_cols],
             joint_ids=self._frozen_joint_ids,
+        )
+        if self._reference_only_joint_ids.numel() == 0:
+            return
+        q_ref_all = self._get_reference_joint_targets_all()
+        self._asset.set_joint_position_target(
+            q_ref_all[:, self._reference_only_joint_ids],
+            joint_ids=self._reference_only_joint_ids,
         )
 
 
@@ -94,8 +141,13 @@ class ReferenceFrozenJointPositionActionCfg(JointPositionActionCfg):
     frozen_joint_name_expr: list[str] = []
     """Joint name expressions forced to track ``q_ref_abs`` (policy output ignored)."""
 
+    reference_only_joint_name_expr: list[str] = []
+    """Joints driven open-loop from H5 but excluded from policy action/obs dims."""
+
     motion_h5_path: str = ""
     motion_window_seconds: float = 10.0
+    track_root_reference: bool = False
+    """When True, write H5 root pose each control step (O6 / fixed-base assets)."""
 
 
 class ReferenceResidualJointPositionAction(ReferenceFrozenJointPositionAction):

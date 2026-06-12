@@ -43,7 +43,7 @@ def _parse_triplet_int(text: str, name: str) -> tuple[int, int, int]:
 def _parse_joint_names(args_joint_names: str | None) -> list[str]:
     if args_joint_names and str(args_joint_names).strip():
         return [s.strip() for s in str(args_joint_names).split(",") if s.strip()]
-    # 默认 G1 23 关节顺序：与当前映射表一致
+    # 默认关节顺序：G1 29DoF + O6 手部 (lh_/rh_)
     return [
         "left_shoulder_pitch_joint",
         "left_shoulder_roll_joint",
@@ -74,6 +74,28 @@ def _parse_joint_names(args_joint_names: str | None) -> list[str]:
         "waist_pitch_joint",
         "waist_roll_joint",
         "waist_yaw_joint",
+        "lh_thumb_cmc_yaw",
+        "lh_thumb_cmc_pitch",
+        "lh_thumb_ip",
+        "lh_index_mcp_pitch",
+        "lh_index_dip",
+        "lh_middle_mcp_pitch",
+        "lh_middle_dip",
+        "lh_ring_mcp_pitch",
+        "lh_ring_dip",
+        "lh_pinky_mcp_pitch",
+        "lh_pinky_dip",
+        "rh_thumb_cmc_yaw",
+        "rh_thumb_cmc_pitch",
+        "rh_thumb_ip",
+        "rh_index_mcp_pitch",
+        "rh_index_dip",
+        "rh_middle_mcp_pitch",
+        "rh_middle_dip",
+        "rh_ring_mcp_pitch",
+        "rh_ring_dip",
+        "rh_pinky_mcp_pitch",
+        "rh_pinky_dip",
     ]
 
 

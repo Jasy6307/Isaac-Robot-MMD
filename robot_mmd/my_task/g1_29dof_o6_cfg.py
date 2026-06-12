@@ -8,7 +8,7 @@ from isaaclab_assets import G1_29DOF_CFG
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
-G1_29DOF_O6_USD_PATH = os.path.join(_REPO_ROOT, "assets", "g1_29dof_o6_hand_V2.usdz")
+G1_29DOF_O6_USD_PATH = os.path.join(_REPO_ROOT, "assets", "g1_29dof_o6_hand_V3.usd")
 
 
 def _build_g1_29dof_o6_cfg() -> ArticulationCfg:

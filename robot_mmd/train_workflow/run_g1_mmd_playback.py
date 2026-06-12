@@ -53,6 +53,9 @@ except Exception as exc:
 
 apply_app_window_kit_flags(args_cli)
 
+# Hybrid GPU (AMD iGPU + NVIDIA dGPU): avoid sporadic Kit deadlocks during viewport init.
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
@@ -93,6 +96,8 @@ from robot_mmd.train_workflow.utils.csv_motion_loader import (
 )
 from robot_mmd.train_workflow.utils.motion_loader import (
     MotionBundle,
+    build_dance_hand_hdf5_motion_by_key,
+    build_dance_hand_motion_by_key,
     build_dance_hdf5_motion_by_key,
     format_playback_log_label,
     load_dances_from_yaml,
@@ -128,6 +133,8 @@ def main():
         script_dir=_SCRIPT_DIR,
     )
     dance_hdf5_motion_by_key = build_dance_hdf5_motion_by_key(dance_motion_by_key)
+    dance_hand_motion_by_key = build_dance_hand_motion_by_key(dance_motion_by_key)
+    dance_hand_hdf5_motion_by_key = build_dance_hand_hdf5_motion_by_key(dance_hand_motion_by_key)
 
     env_cfg = parse_env_cfg(
         TASK_ID,
@@ -143,8 +150,10 @@ def main():
         prim_path=env_cfg.scene.robot.prim_path,
         init_state=env_cfg.scene.robot.init_state,
     )
-    env_cfg.scene.robot = apply_robot_pd_profile(env_cfg.scene.robot, args_cli.pd_profile)
-    log_pd_profile_summary(args_cli.pd_profile)
+    env_cfg.scene.robot = apply_robot_pd_profile(
+        env_cfg.scene.robot, args_cli.pd_profile, o6_hands=True
+    )
+    log_pd_profile_summary(args_cli.pd_profile, o6_hands=True)
     robot_spawn = env_cfg.scene.robot.spawn
     if robot_spawn is not None:
         if robot_spawn.articulation_props is not None:
@@ -186,6 +195,7 @@ def main():
     pending_cycle_play = False
     pending_dance_key: str | None = None
     pending_dance_prefer_hdf5 = False
+    pending_dance_prefer_hand = False
 
     def _on_reset():
         nonlocal reset_requested
@@ -196,9 +206,12 @@ def main():
         pending_cycle_play = True
 
     def _request_dance_play(key: str, *, prefer_hdf5: bool = False):
-        nonlocal pending_dance_key, pending_dance_prefer_hdf5
-        pending_dance_key = key
+        nonlocal pending_dance_key, pending_dance_prefer_hdf5, pending_dance_prefer_hand
+        key_raw = str(key)
+        prefer_hand = key_raw.endswith("#HAND")
+        pending_dance_key = key_raw.replace("#HAND", "").upper()[:1]
         pending_dance_prefer_hdf5 = bool(prefer_hdf5)
+        pending_dance_prefer_hand = bool(prefer_hand)
 
     def _dance_entries_for_ui() -> list[tuple[str, str]]:
         entries: list[tuple[str, str]] = []
@@ -484,6 +497,7 @@ def main():
     ) -> tuple[Any, tuple[float, float, float] | None, list[float] | None, Any, str | None, bool | None]:
         robot_inner = env.unwrapped.scene["robot"]
         kind = str(motion_bundle.get("kind", ""))
+        enable_hand = bool(motion_bundle.get("has_hand_data", False))
         if kind == "hdf5":
             return compute_targets_for_hdf5_frame(
                 frame_idx,
@@ -513,6 +527,7 @@ def main():
             mmd_center_to_root_offset_local_xyz=args_cli.mmd_center_to_root_offset_local_xyz,
             root_quat_rpy_scale=tuple(root_quat_rpy_scale),
             root_quat_rpy_axis_idx=tuple(root_quat_rpy_axis_idx),
+            enable_hand=enable_hand,
         )
 
     while simulation_app.is_running():
@@ -551,12 +566,29 @@ def main():
                 pending_dance_key = None
                 prefer_hdf5 = pending_dance_prefer_hdf5
                 pending_dance_prefer_hdf5 = False
+                prefer_hand = pending_dance_prefer_hand
+                pending_dance_prefer_hand = False
                 entry = dance_motion_by_key.get(dkey)
+                if prefer_hand:
+                    if prefer_hdf5:
+                        hand_h5_entry = dance_hand_hdf5_motion_by_key.get(dkey)
+                        if hand_h5_entry is not None:
+                            entry = hand_h5_entry
+                        else:
+                            print(f"[WARN] dance 键 [{dkey}] 未找到 _hand H5，已取消播放")
+                            entry = None
+                    else:
+                        hand_entry = dance_hand_motion_by_key.get(dkey)
+                        if hand_entry is not None:
+                            entry = hand_entry
+                        else:
+                            print(f"[WARN] dance 键 [{dkey}] 未找到 _hand CSV，已取消播放")
+                            entry = None
                 if prefer_hdf5:
                     h5_entry = dance_hdf5_motion_by_key.get(dkey)
-                    if h5_entry is not None:
+                    if h5_entry is not None and not prefer_hand:
                         entry = h5_entry
-                    elif entry is not None:
+                    elif entry is not None and not prefer_hand:
                         print(f"[WARN] dance 键 [{dkey}] 未找到对应 H5，回退为默认 motion")
                 if entry is None:
                     print(f"[WARN] dance 键 [{dkey}] 未绑定文件")

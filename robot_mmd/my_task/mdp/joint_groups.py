@@ -6,18 +6,26 @@ import torch
 
 from isaaclab.assets import Articulation
 
-# Arms (+ hands): frozen in C1 action — follow H5 reference, no policy output.
-# Waist: reset/obs noise off like arms; action-frozen in C1 (see env cfg).
-G1_ARM_JOINT_EXPR: list[str] = [
+# Arms without hands: frozen in C1 policy action — follow H5, no policy output.
+G1_ARM_ONLY_JOINT_EXPR: list[str] = [
     ".*_shoulder_pitch_joint",
     ".*_shoulder_roll_joint",
     ".*_shoulder_yaw_joint",
     ".*_elbow_joint",
     ".*_wrist_.*_joint",
+]
+
+# Hands (O6 lh_/rh_ and legacy index/middle/... names): open-loop from H5 only.
+G1_HAND_JOINT_EXPR: list[str] = [
     ".*_index_.*",
     ".*_middle_.*",
     ".*_thumb_.*",
+    ".*_ring_.*",
+    ".*_pinky_.*",
 ]
+
+# Arms + hands — used for reset/obs noise gating (hands stay reference-synced at reset).
+G1_ARM_JOINT_EXPR: list[str] = G1_ARM_ONLY_JOINT_EXPR + G1_HAND_JOINT_EXPR
 
 G1_WAIST_JOINT_EXPR: list[str] = ["waist_.*_joint"]
 
@@ -29,6 +37,11 @@ G1_LEG_JOINT_EXPR: list[str] = [
     ".*_ankle_pitch_joint",
     ".*_ankle_roll_joint",
 ]
+
+# Policy obs + action joints (29 body DoF; excludes 22 hand DoF on O6).
+G1_POLICY_BODY_JOINT_EXPR: list[str] = (
+    G1_LEG_JOINT_EXPR + G1_WAIST_JOINT_EXPR + G1_ARM_ONLY_JOINT_EXPR
+)
 
 # Multiplier on C0 base reset noise (0.05 rad) and obs noise in C1.
 C1_RESET_NOISE_SCALE_BY_EXPR: dict[str, float] = {

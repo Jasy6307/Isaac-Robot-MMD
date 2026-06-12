@@ -184,6 +184,38 @@ MMD_BONE_TO_ROMAJI: dict[str, str] = {
     "左ひじ": "L_ELB",
     "右手首": "R_WRI",
     "左手首": "L_WRI",
+    "右親指０": "R_TH0",
+    "右親指１": "R_TH1",
+    "右親指２": "R_TH2",
+    "右親指先": "R_THX",
+    "左親指０": "L_TH0",
+    "左親指１": "L_TH1",
+    "左親指２": "L_TH2",
+    "左親指先": "L_THX",
+    "右人指１": "R_ID1",
+    "右人指２": "R_ID2",
+    "右人指３": "R_ID3",
+    "左人指１": "L_ID1",
+    "左人指２": "L_ID2",
+    "左人指３": "L_ID3",
+    "右中指１": "R_MD1",
+    "右中指２": "R_MD2",
+    "右中指３": "R_MD3",
+    "左中指１": "L_MD1",
+    "左中指２": "L_MD2",
+    "左中指３": "L_MD3",
+    "右薬指１": "R_RG1",
+    "右薬指２": "R_RG2",
+    "右薬指３": "R_RG3",
+    "左薬指１": "L_RG1",
+    "左薬指２": "L_RG2",
+    "左薬指３": "L_RG3",
+    "右小指１": "R_PK1",
+    "右小指２": "R_PK2",
+    "右小指３": "R_PK3",
+    "左小指１": "L_PK1",
+    "左小指２": "L_PK2",
+    "左小指３": "L_PK3",
     "上半身": "UPPER_B",
     "上半身2": "UPPER_B2",
     "首": "HEAD",
@@ -216,10 +248,24 @@ JOINT_CATEGORIES: dict[str, list[str]] = {
         "left_elbow_joint",
         "left_wrist_pitch_joint", "left_wrist_roll_joint", "left_wrist_yaw_joint",
     ],
+    "Hand (Left)": [
+        "lh_thumb_cmc_yaw", "lh_thumb_cmc_pitch", "lh_thumb_ip",
+        "lh_index_mcp_pitch", "lh_index_dip",
+        "lh_middle_mcp_pitch", "lh_middle_dip",
+        "lh_ring_mcp_pitch", "lh_ring_dip",
+        "lh_pinky_mcp_pitch", "lh_pinky_dip",
+    ],
     "Upper Body (Right)": [
         "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint",
         "right_elbow_joint",
         "right_wrist_pitch_joint", "right_wrist_roll_joint", "right_wrist_yaw_joint",
+    ],
+    "Hand (Right)": [
+        "rh_thumb_cmc_yaw", "rh_thumb_cmc_pitch", "rh_thumb_ip",
+        "rh_index_mcp_pitch", "rh_index_dip",
+        "rh_middle_mcp_pitch", "rh_middle_dip",
+        "rh_ring_mcp_pitch", "rh_ring_dip",
+        "rh_pinky_mcp_pitch", "rh_pinky_dip",
     ],
     "Lower Body (Left)": [
         "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
@@ -460,21 +506,22 @@ def _build_mapping_window(ui):
 
         pd_drive_model.add_value_changed_fn(_on_pd_drive_changed)
 
-        with ui.HStack(height=28):
-            ui.Label("Dance File", width=74, height=22)
-            ui.Spacer(width=6)
-            dance_combo
-            ui.Button("Play CSV", width=72, height=24, clicked_fn=lambda: _request_selected_dance(False))
-            ui.Button("Play H5", width=62, height=24, clicked_fn=lambda: _request_selected_dance(True))
-            ui.Spacer(width=8)
-            playback_title_label = ui.Label("Playback: (idle)", width=188, height=22)
-            ui.IntField(model=scrub_model, width=64, height=22)
-            max_frame_label = ui.Label("/ -", width=40, height=22)
-            ui.Spacer(width=4)
-            btn_prev = ui.Button("Prev", width=42, height=24, clicked_fn=_on_prev_frame_click)
-            btn_next = ui.Button("Next", width=42, height=24, clicked_fn=_on_next_frame_click)
-            btn_pause = ui.Button("Pause", width=56, height=24, clicked_fn=_on_pause_click)
-            btn_resume = ui.Button("Resume", width=58, height=24, clicked_fn=_on_resume_click)
+        with ui.VStack(spacing=4):
+            with ui.HStack(height=28):
+                ui.Label("Dance File", width=74, height=22)
+                ui.Spacer(width=6)
+                dance_combo
+                ui.Button("Play CSV", width=72, height=24, clicked_fn=lambda: _request_selected_dance(False))
+                ui.Button("Play H5", width=62, height=24, clicked_fn=lambda: _request_selected_dance(True))
+            with ui.HStack(height=28):
+                playback_title_label = ui.Label("Playback: (idle)", width=188, height=22)
+                ui.IntField(model=scrub_model, width=64, height=22)
+                max_frame_label = ui.Label("/ -", width=40, height=22)
+                ui.Spacer(width=4)
+                btn_prev = ui.Button("Prev", width=42, height=24, clicked_fn=_on_prev_frame_click)
+                btn_next = ui.Button("Next", width=42, height=24, clicked_fn=_on_next_frame_click)
+                btn_pause = ui.Button("Pause", width=56, height=24, clicked_fn=_on_pause_click)
+                btn_resume = ui.Button("Resume", width=58, height=24, clicked_fn=_on_resume_click)
         btn_prev.visible = False
         btn_next.visible = False
         btn_pause.visible = False
