@@ -164,16 +164,22 @@ def load_dances_from_yaml(
             print(f"[WARN] dances[{i}] 非映射，已跳过")
             continue
         raw_key = ent.get("key")
-        if raw_key is None or str(raw_key).strip() == "":
-            print(f"[WARN] dances[{i}] 无 key，已跳过")
-            continue
-        key = str(raw_key).strip().upper()[:1]
-        if key in motion_by_key:
-            print(f"[WARN] 舞蹈键重复 [{key}]，后项已忽略: {ent.get('id', i)}")
-            continue
         motion_rel = ent.get("motion")
         if not motion_rel or not str(motion_rel).strip():
-            print(f"[WARN] dances[{i}] 无 motion，已跳过 key={key}")
+            print(f"[WARN] dances[{i}] 无 motion，已跳过")
+            continue
+
+        if raw_key is None or str(raw_key).strip() == "":
+            from robot_mmd.train_workflow.utils.dance_asset_sync import ui_only_dance_key
+
+            label = ent.get("id") or ent.get("label")
+            key = ui_only_dance_key(str(label or ""), str(motion_rel).strip())
+            hotkey_note = " (UI only)"
+        else:
+            key = str(raw_key).strip().upper()[:1]
+            hotkey_note = ""
+        if key in motion_by_key:
+            print(f"[WARN] 舞蹈键重复 [{key}]，后项已忽略: {ent.get('id', i)}")
             continue
         motion_p = resolve_path_under_media(str(motion_rel).strip(), media_dir)
         if not os.path.isfile(motion_p):
@@ -186,8 +192,8 @@ def load_dances_from_yaml(
         label = ent.get("id") or ent.get("label")
         brief = f" [{label}]" if label else ""
         print(
-            f"[INFO] 已绑定 dance 键 [{key}] -> {os.path.basename(motion_p)}"
-            f"（{len(data['frame_list'])} 帧）{brief}"
+            f"[INFO] 已绑定 dance [{key}] -> {os.path.basename(motion_p)}"
+            f"（{len(data['frame_list'])} 帧）{brief}{hotkey_note}"
             + (" [hand]" if data.get("has_hand_data") else "")
         )
         motion_by_key[key] = (os.path.basename(motion_p), data)
@@ -231,6 +237,94 @@ def build_dance_hdf5_motion_by_key(
 def _replace_ext(path: str, ext: str) -> str:
     stem = os.path.splitext(path)[0]
     return stem + ext
+
+
+def z_editted_sibling_path(path: str) -> str:
+    """``foo.csv`` -> ``foo_z_editted.csv`` (idempotent if already editted)."""
+    stem, ext = os.path.splitext(path)
+    if stem.endswith("_z_editted"):
+        return path
+    return stem + "_z_editted" + (ext or ".csv")
+
+
+def has_z_editted_sibling(path: str) -> bool:
+    """True when a ``*_z_editted.csv`` or ``*_z_editted.h5/.hdf5`` sibling exists."""
+    if not path or not str(path).strip():
+        return False
+    abs_path = os.path.abspath(str(path))
+    if os.path.isfile(z_editted_sibling_path(abs_path)):
+        return True
+    stem = os.path.splitext(abs_path)[0]
+    if stem.endswith("_z_editted"):
+        return True
+    for ext in (".h5", ".hdf5"):
+        if os.path.isfile(stem + "_z_editted" + ext):
+            return True
+    return False
+
+
+def resolve_playback_motion_entry(
+    entry: tuple[str, MotionBundle],
+    *,
+    prefer_hdf5: bool,
+    z_offset_enabled: bool,
+) -> tuple[tuple[str, MotionBundle], bool]:
+    """Optionally swap to a ``*_z_editted.*`` sibling; warn and keep original if missing."""
+    if not z_offset_enabled:
+        return entry, False
+
+    name, data = entry
+    path = str(data.get("path", ""))
+    if not path:
+        return entry, False
+
+    candidates: list[str] = []
+    if prefer_hdf5 or str(data.get("kind", "")) == "hdf5":
+        z_stem = os.path.splitext(z_editted_sibling_path(path))[0]
+        for ext in (".h5", ".hdf5"):
+            candidates.append(z_stem + ext)
+    else:
+        candidates.append(z_editted_sibling_path(path))
+
+    for cand in candidates:
+        if not os.path.isfile(cand):
+            continue
+        loaded = load_motion(cand)
+        if loaded is None:
+            continue
+        return (os.path.basename(cand), loaded), True
+
+    print(
+        f"[WARN] Z_offset_enable is on but no *_z_editted file for "
+        f"'{os.path.basename(path)}'; using original motion."
+    )
+    return entry, False
+
+
+def build_dance_hdf5_motion_by_key(
+    dance_motion_by_key: dict[str, tuple[str, MotionBundle]],
+) -> dict[str, tuple[str, MotionBundle]]:
+    """Map each dance key to a sibling .h5/.hdf5 when available."""
+    out: dict[str, tuple[str, MotionBundle]] = {}
+    for dkey, (_name, data) in dance_motion_by_key.items():
+        kind = str(data.get("kind", ""))
+        path = str(data.get("path", ""))
+        if kind == "hdf5":
+            out[dkey] = (_name, data)
+            continue
+        if kind != "csv" or not path:
+            continue
+        stem = os.path.splitext(path)[0]
+        for ext in (".h5", ".hdf5"):
+            alt_path = stem + ext
+            if not os.path.isfile(alt_path):
+                continue
+            alt_data = load_motion(alt_path)
+            if alt_data is None or str(alt_data.get("kind", "")) != "hdf5":
+                continue
+            out[dkey] = (os.path.basename(alt_path), alt_data)
+            break
+    return out
 
 
 def build_dance_hand_motion_by_key(

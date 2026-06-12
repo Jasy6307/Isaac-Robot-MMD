@@ -46,8 +46,13 @@ _playback_seek_cb: Callable[[int], None] | None = None
 DanceUiEntry = tuple[str, str]  # (dance_key, combo_label)
 _dance_entries_provider: Callable[[], list[DanceUiEntry]] | None = None
 _dance_request_cb: Callable[[str, bool], None] | None = None
+_dance_z_edited_status_provider: Callable[[str], bool] | None = None
+_dance_z_edit_request_cb: Callable[[str], None] | None = None
+_z_edit_busy_provider: Callable[[], bool] | None = None
 _pd_drive_provider: Callable[[], bool] | None = None
 _pd_drive_setter: Callable[[bool], None] | None = None
+_z_offset_enable_provider: Callable[[], bool] | None = None
+_z_offset_enable_setter: Callable[[bool], None] | None = None
 _root_quat_rpy_provider: Callable[
     [], tuple[tuple[float, float, float], tuple[int, int, int]]
 ] | None = None
@@ -60,6 +65,7 @@ _root_rot_bone_name_provider: Callable[[], str] | None = None
 _scrub_sync_suppress_seek: bool = False
 _root_quat_sync_suppress_set: bool = False
 _pd_drive_sync_suppress_set: bool = False
+_z_offset_sync_suppress_set: bool = False
 
 # 映射表被用户修改后通知主循环（例如在非播放状态下按新映射重算当前姿势）
 _mapping_changed_cb: Callable[[], None] | None = None
@@ -101,6 +107,18 @@ def set_dance_play_callbacks(
     _dance_request_cb = on_dance_request
 
 
+def set_dance_z_edit_callbacks(
+    z_editted_status: Callable[[str], bool] | None,
+    on_generate: Callable[[str], None] | None,
+    busy_provider: Callable[[], bool] | None = None,
+) -> None:
+    """Z_editted sibling status + generate request for the dance file combo row."""
+    global _dance_z_edited_status_provider, _dance_z_edit_request_cb, _z_edit_busy_provider
+    _dance_z_edited_status_provider = z_editted_status
+    _dance_z_edit_request_cb = on_generate
+    _z_edit_busy_provider = busy_provider
+
+
 def set_pd_drive_callbacks(
     provider: Callable[[], bool] | None,
     setter: Callable[[bool], None] | None,
@@ -109,6 +127,16 @@ def set_pd_drive_callbacks(
     global _pd_drive_provider, _pd_drive_setter
     _pd_drive_provider = provider
     _pd_drive_setter = setter
+
+
+def set_z_offset_enable_callbacks(
+    provider: Callable[[], bool] | None,
+    setter: Callable[[bool], None] | None,
+) -> None:
+    """Set Z root-offset motion variant callbacks for the mapping UI checkbox."""
+    global _z_offset_enable_provider, _z_offset_enable_setter
+    _z_offset_enable_provider = provider
+    _z_offset_enable_setter = setter
 
 
 def set_root_quat_rpy_callbacks(
@@ -219,7 +247,18 @@ MMD_BONE_TO_ROMAJI: dict[str, str] = {
     "上半身": "UPPER_B",
     "上半身2": "UPPER_B2",
     "首": "HEAD",
+    "グルーブ": "GROOVE",
+    "センター": "CENTER",
+    "センター先": "CENTER_TIP",
+    "センター親": "CENTER_P",
+    "腰": "WAIST",
+    "全ての親": "ALL_PARENT",
 }
+
+
+def mmd_bone_to_romaji(name: str) -> str:
+    """MMD bone label for omni.ui (Kit CJK fonts often render as mojibake)."""
+    return MMD_BONE_TO_ROMAJI.get(str(name or ""), str(name or ""))
 
 # 膝/肘行第二行：MMD hinge/swing 与映射补偿（见 csv_motion_loader.*_hinge_mapping_ui_extra）
 _KNEE_JOINT_NAMES = frozenset({"left_knee_joint", "right_knee_joint"})
@@ -308,13 +347,10 @@ def _build_mapping_window(ui):
     joint_models: dict[str, tuple] = {}
 
     def _bone_str(bones) -> str:
-        """将 MMD 骨骼名转为罗马音显示（Isaac 中日文显示异常）"""
-        def _to_romaji(s: str) -> str:
-            return MMD_BONE_TO_ROMAJI.get(s, s)
-
+        """MMD bone names as English romaji labels for omni.ui."""
         if isinstance(bones, list):
-            return " + ".join(_to_romaji(b) for b in bones)
-        return _to_romaji(str(bones))
+            return " + ".join(mmd_bone_to_romaji(b) for b in bones)
+        return mmd_bone_to_romaji(str(bones))
 
     def _on_euler_changed(joint_name: str, _model):
         _update_mapping_from_models(joint_name)
@@ -428,6 +464,7 @@ def _build_mapping_window(ui):
                     pass
 
         pd_drive_model = ui.SimpleBoolModel(False)
+        z_offset_enable_model = ui.SimpleBoolModel(False)
         def _dance_entries() -> list[DanceUiEntry]:
             if _dance_entries_provider is None:
                 return []
@@ -472,6 +509,25 @@ def _build_mapping_window(ui):
             except Exception:
                 pass
 
+        def _on_gen_z_editted_click() -> None:
+            if _dance_z_edit_request_cb is None:
+                return
+            selected_key = _selected_dance_key()
+            if not selected_key:
+                return
+            try:
+                _dance_z_edit_request_cb(selected_key)
+            except Exception:
+                pass
+
+        btn_gen_z_editted = ui.Button(
+            "Gen Z_edited",
+            width=96,
+            height=24,
+            clicked_fn=_on_gen_z_editted_click,
+        )
+        btn_gen_z_editted.visible = False
+
         def _on_pd_drive_changed(m: Any) -> None:
             if _pd_drive_sync_suppress_set:
                 return
@@ -479,6 +535,16 @@ def _build_mapping_window(ui):
                 return
             try:
                 _pd_drive_setter(bool(m.get_value_as_bool()))
+            except Exception:
+                pass
+
+        def _on_z_offset_enable_changed(m: Any) -> None:
+            if _z_offset_sync_suppress_set:
+                return
+            if _z_offset_enable_setter is None:
+                return
+            try:
+                _z_offset_enable_setter(bool(m.get_value_as_bool()))
             except Exception:
                 pass
 
@@ -505,12 +571,14 @@ def _build_mapping_window(ui):
                 pass
 
         pd_drive_model.add_value_changed_fn(_on_pd_drive_changed)
+        z_offset_enable_model.add_value_changed_fn(_on_z_offset_enable_changed)
 
         with ui.VStack(spacing=4):
             with ui.HStack(height=28):
                 ui.Label("Dance File", width=74, height=22)
                 ui.Spacer(width=6)
                 dance_combo
+                btn_gen_z_editted
                 ui.Button("Play CSV", width=72, height=24, clicked_fn=lambda: _request_selected_dance(False))
                 ui.Button("Play H5", width=62, height=24, clicked_fn=lambda: _request_selected_dance(True))
             with ui.HStack(height=28):
@@ -551,8 +619,11 @@ def _build_mapping_window(ui):
                 )
                 with ui.HStack(height=28):
                     ui.Label("PD Drive", width=118)
-                    ui.Label("joint PD mode", width=102)
                     ui.CheckBox(model=pd_drive_model, width=24, height=22)
+                    ui.Spacer()
+                with ui.HStack(height=28):
+                    ui.Label("Z_offset_enable", width=118)
+                    ui.CheckBox(model=z_offset_enable_model, width=24, height=22)
                     ui.Spacer()
                 ui.Spacer(height=4)
 
@@ -723,6 +794,7 @@ def _build_mapping_window(ui):
     transport_refs = {
         "scrub_model": scrub_model,
         "pd_drive_model": pd_drive_model,
+        "z_offset_enable_model": z_offset_enable_model,
         "max_label": max_frame_label,
         "btn_prev": btn_prev,
         "btn_next": btn_next,
@@ -738,6 +810,8 @@ def _build_mapping_window(ui):
         "root_P_value_label": root_row_value_labels[1],
         "root_Y_value_label": root_row_value_labels[2],
         "root_rot_bone_label": root_rot_bone_label,
+        "dance_combo": dance_combo,
+        "btn_gen_z_editted": btn_gen_z_editted,
     }
     return joint_models, playback_title_label, transport_refs
 
@@ -755,6 +829,7 @@ async def _mapping_ui_refresh_loop() -> None:
     import omni.kit.app
 
     global _scrub_sync_suppress_seek, _root_quat_sync_suppress_set, _pd_drive_sync_suppress_set
+    global _z_offset_sync_suppress_set
     while True:
         await omni.kit.app.get_app().next_update_async()
         if _joint_models_ref is None and _retarget_tune_refs is None:
@@ -793,6 +868,52 @@ async def _mapping_ui_refresh_loop() -> None:
                     pass
                 finally:
                     _pd_drive_sync_suppress_set = False
+            if _z_offset_enable_provider is not None:
+                try:
+                    z_on = bool(_z_offset_enable_provider())
+                except Exception:
+                    z_on = False
+                _z_offset_sync_suppress_set = True
+                try:
+                    if bool(tr["z_offset_enable_model"].get_value_as_bool()) != z_on:
+                        tr["z_offset_enable_model"].set_value(z_on)
+                except Exception:
+                    pass
+                finally:
+                    _z_offset_sync_suppress_set = False
+            combo = tr.get("dance_combo")
+            btn_z = tr.get("btn_gen_z_editted")
+            if combo is not None and btn_z is not None and _dance_entries_provider is not None:
+                selected_key: str | None = None
+                try:
+                    entries: list[DanceUiEntry] = []
+                    for item in _dance_entries_provider() or []:
+                        if isinstance(item, (tuple, list)) and len(item) >= 2:
+                            key = str(item[0]).strip()
+                            if key:
+                                entries.append((key, str(item[1])))
+                    if entries:
+                        idx = int(combo.model.get_item_value_model().as_int)
+                        idx = max(0, min(len(entries) - 1, idx))
+                        selected_key = entries[idx][0]
+                except Exception:
+                    selected_key = None
+                has_editted = False
+                if selected_key and _dance_z_edited_status_provider is not None:
+                    try:
+                        has_editted = bool(_dance_z_edited_status_provider(selected_key))
+                    except Exception:
+                        has_editted = False
+                z_busy = False
+                if _z_edit_busy_provider is not None:
+                    try:
+                        z_busy = bool(_z_edit_busy_provider())
+                    except Exception:
+                        z_busy = False
+                show_gen = bool(selected_key) and not has_editted
+                btn_z.visible = show_gen
+                btn_z.enabled = show_gen and not z_busy
+                btn_z.text = "Generating..." if z_busy else "Gen Z_edited"
             playing = bool(st.get("playing"))
             paused = bool(st.get("playback_paused"))
             mx = st.get("max_frame")
@@ -854,7 +975,7 @@ async def _mapping_ui_refresh_loop() -> None:
                     bone_nm = ""
                 lbl = tr.get("root_rot_bone_label")
                 if lbl is not None:
-                    romaji = MMD_BONE_TO_ROMAJI.get(bone_nm, bone_nm) if bone_nm else "-"
+                    romaji = mmd_bone_to_romaji(bone_nm) if bone_nm else "-"
                     lbl.text = f"Rot bone: {romaji}" if bone_nm else "Rot bone: (none)"
 
             for _rk, _ck in [

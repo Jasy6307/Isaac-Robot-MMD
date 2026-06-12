@@ -10,6 +10,8 @@ G1 MMD 动作回放主入口（Isaac Sim）。
 3) 有 audio 的 dance 播 WAV，与动作同一「逻辑帧时间轴」；
 4) 在重置和切换动作时维护控制参考姿态，避免姿态回弹。
 5) 映射 UI 顶部 ``PD Drive`` 复选框：勾选=全身关节 PD，不勾选=关节瞬移写入。
+6) 映射 UI ``Z_offset_enable``：勾选时自动播放同目录 ``*_z_editted.*`` sibling（无则回退原版并 WARN）。
+7) 启动时扫描 ``media/dance/*.vmd``，自动生成缺失的 CSV/H5 并登记到 ``dances_config.yaml``（可无快捷键，UI 可选）。
 
 启动：``python robot_mmd/train_workflow/run_g1_mmd_playback.py``
 """
@@ -36,6 +38,7 @@ from robot_mmd.train_workflow.utils.playback_cli import (
 )
 
 POSE_DIR = os.path.join(_MEDIA_DIR, "pose")
+DANCE_DIR = os.path.join(_MEDIA_DIR, "dance")
 DANCES_CONFIG_PATH = os.path.join(_SCRIPT_DIR, "dances_config.yaml")
 
 parser = build_arg_parser(POSE_DIR)
@@ -51,10 +54,18 @@ except Exception as exc:
         f"--mmd_center_to_root_offset_local 需为 x,y,z 三个浮点数（逗号分隔），例如 0,0,0.2: {exc}"
     ) from exc
 
-apply_app_window_kit_flags(args_cli)
+from robot_mmd.train_workflow.utils.dance_asset_sync import sync_dance_assets_from_vmd
 
-# Hybrid GPU (AMD iGPU + NVIDIA dGPU): avoid sporadic Kit deadlocks during viewport init.
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+sync_dance_assets_from_vmd(
+    dance_dir=DANCE_DIR,
+    dances_config_path=DANCES_CONFIG_PATH,
+    media_dir=_MEDIA_DIR,
+    groove_pos_to_world=float(args_cli.groove_pos_to_world),
+    mmd_center_to_root_offset_local_xyz=args_cli.mmd_center_to_root_offset_local_xyz,
+    knee_hinge_projection=bool(args_cli.mmd_knee_hinge_projection),
+)
+
+apply_app_window_kit_flags(args_cli)
 
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
@@ -79,6 +90,7 @@ from robot_mmd.train_workflow.ui.mapping import (
     create_mapping_ui,
     create_retarget_tune_ui,
     set_dance_play_callbacks,
+    set_dance_z_edit_callbacks,
     set_joint_value_provider,
     set_mapping_changed_callback,
     set_pd_drive_callbacks,
@@ -86,6 +98,7 @@ from robot_mmd.train_workflow.ui.mapping import (
     set_playback_transport_callbacks,
     set_root_rot_bone_name_provider,
     set_root_quat_rpy_callbacks,
+    set_z_offset_enable_callbacks,
 )
 from robot_mmd.train_workflow.utils import audio_util
 from robot_mmd.train_workflow.utils.csv_motion_loader import (
@@ -100,10 +113,13 @@ from robot_mmd.train_workflow.utils.motion_loader import (
     build_dance_hand_motion_by_key,
     build_dance_hdf5_motion_by_key,
     format_playback_log_label,
+    has_z_editted_sibling,
     load_dances_from_yaml,
     load_pose_motion_dir,
+    resolve_playback_motion_entry,
 )
 from robot_mmd.train_workflow.utils.playback_keyboard import DanceKeyboardListener
+from robot_mmd.train_workflow.utils.root_z_edit import RootZEditConfig, generate_z_editted_motion
 from robot_mmd.train_workflow.utils.playback_targets import (
     MotionRootTrackState,
     PlaybackUiDebugState,
@@ -135,6 +151,12 @@ def main():
     dance_hdf5_motion_by_key = build_dance_hdf5_motion_by_key(dance_motion_by_key)
     dance_hand_motion_by_key = build_dance_hand_motion_by_key(dance_motion_by_key)
     dance_hand_hdf5_motion_by_key = build_dance_hand_hdf5_motion_by_key(dance_hand_motion_by_key)
+    dance_path_by_key = {
+        k: str(data.get("path", ""))
+        for k, (_name, data) in dance_motion_by_key.items()
+        if str(data.get("path", "")).strip()
+    }
+    hotkey_dance_keys = {k for k in dance_motion_by_key.keys() if not str(k).startswith("ui:")}
 
     env_cfg = parse_env_cfg(
         TASK_ID,
@@ -181,11 +203,11 @@ def main():
     env = gym.make(TASK_ID, cfg=env_cfg)
 
     print(f"[INFO] 观测: {env.observation_space}, 动作: {env.action_space}")
-    dance_hint = ", ".join(f"{k}=dance" for k in dance_motion_by_key.keys()) or "无 dance 键"
-    h5_hint = ", ".join(f"Shift+{k}=H5" for k in dance_hdf5_motion_by_key.keys()) or "无 H5 快捷键"
+    dance_hint = ", ".join(f"{k}=dance" for k in hotkey_dance_keys) or "无 dance 键"
+    h5_hint = ", ".join(f"Shift+{k}=H5" for k in dance_hdf5_motion_by_key.keys() if not str(k).startswith("ui:")) or "无 H5 快捷键"
     print(f"[INFO] L=重置, {pose_cycle_key}=按序播放 pose, {dance_hint}, {h5_hint}")
     print(
-        "[INFO] PD Drive mode is controlled by Mapping UI checkbox (top bar)."
+        "[INFO] PD Drive / Z_offset_enable are controlled by Mapping UI checkboxes (top bar)."
     )
     if dance_wav_by_key:
         audio_util.warn_if_no_pygame_sync()
@@ -196,6 +218,8 @@ def main():
     pending_dance_key: str | None = None
     pending_dance_prefer_hdf5 = False
     pending_dance_prefer_hand = False
+    pending_z_edit_key: str | None = None
+    z_edit_busy = False
 
     def _on_reset():
         nonlocal reset_requested
@@ -205,11 +229,17 @@ def main():
         nonlocal pending_cycle_play
         pending_cycle_play = True
 
+    def _dance_lookup_key(key: str) -> str:
+        raw = str(key).replace("#HAND", "").strip()
+        if raw.startswith("ui:"):
+            return raw
+        return raw.upper()[:1]
+
     def _request_dance_play(key: str, *, prefer_hdf5: bool = False):
         nonlocal pending_dance_key, pending_dance_prefer_hdf5, pending_dance_prefer_hand
         key_raw = str(key)
         prefer_hand = key_raw.endswith("#HAND")
-        pending_dance_key = key_raw.replace("#HAND", "").upper()[:1]
+        pending_dance_key = _dance_lookup_key(key_raw)
         pending_dance_prefer_hdf5 = bool(prefer_hdf5)
         pending_dance_prefer_hand = bool(prefer_hand)
 
@@ -217,17 +247,48 @@ def main():
         entries: list[tuple[str, str]] = []
         for key in dance_motion_by_key.keys():
             filename, _data = dance_motion_by_key[key]
-            entries.append((str(key), f"[{key}] {filename}"))
+            if str(key).startswith("ui:"):
+                entries.append((str(key), filename))
+            else:
+                entries.append((str(key), f"[{key}] {filename}"))
         return entries
 
     def _on_dance_request_from_ui(key: str, prefer_hdf5: bool) -> None:
-        _request_dance_play(str(key), prefer_hdf5=bool(prefer_hdf5))
+        nonlocal pending_dance_key, pending_dance_prefer_hdf5, pending_dance_prefer_hand
+        pending_dance_key = str(key)
+        pending_dance_prefer_hdf5 = bool(prefer_hdf5)
+        pending_dance_prefer_hand = False
+
+    def _dance_has_z_editted(key: str) -> bool:
+        path = dance_path_by_key.get(_dance_lookup_key(key), "")
+        if not path:
+            return True
+        return has_z_editted_sibling(path)
+
+    def _on_z_edit_request_from_ui(key: str) -> None:
+        nonlocal pending_z_edit_key
+        dkey = _dance_lookup_key(key) if not str(key).startswith("ui:") else str(key)
+        if z_edit_busy:
+            print("[WARN] Z_editted generation already in progress")
+            return
+        path = dance_path_by_key.get(dkey, "")
+        if not path:
+            print(f"[WARN] dance [{dkey}] has no motion path")
+            return
+        if has_z_editted_sibling(path):
+            print(f"[INFO] Z_editted sibling already exists for dance [{dkey}]")
+            return
+        pending_z_edit_key = dkey
+        print(f"[INFO] Queued Z_editted generation for dance [{dkey}]")
+
+    def _z_edit_busy_for_ui() -> bool:
+        return bool(z_edit_busy)
 
     keyboard.add_callback("L", _on_reset)
     keyboard.add_callback(pose_cycle_key, _request_cycle_play)
 
     dance_listener = DanceKeyboardListener(
-        dance_keys=set(dance_motion_by_key.keys()),
+        dance_keys=hotkey_dance_keys,
         pose_cycle_key=pose_cycle_key,
         on_dance_request=lambda key, prefer_h5: _request_dance_play(key, prefer_hdf5=prefer_h5),
     )
@@ -265,6 +326,7 @@ def main():
     root_quat_rpy_axis_idx = list(MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT)
     pd_hold_joint_pos_cmd: Any = None
     pd_drive_enabled_ui = False
+    z_offset_enabled_ui = False
 
     def _on_mapping_ui_changed():
         nonlocal mapping_reapply_requested
@@ -281,6 +343,17 @@ def main():
             pd_hold_joint_pos_cmd = None
             mode = "PD drive" if pd_drive_enabled_ui else "instant teleport"
             print(f"[INFO] Joint control mode -> {mode}")
+
+    def _get_z_offset_enable_for_ui() -> bool:
+        return bool(z_offset_enabled_ui)
+
+    def _set_z_offset_enable_from_ui(enabled: bool) -> None:
+        nonlocal z_offset_enabled_ui
+        prev = bool(z_offset_enabled_ui)
+        z_offset_enabled_ui = bool(enabled)
+        if prev != z_offset_enabled_ui:
+            mode = "on (*_z_editted sibling)" if z_offset_enabled_ui else "off (original motion)"
+            print(f"[INFO] Z_offset_enable -> {mode}")
 
     def _playback_status_for_ui() -> dict[str, Any]:
         if not is_playing or not current_motion or not (current_motion_label or "").strip():
@@ -343,7 +416,9 @@ def main():
     set_playback_status_provider(_playback_status_for_ui)
     set_playback_transport_callbacks(_ui_toggle_pause, _ui_seek_frame)
     set_dance_play_callbacks(_dance_entries_for_ui, _on_dance_request_from_ui)
+    set_dance_z_edit_callbacks(_dance_has_z_editted, _on_z_edit_request_from_ui, _z_edit_busy_for_ui)
     set_pd_drive_callbacks(_get_pd_drive_for_ui, _set_pd_drive_from_ui)
+    set_z_offset_enable_callbacks(_get_z_offset_enable_for_ui, _set_z_offset_enable_from_ui)
     set_root_quat_rpy_callbacks(_get_root_quat_rpy_for_ui, _set_root_quat_rpy_from_ui)
     set_root_rot_bone_name_provider(lambda: str(ui_debug.root_rot_bone_name or ""))
     set_mapping_changed_callback(_on_mapping_ui_changed)
@@ -546,10 +621,52 @@ def main():
                 pause_hold_frame = 0
                 pending_playback_toggle = False
                 pending_seek_frame = None
+                pending_z_edit_key = None
                 ui_debug.reset()
                 initial_root_snapshot_row = robot_root_row_clone(env)
                 _reset_to_initial_pose(sync_ui_cache=True)
                 print("[INFO] 环境已重置")
+
+            if pending_z_edit_key is not None and not z_edit_busy:
+                dkey = pending_z_edit_key
+                pending_z_edit_key = None
+                motion_path = dance_path_by_key.get(dkey, "")
+                if motion_path and not has_z_editted_sibling(motion_path):
+                    z_edit_busy = True
+                    if is_playing:
+                        audio_util.stop_wav()
+                        motion_has_wav = False
+                        is_playing = False
+                        current_motion = None
+                        current_motion_label = ""
+                        last_csv_motion_frame = None
+                        playback_paused = False
+                    try:
+                        _ensure_joint_info()
+                        print(
+                            f"[INFO] Generating *_z_editted for dance [{dkey}] "
+                            f"({os.path.basename(motion_path)}) ..."
+                        )
+                        generate_z_editted_motion(
+                            env,
+                            env_cfg,
+                            motion_path,
+                            config=RootZEditConfig(
+                                groove_pos_to_world=float(args_cli.groove_pos_to_world),
+                                mmd_center_to_root_offset_local_xyz=tuple(
+                                    args_cli.mmd_center_to_root_offset_local_xyz
+                                ),
+                                root_quat_rpy_scale=tuple(root_quat_rpy_scale),
+                                root_quat_rpy_axis_idx=tuple(root_quat_rpy_axis_idx),
+                                knee_hinge_projection=bool(args_cli.mmd_knee_hinge_projection),
+                            ),
+                        )
+                        initial_root_snapshot_row = robot_root_row_clone(env)
+                        _reset_to_initial_pose(sync_ui_cache=True)
+                    except Exception as exc:
+                        print(f"[ERROR] Z_editted generation failed for [{dkey}]: {exc}")
+                    finally:
+                        z_edit_busy = False
 
             if pending_cycle_play:
                 pending_cycle_play = False
@@ -593,6 +710,11 @@ def main():
                 if entry is None:
                     print(f"[WARN] dance 键 [{dkey}] 未绑定文件")
                 else:
+                    entry, _used_z_editted = resolve_playback_motion_entry(
+                        entry,
+                        prefer_hdf5=prefer_hdf5,
+                        z_offset_enabled=z_offset_enabled_ui,
+                    )
                     _prepare_motion_switch()
                     name, data = entry
                     mode = str(data.get("kind", "unknown")).upper()
