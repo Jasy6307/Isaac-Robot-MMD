@@ -19,6 +19,7 @@ from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
     MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
     MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
 )
+from robot_mmd.train_workflow.utils.csv_motion_loader import FootIkConfig
 from robot_mmd.train_workflow.utils.hdf5_motion import (
     compile_csv_motion_to_hdf5_motion,
     write_hdf5_motion,
@@ -140,6 +141,66 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=",".join(str(v) for v in MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT),
         help="root RPY 轴索引，格式 r,p,y（各值 0/1/2）",
     )
+    p.add_argument(
+        "--mmd-foot-ik-enable",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="启用 VMD 足IK目标驱动腿部 IK 覆盖（默认关闭）",
+    )
+    p.add_argument(
+        "--mmd-foot-ik-scale",
+        type=float,
+        default=1.0,
+        help="足IK位移缩放（默认 1.0）",
+    )
+    p.add_argument(
+        "--mmd-foot-ik-weight",
+        type=float,
+        default=1.0,
+        help="FK/IK 混合权重，0=纯FK，1=纯IK（默认 1.0）",
+    )
+    p.add_argument(
+        "--mmd-foot-ik-max-reach-ratio",
+        type=float,
+        default=0.985,
+        help="IK 最远可达比例（相对 thigh+shin，默认 0.985）",
+    )
+    p.add_argument(
+        "--mmd-foot-ik-axis-idx",
+        type=str,
+        default="0,2,1",
+        help="MMD->foot target 轴索引 x,y,z（每项 0/1/2）",
+    )
+    p.add_argument(
+        "--mmd-foot-ik-axis-sign",
+        type=str,
+        default="-1,-1,1",
+        help="MMD->foot target 轴符号 x,y,z（建议 ±1）",
+    )
+    p.add_argument(
+        "--mmd-foot-ik-axis-sign-pose",
+        type=str,
+        default="-1,1,1",
+        help="静态 pose 时的轴符号 x,y,z",
+    )
+    p.add_argument(
+        "--mmd-foot-ik-left-ref-local",
+        type=str,
+        default="0.0,0.095,-0.42",
+        help="左脚参考点（root local，米）x,y,z",
+    )
+    p.add_argument(
+        "--mmd-foot-ik-right-ref-local",
+        type=str,
+        default="0.0,-0.095,-0.42",
+        help="右脚参考点（root local，米）x,y,z",
+    )
+    p.add_argument("--mmd-foot-ik-hip-offset-y", type=float, default=0.095, help="髋关节左右偏置（米）")
+    p.add_argument("--mmd-foot-ik-hip-offset-z", type=float, default=0.0, help="髋关节高度偏置（米）")
+    p.add_argument("--mmd-foot-ik-thigh-length", type=float, default=0.213, help="大腿长度（米）")
+    p.add_argument("--mmd-foot-ik-shin-length", type=float, default=0.213, help="小腿长度（米）")
+    p.add_argument("--mmd-foot-ik-hip-roll-gain", type=float, default=0.85, help="侧向 hip roll 增益")
+    p.add_argument("--mmd-foot-ik-debug-every", type=int, default=0, help="每 N 帧打印 IK debug；0=关闭")
     return p
 
 
@@ -158,6 +219,28 @@ def main() -> None:
     center_off = _parse_triplet_float(args.mmd_center_to_root_offset_local, "--mmd-center-to-root-offset-local")
     root_scale = _parse_triplet_float(args.root_rpy_scale, "--root-rpy-scale")
     root_idx = _parse_triplet_int(args.root_rpy_axis_idx, "--root-rpy-axis-idx")
+    foot_axis_idx = _parse_triplet_int(args.mmd_foot_ik_axis_idx, "--mmd-foot-ik-axis-idx")
+    foot_axis_sign = _parse_triplet_float(args.mmd_foot_ik_axis_sign, "--mmd-foot-ik-axis-sign")
+    foot_axis_sign_pose = _parse_triplet_float(args.mmd_foot_ik_axis_sign_pose, "--mmd-foot-ik-axis-sign-pose")
+    left_ref_local = _parse_triplet_float(args.mmd_foot_ik_left_ref_local, "--mmd-foot-ik-left-ref-local")
+    right_ref_local = _parse_triplet_float(args.mmd_foot_ik_right_ref_local, "--mmd-foot-ik-right-ref-local")
+    foot_ik_cfg = FootIkConfig(
+        enable=bool(args.mmd_foot_ik_enable),
+        pos_scale=float(args.mmd_foot_ik_scale),
+        weight=float(args.mmd_foot_ik_weight),
+        max_reach_ratio=float(args.mmd_foot_ik_max_reach_ratio),
+        mmd_axis_idx=tuple(int(v) for v in foot_axis_idx),
+        mmd_axis_sign=tuple(float(v) for v in foot_axis_sign),
+        mmd_axis_sign_static_pose=tuple(float(v) for v in foot_axis_sign_pose),
+        left_foot_ref_local=tuple(float(v) for v in left_ref_local),
+        right_foot_ref_local=tuple(float(v) for v in right_ref_local),
+        hip_offset_y=float(args.mmd_foot_ik_hip_offset_y),
+        hip_offset_z=float(args.mmd_foot_ik_hip_offset_z),
+        thigh_length=float(args.mmd_foot_ik_thigh_length),
+        shin_length=float(args.mmd_foot_ik_shin_length),
+        hip_roll_gain=float(args.mmd_foot_ik_hip_roll_gain),
+        debug_every_n_frames=max(0, int(args.mmd_foot_ik_debug_every)),
+    )
 
     motion = compile_csv_motion_to_hdf5_motion(
         input_csv,
@@ -168,6 +251,7 @@ def main() -> None:
         mmd_center_to_root_offset_local_xyz=center_off,
         root_quat_rpy_scale=root_scale,
         root_quat_rpy_axis_idx=root_idx,
+        foot_ik_cfg=foot_ik_cfg,
     )
     out_path = write_hdf5_motion(out, motion)
     print(f"[INFO] 已生成 HDF5: {out_path}")

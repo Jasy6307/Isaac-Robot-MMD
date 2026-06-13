@@ -15,6 +15,7 @@ from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
     MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
     MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
 )
+from robot_mmd.train_workflow.utils.csv_motion_loader import FootIkConfig, FootIkState
 from robot_mmd.train_workflow.utils.hdf5_motion import Hdf5Motion, write_hdf5_motion
 from robot_mmd.train_workflow.utils.motion_loader import load_motion, z_editted_sibling_path
 from robot_mmd.train_workflow.utils.playback_targets import (
@@ -58,6 +59,21 @@ class RootZEditConfig:
     root_quat_rpy_scale: tuple[float, float, float] = tuple(MMD_ROOT_QUAT_RPY_SCALE_DEFAULT)
     root_quat_rpy_axis_idx: tuple[int, int, int] = tuple(MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT)
     knee_hinge_projection: bool = True
+    mmd_foot_ik_enable: bool = True
+    mmd_foot_ik_scale: float = 1.0
+    mmd_foot_ik_weight: float = 1.0
+    mmd_foot_ik_max_reach_ratio: float = 0.985
+    mmd_foot_ik_axis_idx: tuple[int, int, int] = (0, 2, 1)
+    mmd_foot_ik_axis_sign: tuple[float, float, float] = (-1.0, -1.0, 1.0)
+    mmd_foot_ik_axis_sign_pose: tuple[float, float, float] = (-1.0, 1.0, 1.0)
+    mmd_foot_ik_left_ref_local: tuple[float, float, float] = (0.0, 0.095, -0.42)
+    mmd_foot_ik_right_ref_local: tuple[float, float, float] = (0.0, -0.095, -0.42)
+    mmd_foot_ik_hip_offset_y: float = 0.095
+    mmd_foot_ik_hip_offset_z: float = 0.0
+    mmd_foot_ik_thigh_length: float = 0.213
+    mmd_foot_ik_shin_length: float = 0.213
+    mmd_foot_ik_hip_roll_gain: float = 0.85
+    mmd_foot_ik_debug_every: int = 0
 
 
 def resolve_z_editted_output_path(input_path: str, output: str | None = None) -> str:
@@ -407,6 +423,26 @@ def generate_z_editted_motion(
     center_off = tuple(float(v) for v in cfg.mmd_center_to_root_offset_local_xyz)
     root_rpy_scale = tuple(float(v) for v in cfg.root_quat_rpy_scale)
     root_rpy_axis_idx = tuple(int(v) for v in cfg.root_quat_rpy_axis_idx)
+    foot_ik_cfg = FootIkConfig(
+        enable=bool(cfg.mmd_foot_ik_enable),
+        groove_pos_to_world=float(cfg.groove_pos_to_world),
+        pos_scale=float(cfg.mmd_foot_ik_scale),
+        weight=float(cfg.mmd_foot_ik_weight),
+        max_reach_ratio=float(cfg.mmd_foot_ik_max_reach_ratio),
+        mmd_axis_idx=tuple(int(v) for v in cfg.mmd_foot_ik_axis_idx),
+        mmd_axis_sign=tuple(float(v) for v in cfg.mmd_foot_ik_axis_sign),
+        mmd_axis_sign_static_pose=tuple(float(v) for v in cfg.mmd_foot_ik_axis_sign_pose),
+        left_foot_ref_local=tuple(float(v) for v in cfg.mmd_foot_ik_left_ref_local),
+        right_foot_ref_local=tuple(float(v) for v in cfg.mmd_foot_ik_right_ref_local),
+        hip_offset_y=float(cfg.mmd_foot_ik_hip_offset_y),
+        hip_offset_z=float(cfg.mmd_foot_ik_hip_offset_z),
+        thigh_length=float(cfg.mmd_foot_ik_thigh_length),
+        shin_length=float(cfg.mmd_foot_ik_shin_length),
+        hip_roll_gain=float(cfg.mmd_foot_ik_hip_roll_gain),
+        debug_every_n_frames=max(0, int(cfg.mmd_foot_ik_debug_every)),
+        is_static_pose=bool(kind == "csv" and motion_is_static_pose(frames)),
+    )
+    foot_ik_state = FootIkState()
 
     for frame in range(0, max_frame + 1, frame_step):
         if kind == "csv":
@@ -434,6 +470,8 @@ def generate_z_editted_motion(
                 mmd_center_to_root_offset_local_xyz=center_off,
                 root_quat_rpy_scale=root_rpy_scale,
                 root_quat_rpy_axis_idx=root_rpy_axis_idx,
+                foot_ik_cfg=foot_ik_cfg,
+                foot_ik_state=foot_ik_state,
             )
         else:
             (

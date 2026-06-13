@@ -20,6 +20,30 @@ _current_wav_path: str | None = None
 _pygame_sync_hint_printed = False
 # 当前这段实际在用哪种方式播：只有 "pygame" 时才响应 pause/seek
 _playback_backend: str | None = None
+# pygame.mixer.music volume: 0.0–1.0 (default below is quieter than mixer default 1.0)
+DEFAULT_VOLUME: float = 0.3
+_volume: float = DEFAULT_VOLUME
+
+
+def get_volume() -> float:
+    """Current playback volume (0.0–1.0). Only affects pygame backend."""
+    return float(_volume)
+
+
+def set_volume(value: float) -> None:
+    """Set playback volume (0.0–1.0). Applies immediately when pygame is active."""
+    global _volume
+    _volume = max(0.0, min(1.0, float(value)))
+    _apply_volume()
+
+
+def _apply_volume() -> None:
+    if not _ensure_pygame() or _pygame is None:
+        return
+    try:
+        _pygame.mixer.music.set_volume(_volume)
+    except Exception:
+        pass
 
 
 def has_pygame_audio() -> bool:
@@ -52,6 +76,7 @@ def _ensure_pygame() -> bool:
         import pygame
 
         pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=1024)
+        pygame.mixer.music.set_volume(_volume)
         _pygame = pygame
         _use_pygame = True
     except Exception:
@@ -81,8 +106,9 @@ def play_wav_async(filepath: str, start_sec: float = 0.0) -> None:
                 _pygame.mixer.music.play()
                 if start_sec > 0.0:
                     _pygame.mixer.music.set_pos(start_sec)
+            _apply_volume()
             _playback_backend = "pygame"
-            print(f"[INFO] 开始播放音频(pygame): {path} @ {start_sec:.3f}s")
+            print(f"[INFO] 开始播放音频(pygame): {path} @ {start_sec:.3f}s vol={_volume:.2f}")
             return
         except Exception as exc:
             print(f"[WARN] pygame 播放失败，回退 winsound: {exc}")
@@ -154,6 +180,7 @@ def sync_audio_to_motion_frame(frame: int, motion_hz: float, paused: bool) -> No
             _pygame.mixer.music.play()
             if t > 0.0:
                 _pygame.mixer.music.set_pos(t)
+        _apply_volume()
         if paused:
             _pygame.mixer.music.pause()
     except Exception:

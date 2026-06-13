@@ -339,6 +339,27 @@ SHOULDER_JOINT_TO_SIDE_BONES: dict[str, tuple[str, str, str]] = {
 # ---------------------------------------------------------------------------
 
 
+def rotate_mmd_vec_by_leg_retarget_basis(
+    side: str,
+    q_mmd_wxyz: list[float] | tuple[float, float, float, float],
+    v_mmd: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    """Rotate a vector with lower-body quat using leg hip basis: v' = B·R_mmd·Bᵀ·v."""
+    w = float(q_mmd_wxyz[0])
+    x = float(q_mmd_wxyz[1])
+    y = float(q_mmd_wxyz[2])
+    z = float(q_mmd_wxyz[3])
+    q_xyzw = normalize_quat_xyzw_short_arc((x, y, z, w))
+    r_mmd = quat_xyzw_to_mat3(q_xyzw)
+    r = _rotmat_mmd_to_g1(_NS_LEG, side, r_mmd)
+    vx, vy, vz = float(v_mmd[0]), float(v_mmd[1]), float(v_mmd[2])
+    return (
+        float(r[0, 0] * vx + r[0, 1] * vy + r[0, 2] * vz),
+        float(r[1, 0] * vx + r[1, 1] * vy + r[1, 2] * vz),
+        float(r[2, 0] * vx + r[2, 1] * vy + r[2, 2] * vz),
+    )
+
+
 def compute_hip_angles(side: str, q_leg_xyzw: QuatXYZW | None) -> tuple[float, float, float]:
     return _retarget_yxz(_NS_LEG, side, q_leg_xyzw)
 

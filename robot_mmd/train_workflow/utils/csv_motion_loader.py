@@ -21,6 +21,7 @@ CSV 动作加载与 G1 关节重定向核心模块。
 import bisect
 import csv
 import math
+from dataclasses import dataclass
 from typing import Iterator
 
 import numpy as np
@@ -30,6 +31,8 @@ from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
     G1_JOINT_AXIS_MAP_RAW,
     MMD_WAIST_UPPER_PAIR_QUAT_CONJUGATE,
 )
+from robot_mmd.train_workflow.utils.mmd_fk import FootIkVizConfig, foot_ik_panel_to_isaac_world
+from robot_mmd.train_workflow.utils.trans_util import isaac_world_to_root_local
 from robot_mmd.train_workflow.retarget_unitreeG1 import (
     ANKLE_JOINT_TO_AXIS_INDEX,
     ANKLE_JOINT_TO_SIDE_BONE,
@@ -48,6 +51,84 @@ from robot_mmd.train_workflow.retarget_unitreeG1 import (
 
 Axis3 = tuple[float, float, float]
 AxisMapEntry = tuple[str | list[str], Axis3, float]
+
+
+@dataclass
+class FootIkConfig:
+    """Config for VMD foot-target driven leg IK override."""
+
+    enable: bool = False
+    groove_pos_to_world: float = 0.1
+    pos_scale: float = 1.0
+    weight: float = 1.0
+    max_reach_ratio: float = 0.985
+    is_static_pose: bool = False
+    # MMD 足IK pos -> G1 root-local target axes:
+    # out[i] = mmd[axis_idx[i]] * axis_sign[i] * groove_pos_to_world * pos_scale
+    mmd_axis_idx: tuple[int, int, int] = (0, 2, 1)
+    mmd_axis_sign: tuple[float, float, float] = (-1.0, -1.0, 1.0)
+    mmd_axis_sign_static_pose: tuple[float, float, float] = (-1.0, 1.0, 1.0)
+    left_foot_ref_local: tuple[float, float, float] = (0.0, 0.095, -0.42)
+    right_foot_ref_local: tuple[float, float, float] = (0.0, -0.095, -0.42)
+    left_toe_ref_local: tuple[float, float, float] = (0.12, 0.095, -0.42)
+    right_toe_ref_local: tuple[float, float, float] = (0.12, -0.095, -0.42)
+    hip_offset_y: float = 0.095
+    hip_offset_z: float = 0.0
+    thigh_length: float = 0.213
+    shin_length: float = 0.213
+    hip_pitch_offset: float = 0.0
+    hip_roll_gain: float = 0.85
+    ankle_pitch_stabilize_gain: float = 0.75
+    debug_every_n_frames: int = 0
+
+
+@dataclass
+class FootIkState:
+    """Runtime state for foot IK reference anchoring."""
+
+    left_ref_local: tuple[float, float, float] | None = None
+    right_ref_local: tuple[float, float, float] | None = None
+    left_toe_ref_local: tuple[float, float, float] | None = None
+    right_toe_ref_local: tuple[float, float, float] | None = None
+    last_left_target_local: tuple[float, float, float] | None = None
+    last_right_target_local: tuple[float, float, float] | None = None
+    last_left_toe_target_local: tuple[float, float, float] | None = None
+    last_right_toe_target_local: tuple[float, float, float] | None = None
+    last_left_foot_mmd_viz_world: tuple[float, float, float] | None = None
+    last_right_foot_mmd_viz_world: tuple[float, float, float] | None = None
+    last_left_toe_mmd_viz_world: tuple[float, float, float] | None = None
+    last_right_toe_mmd_viz_world: tuple[float, float, float] | None = None
+    last_left_foot_mmd_local_m: tuple[float, float, float] | None = None
+    last_right_foot_mmd_local_m: tuple[float, float, float] | None = None
+    last_left_foot_mmd_fk_world_m: tuple[float, float, float] | None = None
+    last_right_foot_mmd_fk_world_m: tuple[float, float, float] | None = None
+    last_left_toe_mmd_local_m: tuple[float, float, float] | None = None
+    last_right_toe_mmd_local_m: tuple[float, float, float] | None = None
+    last_left_toe_mmd_fk_world_m: tuple[float, float, float] | None = None
+    last_right_toe_mmd_fk_world_m: tuple[float, float, float] | None = None
+
+    def reset(self) -> None:
+        self.left_ref_local = None
+        self.right_ref_local = None
+        self.left_toe_ref_local = None
+        self.right_toe_ref_local = None
+        self.last_left_target_local = None
+        self.last_right_target_local = None
+        self.last_left_toe_target_local = None
+        self.last_right_toe_target_local = None
+        self.last_left_foot_mmd_viz_world = None
+        self.last_right_foot_mmd_viz_world = None
+        self.last_left_toe_mmd_viz_world = None
+        self.last_right_toe_mmd_viz_world = None
+        self.last_left_foot_mmd_local_m = None
+        self.last_right_foot_mmd_local_m = None
+        self.last_left_foot_mmd_fk_world_m = None
+        self.last_right_foot_mmd_fk_world_m = None
+        self.last_left_toe_mmd_local_m = None
+        self.last_right_toe_mmd_local_m = None
+        self.last_left_toe_mmd_fk_world_m = None
+        self.last_right_toe_mmd_fk_world_m = None
+
 
 MMD_FINGER_PREFIXES: tuple[str, ...] = (
     "右親指",
@@ -686,6 +767,248 @@ def _write_bone_quat_xyzw(frame_data: dict[str, dict], bone_name: str, q_xyzw: t
     bone_data["euler"] = _quat_to_euler(*q_norm)
 
 
+_FOOT_IK_BONE_CANDIDATES: dict[str, tuple[str, ...]] = {
+    "left": ("左足ＩＫ", "左足IK"),
+    "right": ("右足ＩＫ", "右足IK"),
+}
+
+_TOE_IK_BONE_CANDIDATES: dict[str, tuple[str, ...]] = {
+    "left": ("左つま先ＩＫ", "左つま先IK"),
+    "right": ("右つま先ＩＫ", "右つま先IK"),
+}
+
+_FOOT_IK_OVERRIDE_JOINTS: dict[str, tuple[str, str, str, str, str, str]] = {
+    "left": (
+        "left_hip_pitch_joint",
+        "left_hip_roll_joint",
+        "left_hip_yaw_joint",
+        "left_knee_joint",
+        "left_ankle_pitch_joint",
+        "left_ankle_roll_joint",
+    ),
+    "right": (
+        "right_hip_pitch_joint",
+        "right_hip_roll_joint",
+        "right_hip_yaw_joint",
+        "right_knee_joint",
+        "right_ankle_pitch_joint",
+        "right_ankle_roll_joint",
+    ),
+}
+
+_FOOT_IK_LIMITS: dict[str, tuple[float, float]] = {
+    "hip_pitch": (-2.3, 1.3),
+    "hip_roll": (-0.9, 0.9),
+    "knee": (-0.1, 2.9),
+    "ankle_pitch": (-1.2, 1.0),
+}
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return float(max(lo, min(hi, float(v))))
+
+
+def _read_first_available_bone_pos(
+    frame_data: dict[str, dict],
+    candidates: tuple[str, ...],
+) -> tuple[float, float, float] | None:
+    for bone_name in candidates:
+        d = frame_data.get(bone_name)
+        if d is None:
+            continue
+        p = d.get("pos")
+        if p is None or len(p) != 3:
+            continue
+        try:
+            return float(p[0]), float(p[1]), float(p[2])
+        except Exception:
+            continue
+    return None
+
+
+def _mmd_pos_to_foot_target_local(
+    mmd_pos_xyz: tuple[float, float, float],
+    *,
+    scale: float,
+    cfg: FootIkConfig,
+    is_static_pose: bool,
+) -> tuple[float, float, float]:
+    src = (float(mmd_pos_xyz[0]), float(mmd_pos_xyz[1]), float(mmd_pos_xyz[2]))
+    s = float(scale)
+    idx = tuple(max(0, min(2, int(v))) for v in cfg.mmd_axis_idx)
+    sign = cfg.mmd_axis_sign_static_pose if is_static_pose else cfg.mmd_axis_sign
+    return (
+        float(src[idx[0]] * float(sign[0]) * s),
+        float(src[idx[1]] * float(sign[1]) * s),
+        float(src[idx[2]] * float(sign[2]) * s),
+    )
+
+
+def _solve_planar_leg_ik(
+    target_local_xyz: tuple[float, float, float],
+    *,
+    side: str,
+    cfg: FootIkConfig,
+    fk_hip_yaw: float,
+    fk_ankle_roll: float,
+) -> tuple[float, float, float, float, float, float]:
+    side_sign = 1.0 if side == "left" else -1.0
+    hx, hy, hz = 0.0, side_sign * float(cfg.hip_offset_y), float(cfg.hip_offset_z)
+    tx, ty, tz = target_local_xyz
+    vx, vy, vz = tx - hx, ty - hy, tz - hz
+
+    forward = float(vx)
+    down = float(max(1e-6, -vz))
+    lateral = float(vy)
+
+    l1 = max(1e-6, float(cfg.thigh_length))
+    l2 = max(1e-6, float(cfg.shin_length))
+    d = math.sqrt(forward * forward + down * down)
+    d = _clamp(d, 1e-6, (l1 + l2) * max(0.2, float(cfg.max_reach_ratio)))
+
+    cos_k = _clamp((l1 * l1 + l2 * l2 - d * d) / (2.0 * l1 * l2), -1.0, 1.0)
+    knee = math.pi - math.acos(cos_k)
+    cos_b = _clamp((l1 * l1 + d * d - l2 * l2) / (2.0 * l1 * d), -1.0, 1.0)
+    beta = math.acos(cos_b)
+    alpha = math.atan2(forward, down)
+    hip_pitch = alpha - beta + float(cfg.hip_pitch_offset)
+    hip_roll = math.atan2(lateral, max(1e-6, down)) * float(cfg.hip_roll_gain)
+    ankle_pitch = -(hip_pitch + knee) * float(cfg.ankle_pitch_stabilize_gain)
+
+    hip_pitch = _clamp(hip_pitch, *_FOOT_IK_LIMITS["hip_pitch"])
+    hip_roll = _clamp(hip_roll, *_FOOT_IK_LIMITS["hip_roll"])
+    knee = _clamp(knee, *_FOOT_IK_LIMITS["knee"])
+    ankle_pitch = _clamp(ankle_pitch, *_FOOT_IK_LIMITS["ankle_pitch"])
+    return hip_pitch, hip_roll, fk_hip_yaw, knee, ankle_pitch, fk_ankle_roll
+
+
+def _foot_ik_sphere_target_root_local(
+    mmd_pos_raw: tuple[float, float, float],
+    frame_data: dict[str, dict],
+    *,
+    cfg: FootIkConfig,
+    side: str,
+    root_pos_world: tuple[float, float, float] | None,
+    root_quat_wxyz: list[float] | None,
+    foot_ik_viz_cfg: FootIkVizConfig | None = None,
+) -> tuple[float, float, float]:
+    """Convert foot IK panel data to G1 root-local target (matches red sphere)."""
+    pos_scale = float(cfg.groove_pos_to_world)
+    foot_world = foot_ik_panel_to_isaac_world(
+        mmd_pos_raw,
+        frame_data,
+        pos_scale=pos_scale,
+        is_pose=bool(cfg.is_static_pose),
+        side=side,
+        viz_cfg=foot_ik_viz_cfg,
+    )
+    root_pos = root_pos_world if root_pos_world is not None else (0.0, 0.0, 0.0)
+    root_quat = root_quat_wxyz if root_quat_wxyz is not None else [1.0, 0.0, 0.0, 0.0]
+    return isaac_world_to_root_local(foot_world, root_pos, root_quat)
+
+
+def _apply_foot_ik_override_to_result(
+    result: np.ndarray,
+    frame_data: dict[str, dict],
+    joint_names: list[str],
+    default_joint_pos: np.ndarray,
+    foot_ik_cfg: FootIkConfig | None,
+    foot_ik_state: FootIkState | None,
+    frame_idx: int | None = None,
+    foot_ik_root_pos_world: tuple[float, float, float] | None = None,
+    foot_ik_root_quat_wxyz: list[float] | None = None,
+    foot_ik_viz_cfg: FootIkVizConfig | None = None,
+) -> None:
+    cfg = foot_ik_cfg
+    state = foot_ik_state
+    if cfg is None or state is None or (not bool(cfg.enable)):
+        return
+    state.last_left_target_local = None
+    state.last_right_target_local = None
+    state.last_left_toe_target_local = None
+    state.last_right_toe_target_local = None
+    weight = _clamp(float(cfg.weight), 0.0, 1.0)
+    if weight <= 1e-6:
+        return
+
+    jidx = {str(n): i for i, n in enumerate(joint_names)}
+    for side in ("left", "right"):
+        candidates = _FOOT_IK_BONE_CANDIDATES[side]
+        mmd_pos = _read_first_available_bone_pos(frame_data, candidates)
+        if mmd_pos is None:
+            continue
+        target = _foot_ik_sphere_target_root_local(
+            mmd_pos,
+            frame_data,
+            cfg=cfg,
+            side=side,
+            root_pos_world=foot_ik_root_pos_world,
+            root_quat_wxyz=foot_ik_root_quat_wxyz,
+            foot_ik_viz_cfg=foot_ik_viz_cfg,
+        )
+        if side == "left":
+            state.last_left_target_local = target
+        else:
+            state.last_right_target_local = target
+
+        toe_pos = _read_first_available_bone_pos(frame_data, _TOE_IK_BONE_CANDIDATES[side])
+        if toe_pos is not None:
+            toe_target = _foot_ik_sphere_target_root_local(
+                toe_pos,
+                frame_data,
+                cfg=cfg,
+                side=side,
+                root_pos_world=foot_ik_root_pos_world,
+                root_quat_wxyz=foot_ik_root_quat_wxyz,
+                foot_ik_viz_cfg=foot_ik_viz_cfg,
+            )
+            if side == "left":
+                state.last_left_toe_target_local = toe_target
+            else:
+                state.last_right_toe_target_local = toe_target
+        hj_p, hj_r, hj_y, kj, aj_p, aj_r = _FOOT_IK_OVERRIDE_JOINTS[side]
+        req = (hj_p, hj_r, hj_y, kj, aj_p, aj_r)
+        if any(jn not in jidx for jn in req):
+            continue
+
+        i_hy = jidx[hj_y]
+        i_ar = jidx[aj_r]
+        fk_hip_yaw = float(result[i_hy] - default_joint_pos[i_hy])
+        fk_ankle_roll = float(result[i_ar] - default_joint_pos[i_ar])
+        ik_vals = _solve_planar_leg_ik(
+            target,
+            side=side,
+            cfg=cfg,
+            fk_hip_yaw=fk_hip_yaw,
+            fk_ankle_roll=fk_ankle_roll,
+        )
+        for jn, ik_angle in zip(req, ik_vals):
+            ji = jidx[jn]
+            fk_angle = float(result[ji] - default_joint_pos[ji])
+            out_angle = fk_angle * (1.0 - weight) + float(ik_angle) * weight
+            result[ji] = float(default_joint_pos[ji] + out_angle)
+        debug_stride = int(max(0, int(cfg.debug_every_n_frames)))
+        if (
+            debug_stride > 0
+            and frame_idx is not None
+            and int(frame_idx) >= 0
+            and int(frame_idx) % debug_stride == 0
+        ):
+            print(
+                "[IKDBG] f=%d side=%s mmd=(%.3f,%.3f,%.3f) target_root_local=(%.3f,%.3f,%.3f)"
+                % (
+                    int(frame_idx),
+                    side,
+                    float(mmd_pos[0]),
+                    float(mmd_pos[1]),
+                    float(mmd_pos[2]),
+                    float(target[0]),
+                    float(target[1]),
+                    float(target[2]),
+                )
+            )
+
+
 def _apply_knee_hinge_projection(
     frame_data: dict[str, dict],
     side: str,
@@ -846,6 +1169,12 @@ def build_joint_positions_from_frame(
     default_joint_pos: np.ndarray,
     knee_hinge_projection: bool = True,
     enable_hand: bool = True,
+    foot_ik_cfg: FootIkConfig | None = None,
+    foot_ik_state: FootIkState | None = None,
+    foot_ik_frame_idx: int | None = None,
+    foot_ik_root_pos_world: tuple[float, float, float] | None = None,
+    foot_ik_root_quat_wxyz: list[float] | None = None,
+    foot_ik_viz_cfg: FootIkVizConfig | None = None,
 ) -> np.ndarray:
     """
     从一帧的骨骼数据构建 G1 关节位置数组。
@@ -873,6 +1202,18 @@ def build_joint_positions_from_frame(
         angle = get_g1_angle_from_frame(jname, source_frame_data)
         if angle is not None:
             result[i] = default_joint_pos[i] + angle
+    _apply_foot_ik_override_to_result(
+        result,
+        source_frame_data,
+        joint_names,
+        default_joint_pos,
+        foot_ik_cfg,
+        foot_ik_state,
+        frame_idx=foot_ik_frame_idx,
+        foot_ik_root_pos_world=foot_ik_root_pos_world,
+        foot_ik_root_quat_wxyz=foot_ik_root_quat_wxyz,
+        foot_ik_viz_cfg=foot_ik_viz_cfg,
+    )
     return result
 
 

@@ -26,9 +26,10 @@ from robot_mmd.train_workflow.ui.retargeting_tune import (
     RETARGET_TUNE_WINDOW_TITLE,
     build_retarget_tune_window,
 )
+from robot_mmd.train_workflow.utils.audio_util import DEFAULT_VOLUME
 
 WINDOW_TITLE = "G1 Joint Mapping"
-_AUTO_OPEN = False
+_AUTO_OPEN = True
 
 # 外部注入：用于在 UI 中显示“当前环境下的关节值（度制）”
 # 返回值: dict[joint_name] = angle_deg；膝/肘可含 ``__knee_mmd`` / ``__elbow_mmd`` 分解说明字符串
@@ -60,12 +61,21 @@ _root_quat_rpy_setter: Callable[
     [tuple[float, float, float], tuple[int, int, int]], None
 ] | None = None
 _root_rot_bone_name_provider: Callable[[], str] | None = None
+_foot_ik_provider: Callable[[], dict[str, Any]] | None = None
+_foot_ik_setter: Callable[[dict[str, Any]], None] | None = None
+_foot_ik_viz_provider: Callable[[], dict[str, Any]] | None = None
+_foot_ik_viz_setter: Callable[[dict[str, Any]], None] | None = None
+_audio_volume_provider: Callable[[], float] | None = None
+_audio_volume_setter: Callable[[float], None] | None = None
 
 # True while refresh assigns scrub IntField from sim; blocks value_changed -> seek storm
 _scrub_sync_suppress_seek: bool = False
 _root_quat_sync_suppress_set: bool = False
 _pd_drive_sync_suppress_set: bool = False
 _z_offset_sync_suppress_set: bool = False
+_foot_ik_sync_suppress_set: bool = False
+_foot_ik_viz_sync_suppress_set: bool = False
+_audio_volume_sync_suppress_set: bool = False
 
 # 映射表被用户修改后通知主循环（例如在非播放状态下按新映射重算当前姿势）
 _mapping_changed_cb: Callable[[], None] | None = None
@@ -172,6 +182,36 @@ def set_root_rot_bone_name_provider(provider: Callable[[], str] | None) -> None:
     """Active CSV bone name used for root rotation (display only)."""
     global _root_rot_bone_name_provider
     _root_rot_bone_name_provider = provider
+
+
+def set_foot_ik_callbacks(
+    provider: Callable[[], dict[str, Any]] | None,
+    setter: Callable[[dict[str, Any]], None] | None,
+) -> None:
+    """Set Foot IK config callbacks for mapping UI tuning controls."""
+    global _foot_ik_provider, _foot_ik_setter
+    _foot_ik_provider = provider
+    _foot_ik_setter = setter
+
+
+def set_foot_ik_viz_callbacks(
+    provider: Callable[[], dict[str, Any]] | None,
+    setter: Callable[[dict[str, Any]], None] | None,
+) -> None:
+    """Set red-sphere MMD->Isaac axis map callbacks (independent of robot leg IK)."""
+    global _foot_ik_viz_provider, _foot_ik_viz_setter
+    _foot_ik_viz_provider = provider
+    _foot_ik_viz_setter = setter
+
+
+def set_audio_volume_callbacks(
+    provider: Callable[[], float] | None,
+    setter: Callable[[float], None] | None,
+) -> None:
+    """Set WAV playback volume callbacks for the mapping UI slider (0.0–1.0)."""
+    global _audio_volume_provider, _audio_volume_setter
+    _audio_volume_provider = provider
+    _audio_volume_setter = setter
 
 
 def set_mapping_changed_callback(cb: Callable[[], None] | None) -> None:
@@ -465,6 +505,54 @@ def _build_mapping_window(ui):
 
         pd_drive_model = ui.SimpleBoolModel(False)
         z_offset_enable_model = ui.SimpleBoolModel(False)
+        audio_volume_model = ui.SimpleFloatModel(float(DEFAULT_VOLUME))
+        foot_ik_enable_model = ui.SimpleBoolModel(False)
+        foot_ik_scale_model = ui.SimpleFloatModel(1.0)
+        foot_ik_weight_model = ui.SimpleFloatModel(1.0)
+        foot_ik_reach_model = ui.SimpleFloatModel(0.985)
+        foot_ik_axis_idx_models = (
+            ui.SimpleIntModel(0),
+            ui.SimpleIntModel(2),
+            ui.SimpleIntModel(1),
+        )
+        foot_ik_axis_sign_models = (
+            ui.SimpleFloatModel(-1.0),
+            ui.SimpleFloatModel(-1.0),
+            ui.SimpleFloatModel(1.0),
+        )
+        foot_ik_left_ref_models = (
+            ui.SimpleFloatModel(0.0),
+            ui.SimpleFloatModel(0.095),
+            ui.SimpleFloatModel(-0.42),
+        )
+        foot_ik_right_ref_models = (
+            ui.SimpleFloatModel(0.0),
+            ui.SimpleFloatModel(-0.095),
+            ui.SimpleFloatModel(-0.42),
+        )
+        foot_ik_debug_every_model = ui.SimpleIntModel(0)
+        sphere_map_scale_model = ui.SimpleFloatModel(1.0)
+        sphere_map_axis_idx_models = (
+            ui.SimpleIntModel(0),
+            ui.SimpleIntModel(1),
+            ui.SimpleIntModel(2),
+        )
+        sphere_map_axis_sign_models = (
+            ui.SimpleFloatModel(-1.0),
+            ui.SimpleFloatModel(-1.0),
+            ui.SimpleFloatModel(1.0),
+        )
+        sphere_map_left_ref_origin_models = (
+            ui.SimpleFloatModel(-0.15),
+            ui.SimpleFloatModel(-0.15),
+            ui.SimpleFloatModel(0.0),
+        )
+        sphere_map_right_ref_origin_models = (
+            ui.SimpleFloatModel(0.15),
+            ui.SimpleFloatModel(-0.15),
+            ui.SimpleFloatModel(0.0),
+        )
+
         def _dance_entries() -> list[DanceUiEntry]:
             if _dance_entries_provider is None:
                 return []
@@ -485,12 +573,14 @@ def _build_mapping_window(ui):
 
         dance_entries = _dance_entries()
         dance_combo_labels = [lbl for _k, lbl in dance_entries] if dance_entries else ["(none)"]
-        dance_combo = ui.ComboBox(0, *dance_combo_labels, width=360, height=24)
+        dance_combo = None
 
         def _selected_dance_key() -> str | None:
             entries = _dance_entries()
             if not entries:
                 return None
+            if dance_combo is None:
+                return entries[0][0]
             try:
                 idx = int(dance_combo.model.get_item_value_model().as_int)
             except Exception:
@@ -520,13 +610,7 @@ def _build_mapping_window(ui):
             except Exception:
                 pass
 
-        btn_gen_z_editted = ui.Button(
-            "Gen Z_edited",
-            width=96,
-            height=24,
-            clicked_fn=_on_gen_z_editted_click,
-        )
-        btn_gen_z_editted.visible = False
+        btn_gen_z_editted = None
 
         def _on_pd_drive_changed(m: Any) -> None:
             if _pd_drive_sync_suppress_set:
@@ -545,6 +629,16 @@ def _build_mapping_window(ui):
                 return
             try:
                 _z_offset_enable_setter(bool(m.get_value_as_bool()))
+            except Exception:
+                pass
+
+        def _on_audio_volume_changed(m: Any) -> None:
+            if _audio_volume_sync_suppress_set:
+                return
+            if _audio_volume_setter is None:
+                return
+            try:
+                _audio_volume_setter(float(m.get_value_as_float()))
             except Exception:
                 pass
 
@@ -570,15 +664,93 @@ def _build_mapping_window(ui):
             except Exception:
                 pass
 
+        def _push_foot_ik() -> None:
+            if _foot_ik_sync_suppress_set:
+                return
+            if _foot_ik_setter is None:
+                return
+            try:
+                payload = {
+                    "enable": bool(foot_ik_enable_model.get_value_as_bool()),
+                    "scale": float(foot_ik_scale_model.get_value_as_float()),
+                    "weight": float(foot_ik_weight_model.get_value_as_float()),
+                    "reach": float(foot_ik_reach_model.get_value_as_float()),
+                    "axis_idx": tuple(
+                        max(0, min(2, int(m.get_value_as_int()))) for m in foot_ik_axis_idx_models
+                    ),
+                    "axis_sign": tuple(float(m.get_value_as_float()) for m in foot_ik_axis_sign_models),
+                    "left_ref": tuple(float(m.get_value_as_float()) for m in foot_ik_left_ref_models),
+                    "right_ref": tuple(float(m.get_value_as_float()) for m in foot_ik_right_ref_models),
+                    "debug_every": max(0, int(foot_ik_debug_every_model.get_value_as_int())),
+                }
+                _foot_ik_setter(payload)
+                _notify_mapping_changed()
+            except Exception:
+                pass
+
+        def _push_sphere_map() -> None:
+            if _foot_ik_viz_sync_suppress_set:
+                return
+            if _foot_ik_viz_setter is None:
+                return
+            try:
+                payload = {
+                    "scale": float(sphere_map_scale_model.get_value_as_float()),
+                    "axis_idx": tuple(
+                        max(0, min(2, int(m.get_value_as_int()))) for m in sphere_map_axis_idx_models
+                    ),
+                    "axis_sign": tuple(
+                        float(m.get_value_as_float()) for m in sphere_map_axis_sign_models
+                    ),
+                    "left_ref_origin": tuple(
+                        float(m.get_value_as_float()) for m in sphere_map_left_ref_origin_models
+                    ),
+                    "right_ref_origin": tuple(
+                        float(m.get_value_as_float()) for m in sphere_map_right_ref_origin_models
+                    ),
+                }
+                _foot_ik_viz_setter(payload)
+                _notify_mapping_changed()
+            except Exception:
+                pass
+
         pd_drive_model.add_value_changed_fn(_on_pd_drive_changed)
         z_offset_enable_model.add_value_changed_fn(_on_z_offset_enable_changed)
+        audio_volume_model.add_value_changed_fn(_on_audio_volume_changed)
+        foot_ik_enable_model.add_value_changed_fn(lambda _m: _push_foot_ik())
+        foot_ik_scale_model.add_value_changed_fn(lambda _m: _push_foot_ik())
+        foot_ik_weight_model.add_value_changed_fn(lambda _m: _push_foot_ik())
+        foot_ik_reach_model.add_value_changed_fn(lambda _m: _push_foot_ik())
+        for _m in foot_ik_axis_idx_models:
+            _m.add_value_changed_fn(lambda _x: _push_foot_ik())
+        for _m in foot_ik_axis_sign_models:
+            _m.add_value_changed_fn(lambda _x: _push_foot_ik())
+        for _m in foot_ik_left_ref_models:
+            _m.add_value_changed_fn(lambda _x: _push_foot_ik())
+        for _m in foot_ik_right_ref_models:
+            _m.add_value_changed_fn(lambda _x: _push_foot_ik())
+        foot_ik_debug_every_model.add_value_changed_fn(lambda _m: _push_foot_ik())
+        sphere_map_scale_model.add_value_changed_fn(lambda _m: _push_sphere_map())
+        for _m in sphere_map_axis_idx_models:
+            _m.add_value_changed_fn(lambda _x: _push_sphere_map())
+        for _m in sphere_map_axis_sign_models:
+            _m.add_value_changed_fn(lambda _x: _push_sphere_map())
+        for _m in sphere_map_left_ref_origin_models:
+            _m.add_value_changed_fn(lambda _x: _push_sphere_map())
+        for _m in sphere_map_right_ref_origin_models:
+            _m.add_value_changed_fn(lambda _x: _push_sphere_map())
 
         with ui.VStack(spacing=4):
             with ui.HStack(height=28):
                 ui.Label("Dance File", width=74, height=22)
                 ui.Spacer(width=6)
-                dance_combo
-                btn_gen_z_editted
+                dance_combo = ui.ComboBox(0, *dance_combo_labels, width=200, height=24)
+                btn_gen_z_editted = ui.Button(
+                    "Gen Z_edited",
+                    width=96,
+                    height=24,
+                    clicked_fn=_on_gen_z_editted_click,
+                )
                 ui.Button("Play CSV", width=72, height=24, clicked_fn=lambda: _request_selected_dance(False))
                 ui.Button("Play H5", width=62, height=24, clicked_fn=lambda: _request_selected_dance(True))
             with ui.HStack(height=28):
@@ -590,6 +762,11 @@ def _build_mapping_window(ui):
                 btn_next = ui.Button("Next", width=42, height=24, clicked_fn=_on_next_frame_click)
                 btn_pause = ui.Button("Pause", width=56, height=24, clicked_fn=_on_pause_click)
                 btn_resume = ui.Button("Resume", width=58, height=24, clicked_fn=_on_resume_click)
+            with ui.HStack(height=28):
+                ui.Label("Audio volume", width=88, height=22)
+                ui.FloatField(model=audio_volume_model, width=48, height=22)
+                ui.FloatSlider(model=audio_volume_model, min=0.0, max=1.0, width=160, height=22)
+                ui.Spacer()
         btn_prev.visible = False
         btn_next.visible = False
         btn_pause.visible = False
@@ -624,6 +801,102 @@ def _build_mapping_window(ui):
                 with ui.HStack(height=28):
                     ui.Label("Z_offset_enable", width=118)
                     ui.CheckBox(model=z_offset_enable_model, width=24, height=22)
+                    ui.Spacer()
+                with ui.HStack(height=28):
+                    ui.Label("Robot Leg IK", width=118)
+                    ui.CheckBox(model=foot_ik_enable_model, width=24, height=22)
+                    ui.Spacer()
+                with ui.HStack(height=28):
+                    ui.Label("IK scale", width=118)
+                    ui.FloatField(model=foot_ik_scale_model, width=64)
+                    ui.FloatSlider(model=foot_ik_scale_model, min=0.0, max=2.0, width=140)
+                    ui.Label("weight", width=48)
+                    ui.FloatField(model=foot_ik_weight_model, width=56)
+                    ui.FloatSlider(model=foot_ik_weight_model, min=0.0, max=1.0, width=96)
+                    ui.Spacer()
+                with ui.HStack(height=28):
+                    ui.Label("IK reach", width=118)
+                    ui.FloatField(model=foot_ik_reach_model, width=64)
+                    ui.FloatSlider(model=foot_ik_reach_model, min=0.6, max=1.2, width=140)
+                    ui.Label("dbgN", width=48)
+                    ui.IntField(model=foot_ik_debug_every_model, width=56)
+                    ui.Spacer()
+                with ui.HStack(height=28):
+                    ui.Label("IK axis idx", width=118)
+                    for _m in foot_ik_axis_idx_models:
+                        ui.IntField(model=_m, width=32)
+                    ui.Spacer(width=10)
+                    ui.Label("sign", width=36)
+                    for _m in foot_ik_axis_sign_models:
+                        ui.FloatField(model=_m, width=46)
+                    ui.Spacer()
+                with ui.HStack(height=28):
+                    ui.Label("L ref xyz", width=118)
+                    for _m in foot_ik_left_ref_models:
+                        ui.FloatField(model=_m, width=62)
+                    ui.Spacer()
+                with ui.HStack(height=28):
+                    ui.Label("R ref xyz", width=118)
+                    for _m in foot_ik_right_ref_models:
+                        ui.FloatField(model=_m, width=62)
+                    ui.Spacer()
+                ui.Label(
+                    "--- Red Sphere Map ---",
+                    height=22,
+                    style={"font_size": 15, "font_style": "bold", "color": 0xFFFFFF00},
+                )
+                with ui.HStack(height=28):
+                    ui.Label("L ref origin", width=118)
+                    for _m in sphere_map_left_ref_origin_models:
+                        ui.FloatField(model=_m, width=62)
+                    ui.Spacer()
+                with ui.HStack(height=28):
+                    ui.Label("R ref origin", width=118)
+                    for _m in sphere_map_right_ref_origin_models:
+                        ui.FloatField(model=_m, width=62)
+                    ui.Spacer()
+                with ui.HStack(height=28):
+                    ui.Label("Sphere scale", width=118)
+                    ui.FloatField(model=sphere_map_scale_model, width=64)
+                    ui.FloatSlider(model=sphere_map_scale_model, min=0.0, max=2.0, width=140)
+                    ui.Spacer()
+                with ui.HStack(height=28):
+                    ui.Label("Sphere idx", width=118)
+                    for _m in sphere_map_axis_idx_models:
+                        ui.IntField(model=_m, width=32)
+                    ui.Spacer(width=10)
+                    ui.Label("sign", width=36)
+                    for _m in sphere_map_axis_sign_models:
+                        ui.FloatField(model=_m, width=46)
+                    ui.Spacer()
+                ui.Label(
+                    "Panel local z is NOT Isaac height; sphere z comes from rotated MMD Y.",
+                    height=20,
+                    style={"font_size": 12, "color": 0xFFAAAAAA},
+                )
+                with ui.HStack(height=22):
+                    ui.Label("L panel local", width=118)
+                    l_foot_local_label = ui.Label("x: -  y: -  z: -", width=300)
+                    ui.Spacer()
+                with ui.HStack(height=22):
+                    ui.Label("L sphere", width=118)
+                    l_foot_xyz_label = ui.Label("x: -  y: -  z: -", width=300)
+                    ui.Spacer()
+                with ui.HStack(height=22):
+                    ui.Label("R panel local", width=118)
+                    r_foot_local_label = ui.Label("x: -  y: -  z: -", width=300)
+                    ui.Spacer()
+                with ui.HStack(height=22):
+                    ui.Label("R sphere", width=118)
+                    r_foot_xyz_label = ui.Label("x: -  y: -  z: -", width=300)
+                    ui.Spacer()
+                with ui.HStack(height=22):
+                    ui.Label("L toe sphere", width=118)
+                    l_toe_xyz_label = ui.Label("x: -  y: -  z: -", width=300)
+                    ui.Spacer()
+                with ui.HStack(height=22):
+                    ui.Label("R toe sphere", width=118)
+                    r_toe_xyz_label = ui.Label("x: -  y: -  z: -", width=300)
                     ui.Spacer()
                 ui.Spacer(height=4)
 
@@ -794,6 +1067,7 @@ def _build_mapping_window(ui):
     transport_refs = {
         "scrub_model": scrub_model,
         "pd_drive_model": pd_drive_model,
+        "audio_volume_model": audio_volume_model,
         "z_offset_enable_model": z_offset_enable_model,
         "max_label": max_frame_label,
         "btn_prev": btn_prev,
@@ -812,6 +1086,26 @@ def _build_mapping_window(ui):
         "root_rot_bone_label": root_rot_bone_label,
         "dance_combo": dance_combo,
         "btn_gen_z_editted": btn_gen_z_editted,
+        "foot_ik_enable_model": foot_ik_enable_model,
+        "foot_ik_scale_model": foot_ik_scale_model,
+        "foot_ik_weight_model": foot_ik_weight_model,
+        "foot_ik_reach_model": foot_ik_reach_model,
+        "foot_ik_axis_idx_models": foot_ik_axis_idx_models,
+        "foot_ik_axis_sign_models": foot_ik_axis_sign_models,
+        "foot_ik_left_ref_models": foot_ik_left_ref_models,
+        "foot_ik_right_ref_models": foot_ik_right_ref_models,
+        "foot_ik_debug_every_model": foot_ik_debug_every_model,
+        "sphere_map_scale_model": sphere_map_scale_model,
+        "sphere_map_axis_idx_models": sphere_map_axis_idx_models,
+        "sphere_map_axis_sign_models": sphere_map_axis_sign_models,
+        "sphere_map_left_ref_origin_models": sphere_map_left_ref_origin_models,
+        "sphere_map_right_ref_origin_models": sphere_map_right_ref_origin_models,
+        "foot_ik_l_local_label": l_foot_local_label,
+        "foot_ik_r_local_label": r_foot_local_label,
+        "foot_ik_l_xyz_label": l_foot_xyz_label,
+        "foot_ik_r_xyz_label": r_foot_xyz_label,
+        "toe_ik_l_xyz_label": l_toe_xyz_label,
+        "toe_ik_r_xyz_label": r_toe_xyz_label,
     }
     return joint_models, playback_title_label, transport_refs
 
@@ -829,7 +1123,8 @@ async def _mapping_ui_refresh_loop() -> None:
     import omni.kit.app
 
     global _scrub_sync_suppress_seek, _root_quat_sync_suppress_set, _pd_drive_sync_suppress_set
-    global _z_offset_sync_suppress_set
+    global _z_offset_sync_suppress_set, _foot_ik_sync_suppress_set, _foot_ik_viz_sync_suppress_set
+    global _audio_volume_sync_suppress_set
     while True:
         await omni.kit.app.get_app().next_update_async()
         if _joint_models_ref is None and _retarget_tune_refs is None:
@@ -881,6 +1176,20 @@ async def _mapping_ui_refresh_loop() -> None:
                     pass
                 finally:
                     _z_offset_sync_suppress_set = False
+            if _audio_volume_provider is not None:
+                try:
+                    vol = float(_audio_volume_provider())
+                except Exception:
+                    vol = float(DEFAULT_VOLUME)
+                _audio_volume_sync_suppress_set = True
+                try:
+                    cur = float(tr["audio_volume_model"].get_value_as_float())
+                    if abs(cur - vol) > 1e-4:
+                        tr["audio_volume_model"].set_value(vol)
+                except Exception:
+                    pass
+                finally:
+                    _audio_volume_sync_suppress_set = False
             combo = tr.get("dance_combo")
             btn_z = tr.get("btn_gen_z_editted")
             if combo is not None and btn_z is not None and _dance_entries_provider is not None:
@@ -967,6 +1276,64 @@ async def _mapping_ui_refresh_loop() -> None:
                     pass
                 finally:
                     _root_quat_sync_suppress_set = False
+            if _foot_ik_provider is not None:
+                try:
+                    fk = _foot_ik_provider() or {}
+                except Exception:
+                    fk = {}
+                _foot_ik_sync_suppress_set = True
+                try:
+                    if "foot_ik_enable_model" in tr:
+                        tr["foot_ik_enable_model"].set_value(bool(fk.get("enable", False)))
+                    if "foot_ik_scale_model" in tr:
+                        tr["foot_ik_scale_model"].set_value(float(fk.get("scale", 1.0)))
+                    if "foot_ik_weight_model" in tr:
+                        tr["foot_ik_weight_model"].set_value(float(fk.get("weight", 1.0)))
+                    if "foot_ik_reach_model" in tr:
+                        tr["foot_ik_reach_model"].set_value(float(fk.get("reach", 0.985)))
+                    axis_idx = tuple(fk.get("axis_idx", (0, 2, 1)))
+                    axis_sign = tuple(fk.get("axis_sign", (-1.0, -1.0, 1.0)))
+                    lref = tuple(fk.get("left_ref", (0.0, 0.095, -0.42)))
+                    rref = tuple(fk.get("right_ref", (0.0, -0.095, -0.42)))
+                    for _i, _m in enumerate(tr.get("foot_ik_axis_idx_models", ())):
+                        _m.set_value(int(axis_idx[_i]))
+                    for _i, _m in enumerate(tr.get("foot_ik_axis_sign_models", ())):
+                        _m.set_value(float(axis_sign[_i]))
+                    for _i, _m in enumerate(tr.get("foot_ik_left_ref_models", ())):
+                        _m.set_value(float(lref[_i]))
+                    for _i, _m in enumerate(tr.get("foot_ik_right_ref_models", ())):
+                        _m.set_value(float(rref[_i]))
+                    if "foot_ik_debug_every_model" in tr:
+                        tr["foot_ik_debug_every_model"].set_value(int(fk.get("debug_every", 0)))
+                except Exception:
+                    pass
+                finally:
+                    _foot_ik_sync_suppress_set = False
+            if _foot_ik_viz_provider is not None:
+                try:
+                    sv = _foot_ik_viz_provider() or {}
+                except Exception:
+                    sv = {}
+                _foot_ik_viz_sync_suppress_set = True
+                try:
+                    if "sphere_map_scale_model" in tr:
+                        tr["sphere_map_scale_model"].set_value(float(sv.get("scale", 1.0)))
+                    sidx = tuple(sv.get("axis_idx", (0, 1, 2)))
+                    ssig = tuple(sv.get("axis_sign", (-1.0, -1.0, 1.0)))
+                    lorig = tuple(sv.get("left_ref_origin", (-0.15, -0.15, 0.0)))
+                    rorig = tuple(sv.get("right_ref_origin", (0.15, -0.15, 0.0)))
+                    for _i, _m in enumerate(tr.get("sphere_map_axis_idx_models", ())):
+                        _m.set_value(int(sidx[_i]))
+                    for _i, _m in enumerate(tr.get("sphere_map_axis_sign_models", ())):
+                        _m.set_value(float(ssig[_i]))
+                    for _i, _m in enumerate(tr.get("sphere_map_left_ref_origin_models", ())):
+                        _m.set_value(float(lorig[_i]))
+                    for _i, _m in enumerate(tr.get("sphere_map_right_ref_origin_models", ())):
+                        _m.set_value(float(rorig[_i]))
+                except Exception:
+                    pass
+                finally:
+                    _foot_ik_viz_sync_suppress_set = False
 
             if _root_rot_bone_name_provider is not None:
                 try:
@@ -994,6 +1361,27 @@ async def _mapping_ui_refresh_loop() -> None:
                         _lw.text = f"{float(_vv):.2f}deg"
                     except (TypeError, ValueError):
                         _lw.text = "N/A"
+            for _lbl_key, _xk, _yk, _zk in [
+                ("foot_ik_l_local_label", "__foot_ik_l_local_x", "__foot_ik_l_local_y", "__foot_ik_l_local_z"),
+                ("foot_ik_r_local_label", "__foot_ik_r_local_x", "__foot_ik_r_local_y", "__foot_ik_r_local_z"),
+                ("foot_ik_l_xyz_label", "__foot_ik_l_x", "__foot_ik_l_y", "__foot_ik_l_z"),
+                ("foot_ik_r_xyz_label", "__foot_ik_r_x", "__foot_ik_r_y", "__foot_ik_r_z"),
+                ("toe_ik_l_xyz_label", "__toe_ik_l_x", "__toe_ik_l_y", "__toe_ik_l_z"),
+                ("toe_ik_r_xyz_label", "__toe_ik_r_x", "__toe_ik_r_y", "__toe_ik_r_z"),
+            ]:
+                _lbl = tr.get(_lbl_key)
+                if _lbl is None:
+                    continue
+                _xv = values.get(_xk) if isinstance(values, dict) else None
+                _yv = values.get(_yk) if isinstance(values, dict) else None
+                _zv = values.get(_zk) if isinstance(values, dict) else None
+                if _xv is None or _yv is None or _zv is None:
+                    _lbl.text = "x: -  y: -  z: -"
+                else:
+                    try:
+                        _lbl.text = f"x: {float(_xv):+.3f}  y: {float(_yv):+.3f}  z: {float(_zv):+.3f}"
+                    except Exception:
+                        _lbl.text = "x: -  y: -  z: -"
 
         rr = _retarget_tune_refs
         if rr is not None and isinstance(values, dict):
@@ -1040,6 +1428,83 @@ async def _mapping_ui_refresh_loop() -> None:
                 value_label.text = f"{float(v):.2f}deg"
 
 
+_PROPERTY_DOCK_TARGETS = ("Property", "IsaacLab")
+_PROPERTY_DOCK_RETRIES = 120
+
+
+def _schedule_property_tab_dock(window: Any, window_title: str) -> None:
+    """Dock window into Property tab group (sync deferred + async retry)."""
+    try:
+        import omni.ui as ui
+    except ImportError:
+        return
+
+    try:
+        ui.Workspace.show_window("Property", True)
+    except Exception:
+        pass
+    try:
+        window.deferred_dock_in("Property", ui.DockPolicy.CURRENT_WINDOW_IS_ACTIVE)
+    except Exception:
+        pass
+    asyncio.ensure_future(_dock_window_to_property_tab(window, window_title))
+
+
+async def _dock_window_to_property_tab(window: Any, window_title: str) -> None:
+    """Retry docking until the window joins the Property / IsaacLab tab group."""
+    try:
+        import omni.ui as ui
+        import omni.kit.app
+    except ImportError:
+        return
+
+    app = omni.kit.app.get_app()
+
+    for _ in range(30):
+        if ui.Workspace.get_window(window_title):
+            break
+        await app.next_update_async()
+
+    for _ in range(_PROPERTY_DOCK_RETRIES):
+        target_handle = None
+        target_name = None
+        for name in _PROPERTY_DOCK_TARGETS:
+            handle = ui.Workspace.get_window(name)
+            if handle is not None:
+                target_handle = handle
+                target_name = name
+                break
+
+        if target_handle is not None:
+            try:
+                window.dock_in(target_handle, ui.DockPosition.SAME, 1.0)
+            except Exception:
+                pass
+            try:
+                window.dock_in_window(target_name, ui.DockPosition.SAME, 1.0)
+            except Exception:
+                pass
+            custom_handle = ui.Workspace.get_window(window_title)
+            if custom_handle is not None:
+                try:
+                    custom_handle.dock_in(target_handle, ui.DockPosition.SAME, 1.0)
+                    custom_handle.focus()
+                except Exception:
+                    pass
+
+            await app.next_update_async()
+            if window.docked or (custom_handle is not None and custom_handle.docked):
+                print(f"[INFO] Docked '{window_title}' into '{target_name}' tab group.")
+                return
+
+        await app.next_update_async()
+
+    print(
+        f"[WARN] Failed to dock '{window_title}' into Property/IsaacLab tab group "
+        "(window stays floating; drag it manually or check Property panel is visible)."
+    )
+
+
 def create_mapping_ui():
     """创建映射编辑窗口，注册到 Window 菜单。"""
     try:
@@ -1054,11 +1519,17 @@ def create_mapping_ui():
 
     def _create_window():
         global _joint_models_ref, _playback_title_ref, _playback_transport_ref
-        window = ui.Window(WINDOW_TITLE, width=620, height=720)
+        window = ui.Window(
+            WINDOW_TITLE,
+            width=620,
+            height=720,
+            dock_preference=ui.DockPreference.MAIN,
+        )
         with window.frame:
             _joint_models_ref, _playback_title_ref, _playback_transport_ref = _build_mapping_window(ui)
         window.visible = True
         _window_ref.append(window)
+        _schedule_property_tab_dock(window, WINDOW_TITLE)
         return window
 
     def _on_menu_click():
@@ -1099,11 +1570,17 @@ def create_retarget_tune_ui():
 
     def _create_tune_window():
         global _retarget_tune_refs
-        window = ui.Window(RETARGET_TUNE_WINDOW_TITLE, width=460, height=540)
+        window = ui.Window(
+            RETARGET_TUNE_WINDOW_TITLE,
+            width=460,
+            height=540,
+            dock_preference=ui.DockPreference.MAIN,
+        )
         with window.frame:
             _retarget_tune_refs = build_retarget_tune_window(ui, _notify_mapping_changed)
         window.visible = True
         _tune_window_ref.append(window)
+        _schedule_property_tab_dock(window, RETARGET_TUNE_WINDOW_TITLE)
         return window
 
     def _on_tune_menu_click():

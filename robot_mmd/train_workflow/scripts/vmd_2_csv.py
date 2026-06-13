@@ -146,6 +146,10 @@ _EXPORT_BONE_WHITELIST: set[str] = {
     "右手首", "左手首", "右手先", "左手先",
     "右足", "左足", "右ひざ", "左ひざ", "右足首", "左足首",
 }
+_EXPORT_FOOT_IK_PREFIXES: tuple[str, ...] = (
+    "右足IK", "左足IK", "右足ＩＫ", "左足ＩＫ",
+    "右つま先IK", "左つま先IK", "右つま先ＩＫ", "左つま先ＩＫ",
+)
 _EXPORT_ARM_PREFIXES: tuple[str, ...] = (
     "右腕捩", "左腕捩", "右手捩", "左手捩",  # 腕捩/手捩 及其 1,2,3,先 等变体
 )
@@ -159,7 +163,10 @@ def _should_export_bone(bone_name: str) -> bool:
     """判断骨骼是否在导出白名单内"""
     if bone_name in _EXPORT_BONE_WHITELIST:
         return True
-    return any(bone_name.startswith(p) for p in _EXPORT_ARM_PREFIXES + _EXPORT_FINGER_PREFIXES)
+    return any(
+        bone_name.startswith(p)
+        for p in _EXPORT_FOOT_IK_PREFIXES + _EXPORT_ARM_PREFIXES + _EXPORT_FINGER_PREFIXES
+    )
 
 
 def export_to_csv(

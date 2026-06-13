@@ -11,6 +11,7 @@ from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
     MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
 )
 from robot_mmd.train_workflow.scripts.vmd_2_csv import read_motion_and_export
+from robot_mmd.train_workflow.utils.csv_motion_loader import FootIkConfig
 from robot_mmd.train_workflow.utils.hdf5_motion import (
     compile_csv_motion_to_hdf5_motion,
     write_hdf5_motion,
@@ -141,6 +142,7 @@ def _compile_csv_to_h5(
     groove_pos_to_world: float,
     mmd_center_to_root_offset_local_xyz: tuple[float, float, float],
     knee_hinge_projection: bool,
+    foot_ik_cfg: FootIkConfig | None = None,
 ) -> None:
     motion = compile_csv_motion_to_hdf5_motion(
         csv_path,
@@ -151,6 +153,7 @@ def _compile_csv_to_h5(
         mmd_center_to_root_offset_local_xyz=mmd_center_to_root_offset_local_xyz,
         root_quat_rpy_scale=tuple(MMD_ROOT_QUAT_RPY_SCALE_DEFAULT),
         root_quat_rpy_axis_idx=tuple(MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT),
+        foot_ik_cfg=foot_ik_cfg,
     )
     write_hdf5_motion(h5_path, motion)
 
@@ -163,6 +166,7 @@ def sync_dance_assets_from_vmd(
     groove_pos_to_world: float = 0.1,
     mmd_center_to_root_offset_local_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0),
     knee_hinge_projection: bool = True,
+    foot_ik_cfg: FootIkConfig | None = None,
 ) -> list[str]:
     """Ensure CSV/H5 siblings exist for each VMD; append keyless YAML entries.
 
@@ -198,6 +202,7 @@ def sync_dance_assets_from_vmd(
                     groove_pos_to_world=groove_pos_to_world,
                     mmd_center_to_root_offset_local_xyz=mmd_center_to_root_offset_local_xyz,
                     knee_hinge_projection=knee_hinge_projection,
+                    foot_ik_cfg=foot_ik_cfg,
                 )
             except Exception as exc:
                 print(f"[WARN] CSV -> H5 failed ({stem}): {exc}")

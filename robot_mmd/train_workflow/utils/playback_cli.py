@@ -86,6 +86,96 @@ def build_arg_parser(pose_dir: str) -> argparse.ArgumentParser:
         default=True,
         help="将 MMD ひざ的非铰链 swing 分量并回父骨(足)，由 hip 三轴吸收；默认开启",
     )
+    parser.add_argument(
+        "--mmd_foot_ik_enable",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="启用 VMD 足IK目标驱动腿部 IK 覆盖（默认开启）",
+    )
+    parser.add_argument(
+        "--mmd_foot_ik_scale",
+        type=float,
+        default=1.0,
+        help="足IK位移缩放（默认 1.0）",
+    )
+    parser.add_argument(
+        "--mmd_foot_ik_weight",
+        type=float,
+        default=1.0,
+        help="FK/IK 混合权重，0=纯FK，1=纯IK（默认 1.0）",
+    )
+    parser.add_argument(
+        "--mmd_foot_ik_max_reach_ratio",
+        type=float,
+        default=0.985,
+        help="IK 最远可达比例（相对 thigh+shin，默认 0.985）",
+    )
+    parser.add_argument(
+        "--mmd_foot_ik_axis_idx",
+        type=str,
+        default="0,2,1",
+        help="MMD->foot target 轴索引 x,y,z（逗号分隔，每项 0/1/2）",
+    )
+    parser.add_argument(
+        "--mmd_foot_ik_axis_sign",
+        type=str,
+        default="-1,-1,1",
+        help="MMD->foot target 轴符号 x,y,z（建议 ±1，逗号分隔）",
+    )
+    parser.add_argument(
+        "--mmd_foot_ik_axis_sign_pose",
+        type=str,
+        default="-1,1,1",
+        help="静态 pose 时的轴符号 x,y,z（逗号分隔）",
+    )
+    parser.add_argument(
+        "--mmd_foot_ik_left_ref_local",
+        type=str,
+        default="0.0,0.095,-0.42",
+        help="左脚参考点（root local，米）x,y,z",
+    )
+    parser.add_argument(
+        "--mmd_foot_ik_right_ref_local",
+        type=str,
+        default="0.0,-0.095,-0.42",
+        help="右脚参考点（root local，米）x,y,z",
+    )
+    parser.add_argument(
+        "--mmd_foot_ik_hip_offset_y",
+        type=float,
+        default=0.095,
+        help="髋关节左右偏置（米）",
+    )
+    parser.add_argument(
+        "--mmd_foot_ik_hip_offset_z",
+        type=float,
+        default=0.0,
+        help="髋关节高度偏置（米）",
+    )
+    parser.add_argument(
+        "--mmd_foot_ik_thigh_length",
+        type=float,
+        default=0.213,
+        help="大腿长度（米）",
+    )
+    parser.add_argument(
+        "--mmd_foot_ik_shin_length",
+        type=float,
+        default=0.213,
+        help="小腿长度（米）",
+    )
+    parser.add_argument(
+        "--mmd_foot_ik_hip_roll_gain",
+        type=float,
+        default=0.85,
+        help="侧向 hip roll 增益",
+    )
+    parser.add_argument(
+        "--mmd_foot_ik_debug_every",
+        type=int,
+        default=0,
+        help="每 N 帧打印 IK debug；0=关闭",
+    )
     for _flag, _default, _help in (
         ("--width", 1920, "视口/生成图像宽度（像素）；默认 1280"),
         ("--height", 1080, "视口/生成图像高度（像素）；默认 720"),

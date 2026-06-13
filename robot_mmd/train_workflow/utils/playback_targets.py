@@ -15,11 +15,14 @@ from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
 )
 from robot_mmd.train_workflow.retarget_unitreeG1 import euler_xyz_rad_waist_extrinsic
 from robot_mmd.train_workflow.utils.csv_motion_loader import (
+    FootIkConfig,
+    FootIkState,
     build_joint_positions_from_frame,
     get_frame_indices,
     interpolate_bone,
 )
 from robot_mmd.train_workflow.utils.hdf5_motion import Hdf5Motion, sample_hdf5_frame
+from robot_mmd.train_workflow.utils.mmd_fk import FootIkVizConfig, compute_mmd_foot_ik_viz_bundle
 from robot_mmd.train_workflow.utils.trans_util import (
     mmd_root_offset_quat_to_world,
     quat_from_waist_extrinsic_xyz,
@@ -72,6 +75,10 @@ def compute_action_for_frame(
     action_scale: float,
     knee_hinge_projection: bool = True,
     enable_hand: bool = True,
+    foot_ik_cfg: FootIkConfig | None = None,
+    foot_ik_state: FootIkState | None = None,
+    foot_ik_root_pos_world: tuple[float, float, float] | None = None,
+    foot_ik_root_quat_wxyz: list[float] | None = None,
 ) -> tuple[Any | None, dict[str, dict]]:
     """Interpolate one frame and return (action_delta, interpolated bone dict)."""
     frame_data: dict[str, dict] = {}
@@ -89,6 +96,11 @@ def compute_action_for_frame(
         default_joint_pos,
         knee_hinge_projection=knee_hinge_projection,
         enable_hand=enable_hand,
+        foot_ik_cfg=foot_ik_cfg,
+        foot_ik_state=foot_ik_state,
+        foot_ik_frame_idx=int(frame),
+        foot_ik_root_pos_world=foot_ik_root_pos_world,
+        foot_ik_root_quat_wxyz=foot_ik_root_quat_wxyz,
     )
     target_action = (target_pos - default_joint_pos) / action_scale
     return target_action.copy(), frame_data
@@ -169,45 +181,83 @@ def _ensure_root_anchor(
         state.root_quat_wxyz = root_quat_from_state_row(root_state[0])
 
 
-def compute_targets_for_motion_frame(
+def _update_foot_ik_mmd_viz_world(
+    foot_ik_state: FootIkState | None,
+    frame_data: dict[str, dict],
+    groove_pos_to_world: float,
+    frames: Any,
+    foot_ik_viz_cfg: FootIkVizConfig | None = None,
+) -> None:
+    """Compute MMD foot IK FK positions in absolute Isaac world (debug spheres)."""
+    if foot_ik_state is None:
+        return
+    foot_ik_state.last_left_foot_mmd_viz_world = None
+    foot_ik_state.last_right_foot_mmd_viz_world = None
+    foot_ik_state.last_left_toe_mmd_viz_world = None
+    foot_ik_state.last_right_toe_mmd_viz_world = None
+    foot_ik_state.last_left_foot_mmd_local_m = None
+    foot_ik_state.last_right_foot_mmd_local_m = None
+    foot_ik_state.last_left_foot_mmd_fk_world_m = None
+    foot_ik_state.last_right_foot_mmd_fk_world_m = None
+    foot_ik_state.last_left_toe_mmd_local_m = None
+    foot_ik_state.last_right_toe_mmd_local_m = None
+    foot_ik_state.last_left_toe_mmd_fk_world_m = None
+    foot_ik_state.last_right_toe_mmd_fk_world_m = None
+    if not frame_data:
+        return
+    try:
+        bundle = compute_mmd_foot_ik_viz_bundle(
+            frame_data,
+            pos_scale=float(groove_pos_to_world),
+            is_pose=motion_is_static_pose(frames),
+            viz_cfg=foot_ik_viz_cfg,
+        )
+    except Exception:
+        return
+
+    def _apply(prefix: str, block: dict[str, tuple[float, float, float] | None]) -> None:
+        setattr(foot_ik_state, f"last_{prefix}_mmd_local_m", block.get("local_m"))
+        setattr(foot_ik_state, f"last_{prefix}_mmd_fk_world_m", block.get("fk_world_m"))
+        setattr(foot_ik_state, f"last_{prefix}_mmd_viz_world", block.get("isaac_world_m"))
+
+    _apply("left_foot", bundle["left"])
+    _apply("right_foot", bundle["right"])
+    _apply("left_toe", bundle["left_toe"])
+    _apply("right_toe", bundle["right_toe"])
+
+
+def _interp_frame_data(
     frame: int,
     frames: Any,
     bone_frame_lists: dict[str, list[int]],
     all_bones: set[str],
-    joint_names: list[str],
-    default_joint_pos: Any,
-    action_scale: float,
+) -> dict[str, dict]:
+    frame_data: dict[str, dict] = {}
+    for bone in all_bones:
+        d = interpolate_bone(frame, bone, frames, bone_frame_lists.get(bone))
+        if d is not None:
+            frame_data[bone] = d
+    return frame_data
+
+
+def _compute_csv_root_targets(
+    frame: int,
+    frames: Any,
+    bone_frame_lists: dict[str, list[int]],
     groove_pos_to_world: float,
     robot: Any,
     state: MotionRootTrackState,
     ui_debug: PlaybackUiDebugState,
-    root_snapshot_row: Any | None = None,
-    knee_hinge_projection: bool = True,
-    mmd_center_to_root_offset_local_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0),
-    root_quat_rpy_scale: tuple[float, float, float] = MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
-    root_quat_rpy_axis_idx: tuple[int, int, int] = MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
-    enable_hand: bool = True,
-) -> tuple[Any, tuple[float, float, float] | None, list[float] | None, Any, str | None, bool | None]:
-    """Compute joint/root targets for one CSV motion frame."""
-    ui_debug.root_rpy_euler_scaled_deg = (None, None, None)
-    ui_debug.root_rot_bone_name = None
-    result, interp_fd = compute_action_for_frame(
-        frame,
-        frames,
-        bone_frame_lists,
-        all_bones,
-        joint_names,
-        default_joint_pos,
-        action_scale,
-        knee_hinge_projection=knee_hinge_projection,
-        enable_hand=enable_hand,
-    )
-    ui_debug.last_interp_frame_data = interp_fd
-    if result is not None:
-        joint_pos_cmd = default_joint_pos + action_scale * result
-    else:
-        joint_pos_cmd = default_joint_pos.copy()
-
+    root_snapshot_row: Any | None,
+    mmd_center_to_root_offset_local_xyz: tuple[float, float, float],
+    root_quat_rpy_scale: tuple[float, float, float],
+    root_quat_rpy_axis_idx: tuple[int, int, int],
+) -> tuple[
+    tuple[float, float, float] | None,
+    list[float] | None,
+    str | None,
+    bool | None,
+]:
     target_root_pos: tuple[float, float, float] | None = None
     target_root_quat_wxyz: list[float] | None = None
     mmd_root_trans_bone: str | None = None
@@ -267,6 +317,81 @@ def compute_targets_for_motion_frame(
                     )
         except Exception:
             pass
+
+    return target_root_pos, target_root_quat_wxyz, mmd_root_trans_bone, csv_root_rotation_lookup
+
+
+def compute_targets_for_motion_frame(
+    frame: int,
+    frames: Any,
+    bone_frame_lists: dict[str, list[int]],
+    all_bones: set[str],
+    joint_names: list[str],
+    default_joint_pos: Any,
+    action_scale: float,
+    groove_pos_to_world: float,
+    robot: Any,
+    state: MotionRootTrackState,
+    ui_debug: PlaybackUiDebugState,
+    root_snapshot_row: Any | None = None,
+    knee_hinge_projection: bool = True,
+    mmd_center_to_root_offset_local_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    root_quat_rpy_scale: tuple[float, float, float] = MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
+    root_quat_rpy_axis_idx: tuple[int, int, int] = MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
+    enable_hand: bool = True,
+    foot_ik_cfg: FootIkConfig | None = None,
+    foot_ik_state: FootIkState | None = None,
+    foot_ik_viz_cfg: FootIkVizConfig | None = None,
+) -> tuple[Any, tuple[float, float, float] | None, list[float] | None, Any, str | None, bool | None]:
+    """Compute joint/root targets for one CSV motion frame."""
+    ui_debug.root_rpy_euler_scaled_deg = (None, None, None)
+    ui_debug.root_rot_bone_name = None
+
+    interp_fd = _interp_frame_data(frame, frames, bone_frame_lists, all_bones)
+    ui_debug.last_interp_frame_data = interp_fd
+    _update_foot_ik_mmd_viz_world(
+        foot_ik_state,
+        interp_fd,
+        groove_pos_to_world,
+        frames,
+        foot_ik_viz_cfg=foot_ik_viz_cfg,
+    )
+
+    target_root_pos, target_root_quat_wxyz, mmd_root_trans_bone, csv_root_rotation_lookup = (
+        _compute_csv_root_targets(
+            frame,
+            frames,
+            bone_frame_lists,
+            groove_pos_to_world,
+            robot,
+            state,
+            ui_debug,
+            root_snapshot_row,
+            mmd_center_to_root_offset_local_xyz,
+            root_quat_rpy_scale,
+            root_quat_rpy_axis_idx,
+        )
+    )
+
+    if not interp_fd or joint_names is None or default_joint_pos is None:
+        result = None
+        joint_pos_cmd = default_joint_pos.copy() if default_joint_pos is not None else None
+    else:
+        target_pos = build_joint_positions_from_frame(
+            interp_fd,
+            joint_names,
+            default_joint_pos,
+            knee_hinge_projection=knee_hinge_projection,
+            enable_hand=enable_hand,
+            foot_ik_cfg=foot_ik_cfg,
+            foot_ik_state=foot_ik_state,
+            foot_ik_frame_idx=int(frame),
+            foot_ik_root_pos_world=target_root_pos,
+            foot_ik_root_quat_wxyz=target_root_quat_wxyz,
+            foot_ik_viz_cfg=foot_ik_viz_cfg,
+        )
+        result = (target_pos - default_joint_pos) / action_scale
+        joint_pos_cmd = default_joint_pos + action_scale * result
 
     return joint_pos_cmd, target_root_pos, target_root_quat_wxyz, result, mmd_root_trans_bone, csv_root_rotation_lookup
 

@@ -10,6 +10,16 @@
 
 version: 1
 dances:
+
+  - id: gokurakujyodo
+    motion: dance/gokurakujyodo.csv
+    audio: dance/gokurakujyodo.wav
+
+  - id: girls
+    motion: dance/girls.csv
+    audio: dance/girls.wav
+
+
   - id: deepbluetown
     key: I
     motion: dance/deepbluetown.csv
@@ -28,11 +38,5 @@ dances:
 
   - id: galaxias
     motion: dance/galaxias.csv
+    audio: dance/galaxias.wav
 
-  - id: gokurakujyodo
-    motion: dance/gokurakujyodo.csv
-    audio: dance/gokurakujyodo.wav
-
-  - id: girls
-    motion: dance/girls.csv
-    audio: dance/girls.wav

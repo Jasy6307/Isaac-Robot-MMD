@@ -13,6 +13,8 @@ from typing import Any
 import numpy as np
 
 from robot_mmd.train_workflow.utils.csv_motion_loader import (
+    FootIkConfig,
+    FootIkState,
     build_joint_positions_from_frame,
     frames_have_hand_data,
     get_bone_frame_lists,
@@ -275,6 +277,7 @@ def compile_csv_motion_to_hdf5_motion(
     mmd_center_to_root_offset_local_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0),
     root_quat_rpy_scale: tuple[float, float, float] = (1.0, 1.0, -1.0),
     root_quat_rpy_axis_idx: tuple[int, int, int] = (0, 1, 2),
+    foot_ik_cfg: FootIkConfig | None = None,
 ) -> Hdf5Motion:
     frames_map = load_csv_motion(csv_path)
     has_hand_data = bool(frames_have_hand_data(frames_map))
@@ -300,12 +303,55 @@ def compile_csv_motion_to_hdf5_motion(
     root_rpy_deg = np.zeros((len(frames), 3), dtype=np.float32)
 
     is_pose = len(frame_list) <= 1
+    cfg = foot_ik_cfg
+    if cfg is not None:
+        cfg = FootIkConfig(**vars(cfg))
+        cfg.is_static_pose = bool(is_pose)
+        cfg.groove_pos_to_world = float(groove_pos_to_world)
+    foot_state = FootIkState()
     for frame in frames:
         frame_data: dict[str, dict] = {}
         for bone in all_bones:
             d = interpolate_bone(int(frame), bone, frames_map, bone_frame_lists.get(bone))
             if d is not None:
                 frame_data[bone] = d
+
+        foot_ik_root_pos: tuple[float, float, float] | None = None
+        foot_ik_root_quat: list[float] | None = None
+        bone_name, mmd_pos = _interpolate_mmd_root_translation_bone_cfg(frame_data, bone_frame_lists)
+        _, csv_root_quat_wxyz = _get_csv_root_quat_with_bone_from_frame(frame_data, bone_frame_lists)
+        root_rot_bone[int(frame)] = bone_name or ""
+        if mmd_pos is not None and csv_root_quat_wxyz is not None:
+            dx = float(mmd_pos[0]) * float(groove_pos_to_world)
+            dy = float(mmd_pos[1]) * float(groove_pos_to_world)
+            dz = float(mmd_pos[2]) * float(groove_pos_to_world)
+            if is_pose:
+                pos = np.array([-dx, +dz, +dy], dtype=np.float32)
+            else:
+                pos = np.array([-dx, -dz, +dy], dtype=np.float32)
+
+            q_w = mmd_root_offset_quat_to_world(csv_root_quat_wxyz)
+            qx, qy, qz, qw = q_w[1], q_w[2], q_w[3], q_w[0]
+            rr, rp, ry = euler_xyz_rad_waist_extrinsic((qx, qy, qz, qw))
+            out_r, out_p, out_y = remap_root_csv_euler_xyz(rr, rp, ry, root_quat_rpy_axis_idx, root_quat_rpy_scale)
+            q_delta = quat_normalize(quat_from_waist_extrinsic_xyz(out_r, out_p, out_y))
+            if (
+                abs(mmd_center_to_root_offset_local_xyz[0]) > 1e-12
+                or abs(mmd_center_to_root_offset_local_xyz[1]) > 1e-12
+                or abs(mmd_center_to_root_offset_local_xyz[2]) > 1e-12
+            ):
+                dv = rotate_vec_by_quat_wxyz(q_delta, mmd_center_to_root_offset_local_xyz)
+                pos = pos + np.asarray(dv, dtype=np.float32)
+
+            root_pos_delta[int(frame), :] = pos
+            root_quat_delta[int(frame), :] = np.asarray(q_delta, dtype=np.float32)
+            root_valid[int(frame)] = True
+            root_rpy_deg[int(frame), :] = np.array(
+                [np.degrees(out_r), np.degrees(out_p), np.degrees(out_y)],
+                dtype=np.float32,
+            )
+            foot_ik_root_pos = (float(pos[0]), float(pos[1]), float(pos[2]))
+            foot_ik_root_quat = [float(v) for v in q_delta.tolist()]
 
         if frame_data:
             target_pos = build_joint_positions_from_frame(
@@ -314,43 +360,13 @@ def compile_csv_motion_to_hdf5_motion(
                 zero_default,
                 knee_hinge_projection=knee_hinge_projection,
                 enable_hand=has_hand_data,
+                foot_ik_cfg=cfg,
+                foot_ik_state=foot_state,
+                foot_ik_frame_idx=int(frame),
+                foot_ik_root_pos_world=foot_ik_root_pos,
+                foot_ik_root_quat_wxyz=foot_ik_root_quat,
             )
             joint_pos_delta[int(frame), :] = target_pos.astype(np.float32, copy=False)
-
-        bone_name, mmd_pos = _interpolate_mmd_root_translation_bone_cfg(frame_data, bone_frame_lists)
-        _, csv_root_quat_wxyz = _get_csv_root_quat_with_bone_from_frame(frame_data, bone_frame_lists)
-        root_rot_bone[int(frame)] = bone_name or ""
-        if mmd_pos is None or csv_root_quat_wxyz is None:
-            continue
-
-        dx = float(mmd_pos[0]) * float(groove_pos_to_world)
-        dy = float(mmd_pos[1]) * float(groove_pos_to_world)
-        dz = float(mmd_pos[2]) * float(groove_pos_to_world)
-        if is_pose:
-            pos = np.array([-dx, +dz, +dy], dtype=np.float32)
-        else:
-            pos = np.array([-dx, -dz, +dy], dtype=np.float32)
-
-        q_w = mmd_root_offset_quat_to_world(csv_root_quat_wxyz)
-        qx, qy, qz, qw = q_w[1], q_w[2], q_w[3], q_w[0]
-        rr, rp, ry = euler_xyz_rad_waist_extrinsic((qx, qy, qz, qw))
-        out_r, out_p, out_y = remap_root_csv_euler_xyz(rr, rp, ry, root_quat_rpy_axis_idx, root_quat_rpy_scale)
-        q_delta = quat_normalize(quat_from_waist_extrinsic_xyz(out_r, out_p, out_y))
-        if (
-            abs(mmd_center_to_root_offset_local_xyz[0]) > 1e-12
-            or abs(mmd_center_to_root_offset_local_xyz[1]) > 1e-12
-            or abs(mmd_center_to_root_offset_local_xyz[2]) > 1e-12
-        ):
-            dv = rotate_vec_by_quat_wxyz(q_delta, mmd_center_to_root_offset_local_xyz)
-            pos = pos + np.asarray(dv, dtype=np.float32)
-
-        root_pos_delta[int(frame), :] = pos
-        root_quat_delta[int(frame), :] = np.asarray(q_delta, dtype=np.float32)
-        root_valid[int(frame)] = True
-        root_rpy_deg[int(frame), :] = np.array(
-            [np.degrees(out_r), np.degrees(out_p), np.degrees(out_y)],
-            dtype=np.float32,
-        )
 
     return Hdf5Motion(
         frames=frames,

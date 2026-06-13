@@ -169,6 +169,54 @@ def mmd_quat_to_world(q_mmd_wxyz: list[float]) -> list[float]:
     return rotmat_to_quat(r_w)
 
 
+def isaac_world_to_root_local(
+    pos_world: tuple[float, float, float],
+    root_pos_world: tuple[float, float, float],
+    root_quat_wxyz: list[float],
+) -> tuple[float, float, float]:
+    """Express an Isaac world point in the robot root local frame."""
+    rel = (
+        float(pos_world[0] - root_pos_world[0]),
+        float(pos_world[1] - root_pos_world[1]),
+        float(pos_world[2] - root_pos_world[2]),
+    )
+    return rotate_vec_by_quat_wxyz(quat_inv(root_quat_wxyz), rel)
+
+
+def mmd_world_pos_to_isaac(
+    pos_mmd: tuple[float, float, float],
+    origin_isaac: tuple[float, float, float],
+    scale: float,
+    *,
+    is_pose: bool = False,
+) -> tuple[float, float, float]:
+    """MMD model/global position -> absolute Isaac world (axis remap only, origin at world zero)."""
+    x, y, z = float(pos_mmd[0]), float(pos_mmd[1]), float(pos_mmd[2])
+    s = float(scale)
+    ox, oy, oz = origin_isaac
+    if is_pose:
+        return (ox - x * s, oy + z * s, oz + y * s)
+    return (ox - x * s, oy - z * s, oz + y * s)
+
+
+def remap_mmd_world_to_isaac(
+    pos_mmd: tuple[float, float, float],
+    origin_isaac: tuple[float, float, float],
+    scale: float,
+    axis_idx: tuple[int, int, int],
+    axis_sign: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    """Configurable MMD world -> Isaac world: out[i] = origin[i] + sign[i] * mmd[idx[i]] * scale."""
+    ox, oy, oz = origin_isaac
+    s = float(scale)
+    idx = tuple(max(0, min(2, int(v))) for v in axis_idx)
+    return (
+        float(ox) + float(pos_mmd[idx[0]]) * float(axis_sign[0]) * s,
+        float(oy) + float(pos_mmd[idx[1]]) * float(axis_sign[1]) * s,
+        float(oz) + float(pos_mmd[idx[2]]) * float(axis_sign[2]) * s,
+    )
+
+
 def mmd_root_offset_quat_to_world(q_mmd_wxyz: list[float]) -> list[float]:
     """センター/グルーブ根旋转：轴向变换后再取逆，使仿真里俯仰与 MMD 一致（避免俯身变仰身）。
 
