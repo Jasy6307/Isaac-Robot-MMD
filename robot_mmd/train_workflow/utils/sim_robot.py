@@ -74,8 +74,9 @@ def apply_root_pos_instant(
     if state[:, 3:7].abs().sum() < 1e-6:
         state[:, 3:7] = 0.0
         state[:, 6] = 1.0
-    # Keep current root linear/angular velocity to reduce teleport-induced impulses.
-    state[:, 7:13] = root_state[:, 7:13]
+    # Kinematic teleport: zero root velocity so the next physics substep does not
+    # integrate stale angular momentum into orientation drift (blue vs cyan root debug).
+    state[:, 7:13] = 0.0
     robot.write_root_state_to_sim(state)
     return True
 

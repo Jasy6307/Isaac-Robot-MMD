@@ -35,10 +35,13 @@ from isaaclab.app import AppLauncher
 from robot_mmd.train_workflow.utils.playback_cli import (
     apply_app_window_kit_flags,
     build_arg_parser,
+    foot_ankle_ground_comp_config_from_namespace,
+    foot_ik_config_from_namespace,
+    foot_ik_viz_config_from_namespace,
     parse_center_to_root_offset,
 )
-from robot_mmd.train_workflow.utils.mmd_fk import FootIkVizConfig
-from robot_mmd.train_workflow.utils.csv_motion_loader import FootIkConfig
+
+PLAYBACK_LOG_FRAME_STRIDE = 50
 
 POSE_DIR = os.path.join(_MEDIA_DIR, "pose")
 DANCE_DIR = os.path.join(_MEDIA_DIR, "dance")
@@ -97,6 +100,7 @@ from robot_mmd.train_workflow.ui.mapping import (
     set_audio_volume_callbacks,
     set_foot_ik_callbacks,
     set_foot_ik_viz_callbacks,
+    set_foot_ground_comp_callbacks,
     set_joint_value_provider,
     set_mapping_changed_callback,
     set_pd_drive_callbacks,
@@ -108,6 +112,7 @@ from robot_mmd.train_workflow.ui.mapping import (
 )
 from robot_mmd.train_workflow.utils import audio_util
 from robot_mmd.train_workflow.utils.csv_motion_loader import (
+    FootIkConfig,
     FootIkState,
     elbow_hinge_mapping_ui_extra,
     knee_hinge_mapping_ui_extra,
@@ -125,8 +130,17 @@ from robot_mmd.train_workflow.utils.motion_loader import (
     load_pose_motion_dir,
     resolve_playback_motion_entry,
 )
+from robot_mmd.train_workflow.utils.foot_ankle_ground_comp import (
+    FootAnkleGroundCompState,
+    apply_ankle_ground_comp_to_joint_cmd,
+)
 from robot_mmd.train_workflow.utils.playback_keyboard import DanceKeyboardListener
-from robot_mmd.train_workflow.utils.root_z_edit import RootZEditConfig, generate_z_editted_motion
+from robot_mmd.train_workflow.utils.root_z_edit import (
+    RootZEditConfig,
+    generate_z_editted_motion,
+    read_ankle_roll_link_world_positions,
+    resolve_ankle_roll_link_body_indices,
+)
 from robot_mmd.train_workflow.utils.playback_targets import (
     MotionRootTrackState,
     PlaybackUiDebugState,
@@ -140,9 +154,10 @@ from robot_mmd.train_workflow.utils.sim_robot import (
     robot_root_row_clone,
 )
 from robot_mmd.train_workflow.utils.trans_util import (
-    quat_inv,
+    dist3,
+    quat_angular_error_deg,
+    quat_wxyz_to_euler_xyz_deg,
     root_quat_from_state_row,
-    rotate_vec_by_quat_wxyz,
 )
 
 TASK_ID = "Isaac-G1-Stand-v0"
@@ -169,7 +184,23 @@ def _parse_triplet_int_clamped(text: Any, name: str, lo: int = 0, hi: int = 2) -
 
 
 class _FootIkTargetViz:
-    """Render MMD foot IK world target spheres in USD scene."""
+    """Render MMD foot IK targets (red) and ankle_roll_link poses (green) in USD."""
+
+    _FOOT_IK_COLOR_OK = (1.0, 0.0, 0.0)
+    _FOOT_IK_COLOR_CLAMP = (1.0, 1.0, 0.0)
+
+    _LEFT_FOOT_IK = "/World/Debug/FootIkTargets/LeftFootIK"
+    _RIGHT_FOOT_IK = "/World/Debug/FootIkTargets/RightFootIK"
+    _LEFT_TOE_IK = "/World/Debug/FootIkTargets/LeftToeIK"
+    _RIGHT_TOE_IK = "/World/Debug/FootIkTargets/RightToeIK"
+    _LEFT_ANKLE_LINK = "/World/Debug/FootIkTargets/LeftAnkleRollLink"
+    _RIGHT_ANKLE_LINK = "/World/Debug/FootIkTargets/RightAnkleRollLink"
+    _LEFT_IK_PRED = "/World/Debug/FootIkTargets/LeftIkPred"
+    _RIGHT_IK_PRED = "/World/Debug/FootIkTargets/RightIkPred"
+    _LEFT_IK_TARGET = "/World/Debug/FootIkTargets/LeftIkTarget"
+    _RIGHT_IK_TARGET = "/World/Debug/FootIkTargets/RightIkTarget"
+    _ROOT_TARGET = "/World/Debug/FootIkTargets/RootTarget"
+    _ROOT_SIM = "/World/Debug/FootIkTargets/RootSim"
 
     def __init__(self) -> None:
         self._ready = False
@@ -198,8 +229,13 @@ class _FootIkTargetViz:
                 sph.GetRadiusAttr().Set(0.025)
                 xform = UsdGeom.Xformable(sph.GetPrim())
                 xform.AddTranslateOp()
-                color_api = UsdGeom.Gprim(sph.GetPrim())
-                color_api.CreateDisplayColorAttr().Set([Gf.Vec3f(1.0, 0.0, 0.0)])
+                prim = sph.GetPrim()
+                pv = UsdGeom.PrimvarsAPI(prim).CreatePrimvar(
+                    "displayColor",
+                    Sdf.ValueTypeNames.Color3fArray,
+                    UsdGeom.Tokens.constant,
+                )
+                pv.Set([Gf.Vec3f(1.0, 0.0, 0.0)])
             prim = stage.GetPrimAtPath(p)
             self._xform_cache[p] = UsdGeom.Xformable(prim)
             tp = f"{root}/{side}ToeIK"
@@ -212,6 +248,52 @@ class _FootIkTargetViz:
                 color_api.CreateDisplayColorAttr().Set([Gf.Vec3f(1.0, 0.3, 0.3)])
             prim_t = stage.GetPrimAtPath(tp)
             self._xform_cache[tp] = UsdGeom.Xformable(prim_t)
+            ap = f"{root}/{side}AnkleRollLink"
+            if not stage.GetPrimAtPath(ap):
+                sph = UsdGeom.Sphere.Define(stage, Sdf.Path(ap))
+                sph.GetRadiusAttr().Set(0.022)
+                xform = UsdGeom.Xformable(sph.GetPrim())
+                xform.AddTranslateOp()
+                color_api = UsdGeom.Gprim(sph.GetPrim())
+                color_api.CreateDisplayColorAttr().Set([Gf.Vec3f(0.0, 1.0, 0.0)])
+            prim_a = stage.GetPrimAtPath(ap)
+            self._xform_cache[ap] = UsdGeom.Xformable(prim_a)
+            pp = f"{root}/{side}IkPred"
+            if not stage.GetPrimAtPath(pp):
+                sph = UsdGeom.Sphere.Define(stage, Sdf.Path(pp))
+                sph.GetRadiusAttr().Set(0.02)
+                xform = UsdGeom.Xformable(sph.GetPrim())
+                xform.AddTranslateOp()
+                color_api = UsdGeom.Gprim(sph.GetPrim())
+                color_api.CreateDisplayColorAttr().Set([Gf.Vec3f(0.75, 0.0, 0.85)])
+            prim_p = stage.GetPrimAtPath(pp)
+            self._xform_cache[pp] = UsdGeom.Xformable(prim_p)
+            ip = f"{root}/{side}IkTarget"
+            if not stage.GetPrimAtPath(ip):
+                sph = UsdGeom.Sphere.Define(stage, Sdf.Path(ip))
+                sph.GetRadiusAttr().Set(0.023)
+                xform = UsdGeom.Xformable(sph.GetPrim())
+                xform.AddTranslateOp()
+                color_api = UsdGeom.Gprim(sph.GetPrim())
+                color_api.CreateDisplayColorAttr().Set([Gf.Vec3f(1.0, 0.55, 0.0)])
+            prim_i = stage.GetPrimAtPath(ip)
+            self._xform_cache[ip] = UsdGeom.Xformable(prim_i)
+        for label, path, radius, color in (
+            ("RootTarget", self._ROOT_TARGET, 0.03, (0.1, 0.35, 1.0)),
+            ("RootSim", self._ROOT_SIM, 0.028, (0.2, 0.85, 1.0)),
+        ):
+            del label
+            if not stage.GetPrimAtPath(path):
+                sph = UsdGeom.Sphere.Define(stage, Sdf.Path(path))
+                sph.GetRadiusAttr().Set(float(radius))
+                xform = UsdGeom.Xformable(sph.GetPrim())
+                xform.AddTranslateOp()
+                color_api = UsdGeom.Gprim(sph.GetPrim())
+                color_api.CreateDisplayColorAttr().Set(
+                    [Gf.Vec3f(float(color[0]), float(color[1]), float(color[2]))]
+                )
+            prim_r = stage.GetPrimAtPath(path)
+            self._xform_cache[path] = UsdGeom.Xformable(prim_r)
         self._stage = stage
         self._ready = True
         return True
@@ -242,6 +324,33 @@ class _FootIkTargetViz:
                 Gf.Vec3d(float(pos_xyz[0]), float(pos_xyz[1]), float(pos_xyz[2]))
             )
 
+    def _set_display_color(self, path: str, rgb: tuple[float, float, float]) -> None:
+        from pxr import Gf, Sdf, UsdGeom
+
+        stage = self._stage
+        if stage is None:
+            return
+        prim = stage.GetPrimAtPath(path)
+        if not prim.IsValid():
+            return
+        color = Gf.Vec3f(float(rgb[0]), float(rgb[1]), float(rgb[2]))
+        gprim = UsdGeom.Gprim(prim)
+        attr = gprim.GetDisplayColorAttr()
+        if attr and attr.IsValid():
+            attr.Set([color])
+            return
+        pv_api = UsdGeom.PrimvarsAPI(prim)
+        pv = pv_api.GetPrimvar("displayColor")
+        if pv and pv.IsDefined():
+            pv.Set([color])
+            return
+        pv = pv_api.CreatePrimvar(
+            "displayColor",
+            Sdf.ValueTypeNames.Color3fArray,
+            UsdGeom.Tokens.constant,
+        )
+        pv.Set([color])
+
     def update(
         self,
         *,
@@ -249,146 +358,114 @@ class _FootIkTargetViz:
         right_world: tuple[float, float, float] | None,
         left_toe_world: tuple[float, float, float] | None,
         right_toe_world: tuple[float, float, float] | None,
+        left_reach_clamped: bool = False,
+        right_reach_clamped: bool = False,
     ) -> None:
         if not self._ensure():
             return
-        lp = "/World/Debug/FootIkTargets/LeftFootIK"
-        rp = "/World/Debug/FootIkTargets/RightFootIK"
-        ltp = "/World/Debug/FootIkTargets/LeftToeIK"
-        rtp = "/World/Debug/FootIkTargets/RightToeIK"
-        if left_world is None:
-            self._set_visible(lp, False)
-        else:
-            self._set_translate(lp, left_world)
-            self._set_visible(lp, True)
-        if right_world is None:
-            self._set_visible(rp, False)
-        else:
-            self._set_translate(rp, right_world)
-            self._set_visible(rp, True)
-        if left_toe_world is None:
-            self._set_visible(ltp, False)
-        else:
-            self._set_translate(ltp, left_toe_world)
-            self._set_visible(ltp, True)
-        if right_toe_world is None:
-            self._set_visible(rtp, False)
-        else:
-            self._set_translate(rtp, right_toe_world)
-            self._set_visible(rtp, True)
+        for path, pos, reach_clamped in (
+            (self._LEFT_FOOT_IK, left_world, left_reach_clamped),
+            (self._RIGHT_FOOT_IK, right_world, right_reach_clamped),
+        ):
+            if pos is None:
+                self._set_visible(path, False)
+            else:
+                self._set_translate(path, pos)
+                self._set_display_color(
+                    path,
+                    self._FOOT_IK_COLOR_CLAMP if reach_clamped else self._FOOT_IK_COLOR_OK,
+                )
+                self._set_visible(path, True)
+        for path, pos in (
+            (self._LEFT_TOE_IK, left_toe_world),
+            (self._RIGHT_TOE_IK, right_toe_world),
+        ):
+            if pos is None:
+                self._set_visible(path, False)
+            else:
+                self._set_translate(path, pos)
+                self._set_visible(path, True)
 
+    def update_ankle_links(
+        self,
+        *,
+        left_ankle_world: tuple[float, float, float] | None,
+        right_ankle_world: tuple[float, float, float] | None,
+    ) -> None:
+        """Show simulated ``ankle_roll_link`` world origins (green spheres)."""
+        if not self._ensure():
+            return
+        for path, pos in (
+            (self._LEFT_ANKLE_LINK, left_ankle_world),
+            (self._RIGHT_ANKLE_LINK, right_ankle_world),
+        ):
+            if pos is None:
+                self._set_visible(path, False)
+            else:
+                self._set_translate(path, pos)
+                self._set_visible(path, True)
 
-def _try_get_body_names(robot: Any) -> list[str]:
-    for holder in (getattr(robot, "data", None), robot):
-        if holder is None:
-            continue
-        for name in ("body_names", "link_names"):
-            v = getattr(holder, name, None)
-            if isinstance(v, (list, tuple)) and v:
-                return [str(x) for x in v]
-    return []
+    def update_ik_pred(
+        self,
+        *,
+        left_pred_world: tuple[float, float, float] | None,
+        right_pred_world: tuple[float, float, float] | None,
+    ) -> None:
+        """Show full IK FK prediction at ankle_roll_link (purple spheres)."""
+        if not self._ensure():
+            return
+        for path, pos in (
+            (self._LEFT_IK_PRED, left_pred_world),
+            (self._RIGHT_IK_PRED, right_pred_world),
+        ):
+            if pos is None:
+                self._set_visible(path, False)
+            else:
+                self._set_translate(path, pos)
+                self._set_visible(path, True)
 
+    def update_ik_target(
+        self,
+        *,
+        left_target_world: tuple[float, float, float] | None,
+        right_target_world: tuple[float, float, float] | None,
+    ) -> None:
+        """Show IK chase target after ankle offset (orange spheres)."""
+        if not self._ensure():
+            return
+        for path, pos in (
+            (self._LEFT_IK_TARGET, left_target_world),
+            (self._RIGHT_IK_TARGET, right_target_world),
+        ):
+            if pos is None:
+                self._set_visible(path, False)
+            else:
+                self._set_translate(path, pos)
+                self._set_visible(path, True)
 
-def _extract_body_pose_wxyz(robot: Any, body_idx: int) -> tuple[tuple[float, float, float], list[float]] | None:
-    data = getattr(robot, "data", None)
-    if data is None:
-        return None
-    state = None
-    for field in ("body_state_w", "body_link_state_w", "link_state_w"):
-        v = getattr(data, field, None)
-        if torch.is_tensor(v):
-            state = v
-            break
-    if state is not None:
-        row = state[0, body_idx] if state.ndim == 3 else state[body_idx]
-        return (
-            (float(row[0].item()), float(row[1].item()), float(row[2].item())),
-            [float(row[3].item()), float(row[4].item()), float(row[5].item()), float(row[6].item())],
-        )
-    return None
-
-
-def _calibrate_foot_ik_refs_from_robot(
-    robot: Any,
-    foot_ik_cfg: FootIkConfig,
-    *,
-    heel_offset_in_ankle_local: tuple[float, float, float] = (-0.00, 0.0, 0.0),
-    toe_offset_in_ankle_local: tuple[float, float, float] = (0.12, 0.0, 0.0),
-) -> bool:
-    body_names = _try_get_body_names(robot)
-    if not body_names:
-        return False
-    try:
-        li = int(body_names.index("left_ankle_roll_link"))
-        ri = int(body_names.index("right_ankle_roll_link"))
-    except ValueError:
-        return False
-    root_state = getattr(robot.data, "root_state_w", None)
-    if (not torch.is_tensor(root_state)) or root_state.shape[1] < 7:
-        return False
-    root_pos = (
-        float(root_state[0, 0].item()),
-        float(root_state[0, 1].item()),
-        float(root_state[0, 2].item()),
-    )
-    root_quat = root_quat_from_state_row(root_state[0])
-    root_q_inv = quat_inv(list(root_quat))
-
-    heel_vals: list[tuple[float, float, float]] = []
-    toe_vals: list[tuple[float, float, float]] = []
-    for bi in (li, ri):
-        pose = _extract_body_pose_wxyz(robot, bi)
-        if pose is None:
-            return False
-        pos_w, quat_w = pose
-        heel_dv = rotate_vec_by_quat_wxyz(quat_w, heel_offset_in_ankle_local)
-        heel_w = (
-            float(pos_w[0] + heel_dv[0]),
-            float(pos_w[1] + heel_dv[1]),
-            float(pos_w[2] + heel_dv[2]),
-        )
-        rel = (
-            float(heel_w[0] - root_pos[0]),
-            float(heel_w[1] - root_pos[1]),
-            float(heel_w[2] - root_pos[2]),
-        )
-        loc = rotate_vec_by_quat_wxyz(root_q_inv, rel)
-        heel_vals.append((float(loc[0]), float(loc[1]), float(loc[2])))
-
-        toe_dv = rotate_vec_by_quat_wxyz(quat_w, toe_offset_in_ankle_local)
-        toe_w = (
-            float(pos_w[0] + toe_dv[0]),
-            float(pos_w[1] + toe_dv[1]),
-            float(pos_w[2] + toe_dv[2]),
-        )
-        toe_rel = (
-            float(toe_w[0] - root_pos[0]),
-            float(toe_w[1] - root_pos[1]),
-            float(toe_w[2] - root_pos[2]),
-        )
-        toe_loc = rotate_vec_by_quat_wxyz(root_q_inv, toe_rel)
-        toe_vals.append((float(toe_loc[0]), float(toe_loc[1]), float(toe_loc[2])))
-    if len(heel_vals) != 2 or len(toe_vals) != 2:
-        return False
-    foot_ik_cfg.left_foot_ref_local = heel_vals[0]
-    foot_ik_cfg.right_foot_ref_local = heel_vals[1]
-    foot_ik_cfg.left_toe_ref_local = toe_vals[0]
-    foot_ik_cfg.right_toe_ref_local = toe_vals[1]
-    return True
+    def update_root_debug(
+        self,
+        *,
+        target_root_world: tuple[float, float, float] | None,
+        sim_root_world: tuple[float, float, float] | None,
+    ) -> None:
+        """Show commanded root target (blue) and simulated root (cyan)."""
+        if not self._ensure():
+            return
+        for path, pos in (
+            (self._ROOT_TARGET, target_root_world),
+            (self._ROOT_SIM, sim_root_world),
+        ):
+            if pos is None:
+                self._set_visible(path, False)
+            else:
+                self._set_translate(path, pos)
+                self._set_visible(path, True)
 
 
 def main():
     """零动作运行 G1 站立环境。"""
     use_root_teleport = True
-    foot_axis_idx = _parse_triplet_int_clamped(args_cli.mmd_foot_ik_axis_idx, "--mmd_foot_ik_axis_idx")
-    foot_axis_sign = _parse_triplet_float(args_cli.mmd_foot_ik_axis_sign, "--mmd_foot_ik_axis_sign")
-    foot_axis_sign_pose = _parse_triplet_float(
-        args_cli.mmd_foot_ik_axis_sign_pose, "--mmd_foot_ik_axis_sign_pose"
-    )
-    left_ref_local = _parse_triplet_float(args_cli.mmd_foot_ik_left_ref_local, "--mmd_foot_ik_left_ref_local")
-    right_ref_local = _parse_triplet_float(
-        args_cli.mmd_foot_ik_right_ref_local, "--mmd_foot_ik_right_ref_local"
-    )
     pose_cycle_key = (args_cli.pose_cycle_key or "P").strip().upper()[:1]
     pose_motions = load_pose_motion_dir(POSE_DIR)
     dance_motion_by_key, dance_wav_by_key = load_dances_from_yaml(
@@ -572,67 +649,151 @@ def main():
     motion_has_wav = False
     root_quat_rpy_scale = list(MMD_ROOT_QUAT_RPY_SCALE_DEFAULT)
     root_quat_rpy_axis_idx = list(MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT)
-    foot_ik_cfg = FootIkConfig(
-        enable=bool(args_cli.mmd_foot_ik_enable),
+    foot_ik_cfg = foot_ik_config_from_namespace(
+        args_cli,
         groove_pos_to_world=float(args_cli.groove_pos_to_world),
-        pos_scale=float(args_cli.mmd_foot_ik_scale),
-        weight=float(args_cli.mmd_foot_ik_weight),
-        max_reach_ratio=float(args_cli.mmd_foot_ik_max_reach_ratio),
-        mmd_axis_idx=tuple(foot_axis_idx),
-        mmd_axis_sign=tuple(float(v) for v in foot_axis_sign),
-        mmd_axis_sign_static_pose=tuple(float(v) for v in foot_axis_sign_pose),
-        left_foot_ref_local=tuple(float(v) for v in left_ref_local),
-        right_foot_ref_local=tuple(float(v) for v in right_ref_local),
-        hip_offset_y=float(args_cli.mmd_foot_ik_hip_offset_y),
-        hip_offset_z=float(args_cli.mmd_foot_ik_hip_offset_z),
-        thigh_length=float(args_cli.mmd_foot_ik_thigh_length),
-        shin_length=float(args_cli.mmd_foot_ik_shin_length),
-        hip_roll_gain=float(args_cli.mmd_foot_ik_hip_roll_gain),
-        debug_every_n_frames=max(0, int(args_cli.mmd_foot_ik_debug_every)),
     )
-    try:
-        robot_for_calib = env.unwrapped.scene["robot"]
-        if _calibrate_foot_ik_refs_from_robot(robot_for_calib, foot_ik_cfg):
-            lx, ly, lz = foot_ik_cfg.left_foot_ref_local
-            rx, ry, rz = foot_ik_cfg.right_foot_ref_local
-            txl, tyl, tzl = foot_ik_cfg.left_toe_ref_local
-            txr, tyr, tzr = foot_ik_cfg.right_toe_ref_local
-            print(
-                "[INFO] Foot IK heel refs calibrated: "
-                f"L=({lx:.3f},{ly:.3f},{lz:.3f}) R=({rx:.3f},{ry:.3f},{rz:.3f})"
-            )
-            print(
-                "[INFO] Foot IK toe refs calibrated: "
-                f"L=({txl:.3f},{tyl:.3f},{tzl:.3f}) R=({txr:.3f},{tyr:.3f},{tzr:.3f})"
-            )
-        else:
-            print("[WARN] Foot IK calibration skipped; using configured heel/toe refs")
-    except Exception as exc:
-        print(f"[WARN] Foot IK heel calibration failed: {exc}")
+    foot_ankle_ground_comp_cfg = foot_ankle_ground_comp_config_from_namespace(args_cli)
+    foot_ik_viz_cfg = foot_ik_viz_config_from_namespace(args_cli)
     print(
-        "[INFO] Foot IK: %s (scale=%.3f weight=%.3f reach=%.3f)"
+        "[INFO] Leg IK: %s solver=%s (weight=%.3f reach=%.3f debug_every=%d)"
         % (
             "on" if foot_ik_cfg.enable else "off",
-            float(foot_ik_cfg.pos_scale),
+            str(foot_ik_cfg.solver),
             float(foot_ik_cfg.weight),
             float(foot_ik_cfg.max_reach_ratio),
-        )
-    )
-    print(
-        "[INFO] Foot IK axis idx=%s sign=%s pose_sign=%s debug_every=%d"
-        % (
-            str(tuple(int(v) for v in foot_ik_cfg.mmd_axis_idx)),
-            str(tuple(float(v) for v in foot_ik_cfg.mmd_axis_sign)),
-            str(tuple(float(v) for v in foot_ik_cfg.mmd_axis_sign_static_pose)),
             int(foot_ik_cfg.debug_every_n_frames),
         )
     )
+    if str(foot_ik_cfg.solver).lower() == "full":
+        print(
+            "[INFO] Full IK: iters=%d pos_tol=%.4fm reg=%.3f hy=%.2f ar=%.2f pass_through_ankle=%s"
+            % (
+                int(foot_ik_cfg.ik_max_iters),
+                float(foot_ik_cfg.ik_pos_tol_m),
+                float(foot_ik_cfg.ik_reg_weight),
+                float(foot_ik_cfg.ik_reg_hip_yaw),
+                float(foot_ik_cfg.ik_reg_ankle_roll),
+                "on" if foot_ik_cfg.ik_pass_through_ankle else "off",
+            )
+        )
+    print(
+        "[INFO] Leg IK geom: hip_y=%.4f hip_z=%.4f thigh=%.4f shin=%.4f max_reach=%.4fm"
+        % (
+            float(foot_ik_cfg.hip_offset_y),
+            float(foot_ik_cfg.hip_offset_z),
+            float(foot_ik_cfg.thigh_length),
+            float(foot_ik_cfg.shin_length),
+            float(foot_ik_cfg.thigh_length + foot_ik_cfg.shin_length)
+            * float(foot_ik_cfg.max_reach_ratio),
+        )
+    )
+    print(
+        "[INFO] Sphere map: scale=%.3f idx=%s sign=%s Lorig=%s Rorig=%s"
+        % (
+            float(foot_ik_viz_cfg.pos_scale),
+            str(tuple(int(v) for v in foot_ik_viz_cfg.axis_idx)),
+            str(tuple(float(v) for v in foot_ik_viz_cfg.axis_sign)),
+            str(tuple(float(v) for v in foot_ik_viz_cfg.left_ref_origin_m)),
+            str(tuple(float(v) for v in foot_ik_viz_cfg.right_ref_origin_m)),
+        )
+    )
+    print(
+        "[INFO] Ankle ground comp: %s ground_z=%.3f clearance=%.1fmm max_pitch=%.0fdeg max_roll=%.0fdeg"
+        % (
+            "on" if foot_ankle_ground_comp_cfg.enable else "off",
+            float(foot_ankle_ground_comp_cfg.ground_z),
+            float(foot_ankle_ground_comp_cfg.clearance_m) * 1000.0,
+            float(foot_ankle_ground_comp_cfg.max_pitch_delta_deg),
+            float(foot_ankle_ground_comp_cfg.max_roll_delta_deg),
+        )
+    )
     foot_ik_state = FootIkState()
-    foot_ik_viz_cfg = FootIkVizConfig()
+    foot_ankle_ground_comp_state = FootAnkleGroundCompState()
     foot_ik_viz = _FootIkTargetViz()
+    ankle_link_body_indices: dict[str, int] | None = None
+    last_playback_target_root: tuple[float, float, float] | None = None
+    last_playback_target_root_quat: list[float] | None = None
+    last_frame_joint_pos_cmd: Any = None
+    print(
+        "[INFO] Debug spheres: red=MMD foot, orange=IK target (offset), "
+        "yellow=reach clamp, green=ankle sim, purple=IK FK pred, "
+        "blue=root cmd, cyan=root sim"
+    )
     pd_hold_joint_pos_cmd: Any = None
     pd_drive_enabled_ui = False
     z_offset_enabled_ui = False
+    foot_ankle_ground_comp_enabled_ui = bool(foot_ankle_ground_comp_cfg.enable)
+
+    def _apply_ankle_ground_comp_to_cmd(
+        joint_pos_cmd: Any,
+        root_pos: tuple[float, float, float] | None,
+        root_quat_wxyz: list[float] | None,
+        joint_default: Any | None = None,
+    ) -> None:
+        if not foot_ankle_ground_comp_enabled_ui or joint_pos_cmd is None:
+            return
+        jd = joint_default if joint_default is not None else default_joint_pos
+        if jd is None or not joint_names:
+            return
+        foot_ankle_ground_comp_cfg.enable = bool(foot_ankle_ground_comp_enabled_ui)
+        apply_ankle_ground_comp_to_joint_cmd(
+            joint_pos_cmd,
+            joint_names,
+            jd,
+            root_pos=root_pos,
+            root_quat_wxyz=root_quat_wxyz,
+            cfg=foot_ankle_ground_comp_cfg,
+            state=foot_ankle_ground_comp_state,
+        )
+
+    def _update_ankle_link_debug_viz(
+        target_root_pos: tuple[float, float, float] | None = None,
+        target_root_quat_wxyz: list[float] | None = None,
+        *,
+        frame_idx: int | None = None,
+    ) -> None:
+        nonlocal ankle_link_body_indices
+        left_ankle: tuple[float, float, float] | None = None
+        right_ankle: tuple[float, float, float] | None = None
+        try:
+            robot_inner = env.unwrapped.scene["robot"]
+            if ankle_link_body_indices is None:
+                ankle_link_body_indices = resolve_ankle_roll_link_body_indices(robot_inner)
+            left_ankle, right_ankle = read_ankle_roll_link_world_positions(
+                robot_inner,
+                body_indices=ankle_link_body_indices,
+            )
+            foot_ik_viz.update_ankle_links(
+                left_ankle_world=left_ankle,
+                right_ankle_world=right_ankle,
+            )
+            foot_ik_viz.update_ik_pred(
+                left_pred_world=foot_ik_state.last_left_ik_pred_world,
+                right_pred_world=foot_ik_state.last_right_ik_pred_world,
+            )
+            foot_ik_viz.update_ik_target(
+                left_target_world=foot_ik_state.last_left_ik_target_world,
+                right_target_world=foot_ik_state.last_right_ik_target_world,
+            )
+        except Exception:
+            foot_ik_viz.update_ankle_links(left_ankle_world=None, right_ankle_world=None)
+            foot_ik_viz.update_ik_pred(left_pred_world=None, right_pred_world=None)
+            foot_ik_viz.update_ik_target(left_target_world=None, right_target_world=None)
+        root_for_dbg = target_root_pos
+        if root_for_dbg is None:
+            root_for_dbg = foot_ik_state.last_target_root_world
+        quat_for_dbg = target_root_quat_wxyz
+        if quat_for_dbg is None:
+            quat_for_dbg = foot_ik_state.last_target_root_quat_wxyz
+        _update_foot_root_debug_metrics(
+            target_root_pos=root_for_dbg,
+            target_root_quat_wxyz=quat_for_dbg,
+            left_ankle_world=left_ankle,
+            right_ankle_world=right_ankle,
+        )
+        if frame_idx is not None and is_playing:
+            _maybe_log_foot_root_debug(int(frame_idx))
 
     def _on_mapping_ui_changed():
         nonlocal mapping_reapply_requested
@@ -660,6 +821,24 @@ def main():
         if prev != z_offset_enabled_ui:
             mode = "on (*_z_editted sibling)" if z_offset_enabled_ui else "off (original motion)"
             print(f"[INFO] Z_offset_enable -> {mode}")
+
+    def _get_foot_ground_comp_for_ui() -> bool:
+        return bool(foot_ankle_ground_comp_enabled_ui)
+
+    def _set_foot_ground_comp_from_ui(enabled: bool) -> None:
+        nonlocal foot_ankle_ground_comp_enabled_ui
+        prev = bool(foot_ankle_ground_comp_enabled_ui)
+        foot_ankle_ground_comp_enabled_ui = bool(enabled)
+        if prev != foot_ankle_ground_comp_enabled_ui:
+            print(
+                "[INFO] Ankle ground comp -> %s (clearance=%.1fmm max_pitch=%.0fdeg max_roll=%.0fdeg)"
+                % (
+                    "on" if foot_ankle_ground_comp_enabled_ui else "off",
+                    float(foot_ankle_ground_comp_cfg.clearance_m) * 1000.0,
+                    float(foot_ankle_ground_comp_cfg.max_pitch_delta_deg),
+                    float(foot_ankle_ground_comp_cfg.max_roll_delta_deg),
+                )
+            )
 
     def _get_audio_volume_for_ui() -> float:
         return audio_util.get_volume()
@@ -725,16 +904,18 @@ def main():
         root_quat_rpy_axis_idx[2] = max(0, min(2, int(axis_idx[2])))
 
     def _get_foot_ik_for_ui() -> dict[str, Any]:
+        off = foot_ik_cfg.ankle_target_offset_local
         return {
             "enable": bool(foot_ik_cfg.enable),
-            "scale": float(foot_ik_cfg.pos_scale),
             "weight": float(foot_ik_cfg.weight),
             "reach": float(foot_ik_cfg.max_reach_ratio),
-            "axis_idx": tuple(int(v) for v in foot_ik_cfg.mmd_axis_idx),
-            "axis_sign": tuple(float(v) for v in foot_ik_cfg.mmd_axis_sign),
-            "left_ref": tuple(float(v) for v in foot_ik_cfg.left_foot_ref_local),
-            "right_ref": tuple(float(v) for v in foot_ik_cfg.right_foot_ref_local),
+            "leg_scale": float(foot_ik_cfg.leg_target_scale),
             "debug_every": int(foot_ik_cfg.debug_every_n_frames),
+            "solver": str(foot_ik_cfg.solver),
+            "ik_reg_weight": float(foot_ik_cfg.ik_reg_weight),
+            "ik_reg_hip_yaw": float(foot_ik_cfg.ik_reg_hip_yaw),
+            "ik_reg_ankle_roll": float(foot_ik_cfg.ik_reg_ankle_roll),
+            "ankle_offset": (float(off[0]), float(off[1]), float(off[2])),
         }
 
     def _set_foot_ik_from_ui(payload: dict[str, Any]) -> None:
@@ -742,55 +923,57 @@ def main():
         try:
             if "enable" in payload:
                 foot_ik_cfg.enable = bool(payload.get("enable"))
-            if "scale" in payload:
-                foot_ik_cfg.pos_scale = float(payload.get("scale", foot_ik_cfg.pos_scale))
             if "weight" in payload:
                 foot_ik_cfg.weight = float(payload.get("weight", foot_ik_cfg.weight))
             if "reach" in payload:
                 foot_ik_cfg.max_reach_ratio = float(payload.get("reach", foot_ik_cfg.max_reach_ratio))
-            if "axis_idx" in payload:
-                ai = tuple(payload.get("axis_idx", foot_ik_cfg.mmd_axis_idx))
-                if len(ai) == 3:
-                    foot_ik_cfg.mmd_axis_idx = (
-                        max(0, min(2, int(ai[0]))),
-                        max(0, min(2, int(ai[1]))),
-                        max(0, min(2, int(ai[2]))),
-                    )
-            if "axis_sign" in payload:
-                sg = tuple(payload.get("axis_sign", foot_ik_cfg.mmd_axis_sign))
-                if len(sg) == 3:
-                    foot_ik_cfg.mmd_axis_sign = (float(sg[0]), float(sg[1]), float(sg[2]))
-            if "left_ref" in payload:
-                lv = tuple(payload.get("left_ref", foot_ik_cfg.left_foot_ref_local))
-                if len(lv) == 3:
-                    foot_ik_cfg.left_foot_ref_local = (float(lv[0]), float(lv[1]), float(lv[2]))
-            if "right_ref" in payload:
-                rv = tuple(payload.get("right_ref", foot_ik_cfg.right_foot_ref_local))
-                if len(rv) == 3:
-                    foot_ik_cfg.right_foot_ref_local = (float(rv[0]), float(rv[1]), float(rv[2]))
+            if "leg_scale" in payload:
+                foot_ik_cfg.leg_target_scale = float(
+                    payload.get("leg_scale", foot_ik_cfg.leg_target_scale)
+                )
             if "debug_every" in payload:
                 foot_ik_cfg.debug_every_n_frames = max(0, int(payload.get("debug_every", 0)))
+            if "solver" in payload:
+                solver = str(payload.get("solver", foot_ik_cfg.solver)).strip().lower()
+                foot_ik_cfg.solver = "planar" if solver == "planar" else "full"
+            if "ik_reg_weight" in payload:
+                foot_ik_cfg.ik_reg_weight = float(payload.get("ik_reg_weight", foot_ik_cfg.ik_reg_weight))
+            if "ik_reg_hip_yaw" in payload:
+                foot_ik_cfg.ik_reg_hip_yaw = float(payload.get("ik_reg_hip_yaw", foot_ik_cfg.ik_reg_hip_yaw))
+            if "ik_reg_ankle_roll" in payload:
+                foot_ik_cfg.ik_reg_ankle_roll = float(
+                    payload.get("ik_reg_ankle_roll", foot_ik_cfg.ik_reg_ankle_roll)
+                )
+            if "ankle_offset" in payload:
+                ao = tuple(payload.get("ankle_offset", foot_ik_cfg.ankle_target_offset_local))
+                if len(ao) == 3:
+                    foot_ik_cfg.ankle_target_offset_local = (
+                        float(ao[0]),
+                        float(ao[1]),
+                        float(ao[2]),
+                    )
         except Exception:
             return
         print(
-            "[INFO] Foot IK UI update: enable=%s scale=%.3f weight=%.3f reach=%.3f axis_idx=%s sign=%s"
+            "[INFO] Leg IK UI: enable=%s solver=%s weight=%.3f reach=%.3f leg_scale=%.3f reg=%.3f offset=(%.4f,%.4f,%.4f)"
             % (
                 "on" if foot_ik_cfg.enable else "off",
-                float(foot_ik_cfg.pos_scale),
+                str(foot_ik_cfg.solver),
                 float(foot_ik_cfg.weight),
                 float(foot_ik_cfg.max_reach_ratio),
-                str(tuple(int(v) for v in foot_ik_cfg.mmd_axis_idx)),
-                str(tuple(float(v) for v in foot_ik_cfg.mmd_axis_sign)),
+                float(foot_ik_cfg.leg_target_scale),
+                float(foot_ik_cfg.ik_reg_weight),
+                float(foot_ik_cfg.ankle_target_offset_local[0]),
+                float(foot_ik_cfg.ankle_target_offset_local[1]),
+                float(foot_ik_cfg.ankle_target_offset_local[2]),
             )
         )
 
     def _get_foot_ik_viz_for_ui() -> dict[str, Any]:
         return {
             "scale": float(foot_ik_viz_cfg.pos_scale),
-            "weight": float(foot_ik_viz_cfg.weight),
             "axis_idx": tuple(int(v) for v in foot_ik_viz_cfg.axis_idx),
             "axis_sign": tuple(float(v) for v in foot_ik_viz_cfg.axis_sign),
-            "axis_sign_pose": tuple(float(v) for v in foot_ik_viz_cfg.axis_sign_pose),
             "left_ref_origin": tuple(float(v) for v in foot_ik_viz_cfg.left_ref_origin_m),
             "right_ref_origin": tuple(float(v) for v in foot_ik_viz_cfg.right_ref_origin_m),
         }
@@ -800,8 +983,6 @@ def main():
         try:
             if "scale" in payload:
                 foot_ik_viz_cfg.pos_scale = float(payload.get("scale", foot_ik_viz_cfg.pos_scale))
-            if "weight" in payload:
-                foot_ik_viz_cfg.weight = max(0.0, min(1.0, float(payload.get("weight", foot_ik_viz_cfg.weight))))
             if "axis_idx" in payload:
                 ai = tuple(payload.get("axis_idx", foot_ik_viz_cfg.axis_idx))
                 if len(ai) == 3:
@@ -814,10 +995,6 @@ def main():
                 sg = tuple(payload.get("axis_sign", foot_ik_viz_cfg.axis_sign))
                 if len(sg) == 3:
                     foot_ik_viz_cfg.axis_sign = (float(sg[0]), float(sg[1]), float(sg[2]))
-            if "axis_sign_pose" in payload:
-                sp = tuple(payload.get("axis_sign_pose", foot_ik_viz_cfg.axis_sign_pose))
-                if len(sp) == 3:
-                    foot_ik_viz_cfg.axis_sign_pose = (float(sp[0]), float(sp[1]), float(sp[2]))
             if "left_ref_origin" in payload:
                 lv = tuple(payload.get("left_ref_origin", foot_ik_viz_cfg.left_ref_origin_m))
                 if len(lv) == 3:
@@ -829,14 +1006,11 @@ def main():
         except Exception:
             return
         print(
-            "[INFO] Sphere map UI: scale=%.3f weight=%.3f idx=%s sign=%s pose_sign=%s "
-            "Lorig=%s Rorig=%s"
+            "[INFO] Sphere map UI: scale=%.3f idx=%s sign=%s Lorig=%s Rorig=%s"
             % (
                 float(foot_ik_viz_cfg.pos_scale),
-                float(foot_ik_viz_cfg.weight),
                 str(tuple(int(v) for v in foot_ik_viz_cfg.axis_idx)),
                 str(tuple(float(v) for v in foot_ik_viz_cfg.axis_sign)),
-                str(tuple(float(v) for v in foot_ik_viz_cfg.axis_sign_pose)),
                 str(tuple(float(v) for v in foot_ik_viz_cfg.left_ref_origin_m)),
                 str(tuple(float(v) for v in foot_ik_viz_cfg.right_ref_origin_m)),
             )
@@ -849,6 +1023,7 @@ def main():
     set_dance_z_edit_callbacks(_dance_has_z_editted, _on_z_edit_request_from_ui, _z_edit_busy_for_ui)
     set_pd_drive_callbacks(_get_pd_drive_for_ui, _set_pd_drive_from_ui)
     set_z_offset_enable_callbacks(_get_z_offset_enable_for_ui, _set_z_offset_enable_from_ui)
+    set_foot_ground_comp_callbacks(_get_foot_ground_comp_for_ui, _set_foot_ground_comp_from_ui)
     set_audio_volume_callbacks(_get_audio_volume_for_ui, _set_audio_volume_from_ui)
     set_root_quat_rpy_callbacks(_get_root_quat_rpy_for_ui, _set_root_quat_rpy_from_ui)
     set_foot_ik_callbacks(_get_foot_ik_for_ui, _set_foot_ik_from_ui)
@@ -906,6 +1081,168 @@ def main():
         _cache_xyz("__foot_ik_r", foot_ik_state.last_right_foot_mmd_viz_world)
         _cache_xyz("__toe_ik_l", foot_ik_state.last_left_toe_mmd_viz_world)
         _cache_xyz("__toe_ik_r", foot_ik_state.last_right_toe_mmd_viz_world)
+        _cache_xyz("__root_target", foot_ik_state.last_target_root_world)
+        _cache_xyz("__root_sim", foot_ik_state.last_dbg_sim_root_world)
+        _cache_xyz("__ik_pred_l", foot_ik_state.last_left_ik_pred_world)
+        _cache_xyz("__ik_pred_r", foot_ik_state.last_right_ik_pred_world)
+        _cache_xyz("__ik_target_l", foot_ik_state.last_left_ik_target_world)
+        _cache_xyz("__ik_target_r", foot_ik_state.last_right_ik_target_world)
+
+        def _cache_scalar(key: str, val: float | None) -> None:
+            if val is None:
+                return
+            joint_pos_deg_cache[key] = float(val)
+
+        _cache_scalar("__dbg_root_to_red_l_m", foot_ik_state.last_dbg_root_target_to_red_l_m)
+        _cache_scalar("__dbg_root_to_red_r_m", foot_ik_state.last_dbg_root_target_to_red_r_m)
+        _cache_scalar("__dbg_red_to_ankle_l_m", foot_ik_state.last_dbg_red_to_ankle_l_m)
+        _cache_scalar("__dbg_red_to_ankle_r_m", foot_ik_state.last_dbg_red_to_ankle_r_m)
+        _cache_scalar("__dbg_red_to_pred_l_m", foot_ik_state.last_dbg_red_to_pred_l_m)
+        _cache_scalar("__dbg_red_to_pred_r_m", foot_ik_state.last_dbg_red_to_pred_r_m)
+        _cache_scalar("__dbg_pred_to_ankle_l_m", foot_ik_state.last_dbg_pred_to_ankle_l_m)
+        _cache_scalar("__dbg_pred_to_ankle_r_m", foot_ik_state.last_dbg_pred_to_ankle_r_m)
+        _cache_scalar("__dbg_ik_residual_l_m", foot_ik_state.last_left_ik_residual_m)
+        _cache_scalar("__dbg_ik_residual_r_m", foot_ik_state.last_right_ik_residual_m)
+        _cache_scalar("__dbg_sim_root_to_target_m", foot_ik_state.last_dbg_sim_root_to_target_m)
+        _cache_scalar("__dbg_root_orient_err_deg", foot_ik_state.last_dbg_root_orient_err_deg)
+        rpy_t = foot_ik_state.last_dbg_root_rpy_target_deg
+        rpy_s = foot_ik_state.last_dbg_root_rpy_sim_deg
+        rpy_d = foot_ik_state.last_dbg_root_rpy_delta_deg
+        if rpy_t is not None:
+            joint_pos_deg_cache["__dbg_root_rpy_target_r"] = float(rpy_t[0])
+            joint_pos_deg_cache["__dbg_root_rpy_target_p"] = float(rpy_t[1])
+            joint_pos_deg_cache["__dbg_root_rpy_target_y"] = float(rpy_t[2])
+        if rpy_s is not None:
+            joint_pos_deg_cache["__dbg_root_rpy_sim_r"] = float(rpy_s[0])
+            joint_pos_deg_cache["__dbg_root_rpy_sim_p"] = float(rpy_s[1])
+            joint_pos_deg_cache["__dbg_root_rpy_sim_y"] = float(rpy_s[2])
+        if rpy_d is not None:
+            joint_pos_deg_cache["__dbg_root_rpy_delta_r"] = float(rpy_d[0])
+            joint_pos_deg_cache["__dbg_root_rpy_delta_p"] = float(rpy_d[1])
+            joint_pos_deg_cache["__dbg_root_rpy_delta_y"] = float(rpy_d[2])
+
+    def _read_sim_root_pose() -> tuple[tuple[float, float, float] | None, list[float] | None]:
+        try:
+            root_state = getattr(env.unwrapped.scene["robot"].data, "root_state_w", None)
+            if torch.is_tensor(root_state) and root_state.shape[1] >= 7:
+                row = root_state[0]
+                pos = (
+                    float(row[0].item()),
+                    float(row[1].item()),
+                    float(row[2].item()),
+                )
+                quat = root_quat_from_state_row(row)
+                return pos, quat
+        except Exception:
+            return None, None
+        return None, None
+
+    def _read_sim_root_world() -> tuple[float, float, float] | None:
+        pos, _ = _read_sim_root_pose()
+        return pos
+
+    def _update_foot_root_debug_metrics(
+        *,
+        target_root_pos: tuple[float, float, float] | None,
+        target_root_quat_wxyz: list[float] | None,
+        left_ankle_world: tuple[float, float, float] | None,
+        right_ankle_world: tuple[float, float, float] | None,
+    ) -> None:
+        sim_root, sim_quat = _read_sim_root_pose()
+        foot_ik_state.last_dbg_sim_root_world = sim_root
+        foot_ik_state.last_dbg_sim_root_quat_wxyz = sim_quat
+        foot_ik_state.last_dbg_root_target_to_red_l_m = dist3(
+            target_root_pos, foot_ik_state.last_left_foot_mmd_viz_world
+        )
+        foot_ik_state.last_dbg_root_target_to_red_r_m = dist3(
+            target_root_pos, foot_ik_state.last_right_foot_mmd_viz_world
+        )
+        foot_ik_state.last_dbg_red_to_ankle_l_m = dist3(
+            foot_ik_state.last_left_foot_mmd_viz_world, left_ankle_world
+        )
+        foot_ik_state.last_dbg_red_to_ankle_r_m = dist3(
+            foot_ik_state.last_right_foot_mmd_viz_world, right_ankle_world
+        )
+        foot_ik_state.last_dbg_red_to_pred_l_m = dist3(
+            foot_ik_state.last_left_foot_mmd_viz_world, foot_ik_state.last_left_ik_pred_world
+        )
+        foot_ik_state.last_dbg_red_to_pred_r_m = dist3(
+            foot_ik_state.last_right_foot_mmd_viz_world, foot_ik_state.last_right_ik_pred_world
+        )
+        foot_ik_state.last_dbg_pred_to_ankle_l_m = dist3(
+            foot_ik_state.last_left_ik_pred_world, left_ankle_world
+        )
+        foot_ik_state.last_dbg_pred_to_ankle_r_m = dist3(
+            foot_ik_state.last_right_ik_pred_world, right_ankle_world
+        )
+        foot_ik_state.last_dbg_sim_root_to_target_m = dist3(sim_root, target_root_pos)
+        foot_ik_state.last_dbg_root_orient_err_deg = quat_angular_error_deg(
+            target_root_quat_wxyz, sim_quat
+        )
+        rpy_t = quat_wxyz_to_euler_xyz_deg(target_root_quat_wxyz)
+        rpy_s = quat_wxyz_to_euler_xyz_deg(sim_quat)
+        foot_ik_state.last_dbg_root_rpy_target_deg = rpy_t
+        foot_ik_state.last_dbg_root_rpy_sim_deg = rpy_s
+        if rpy_t is not None and rpy_s is not None:
+            foot_ik_state.last_dbg_root_rpy_delta_deg = (
+                float(rpy_s[0]) - float(rpy_t[0]),
+                float(rpy_s[1]) - float(rpy_t[1]),
+                float(rpy_s[2]) - float(rpy_t[2]),
+            )
+        else:
+            foot_ik_state.last_dbg_root_rpy_delta_deg = None
+        foot_ik_viz.update_root_debug(
+            target_root_world=target_root_pos,
+            sim_root_world=sim_root,
+        )
+
+    def _maybe_log_foot_root_debug(frame_idx: int) -> None:
+        stride = int(max(0, foot_ik_cfg.debug_every_n_frames))
+        if stride <= 0:
+            stride = 120
+        if int(frame_idx) % stride != 0:
+            return
+        rt = foot_ik_state.last_target_root_world
+        rs = foot_ik_state.last_dbg_sim_root_world
+        print(
+            "[DBG] f=%d rootT->redL=%.3fm rootT->redR=%.3fm redL->ankleL=%.3fm redR->ankleR=%.3fm "
+            "redL->predL=%.3fm predL->ankleL=%.3fm ikResL=%.4fm "
+            "simRoot->rootT=%.3fm orientErr=%.2fdeg"
+            % (
+                int(frame_idx),
+                float(foot_ik_state.last_dbg_root_target_to_red_l_m or -1.0),
+                float(foot_ik_state.last_dbg_root_target_to_red_r_m or -1.0),
+                float(foot_ik_state.last_dbg_red_to_ankle_l_m or -1.0),
+                float(foot_ik_state.last_dbg_red_to_ankle_r_m or -1.0),
+                float(foot_ik_state.last_dbg_red_to_pred_l_m or -1.0),
+                float(foot_ik_state.last_dbg_pred_to_ankle_l_m or -1.0),
+                float(foot_ik_state.last_left_ik_residual_m or -1.0),
+                float(foot_ik_state.last_dbg_sim_root_to_target_m or -1.0),
+                float(foot_ik_state.last_dbg_root_orient_err_deg or -1.0),
+            )
+        )
+        if rt is not None:
+            print("      rootTarget pos=(%.3f, %.3f, %.3f)" % (rt[0], rt[1], rt[2]))
+        if rs is not None:
+            print("      rootSim    pos=(%.3f, %.3f, %.3f)" % (rs[0], rs[1], rs[2]))
+        rpy_t = foot_ik_state.last_dbg_root_rpy_target_deg
+        rpy_s = foot_ik_state.last_dbg_root_rpy_sim_deg
+        rpy_d = foot_ik_state.last_dbg_root_rpy_delta_deg
+        if rpy_t is not None:
+            print(
+                "      rootTarget rpy=(R%+.1f P%+.1f Y%+.1f)deg"
+                % (rpy_t[0], rpy_t[1], rpy_t[2])
+            )
+        if rpy_s is not None:
+            print(
+                "      rootSim    rpy=(R%+.1f P%+.1f Y%+.1f)deg"
+                % (rpy_s[0], rpy_s[1], rpy_s[2])
+            )
+        if rpy_d is not None:
+            print(
+                "      sim-target rpy=(R%+.1f P%+.1f Y%+.1f)deg (sim minus cmd)"
+                % (rpy_d[0], rpy_d[1], rpy_d[2])
+            )
 
     def _set_control_reference_pose(new_default_joint_pos: Any) -> bool:
         nonlocal default_joint_pos
@@ -1243,22 +1580,23 @@ def main():
                     right_world=foot_ik_state.last_right_foot_mmd_viz_world,
                     left_toe_world=foot_ik_state.last_left_toe_mmd_viz_world,
                     right_toe_world=foot_ik_state.last_right_toe_mmd_viz_world,
+                    left_reach_clamped=bool(foot_ik_state.last_left_reach_clamped),
+                    right_reach_clamped=bool(foot_ik_state.last_right_reach_clamped),
+                )
+                _apply_ankle_ground_comp_to_cmd(
+                    joint_pos_cmd,
+                    target_root_pos,
+                    target_root_quat_wxyz,
+                    joint_default=default_joint_pos,
                 )
 
                 if use_root_teleport and target_root_pos is not None and target_root_quat_wxyz is not None:
                     if csv_root_rotation_lookup is False and not csv_root_track_warned:
                         print("[WARN] 当前 motion 未找到可用根旋转轨迹，root 朝向将保持动作起始值")
                         csv_root_track_warned = True
-                    applied_root = apply_root_pos_instant(env, target_root_pos, target_root_quat_wxyz)
-                    if not applied_root and not root_track_warned:
-                        print(
-                            "[WARN] 当前环境不支持直接写 root 位姿，已跳过根位姿同步"
-                            f"（平移骨: {mmd_root_trans_bone}）"
-                        )
-                        root_track_warned = True
 
-                if frame // 10 != last_printed_frame:
-                    last_printed_frame = frame // 10
+                if frame // PLAYBACK_LOG_FRAME_STRIDE != last_printed_frame:
+                    last_printed_frame = frame // PLAYBACK_LOG_FRAME_STRIDE
                     tag = format_playback_log_label(current_motion_label)
                     root_suffix = ""
                     root_state_now = getattr(robot.data, "root_state_w", None)
@@ -1286,6 +1624,24 @@ def main():
                         if not applied and not instant_mode_warned:
                             print("[WARN] 当前环境不支持直接写关节状态，自动回退为驱动模式")
                             instant_mode_warned = True
+
+                    if use_root_teleport and target_root_pos is not None and target_root_quat_wxyz is not None:
+                        last_playback_target_root_quat = list(target_root_quat_wxyz)
+                        applied_root = apply_root_pos_instant(
+                            env, target_root_pos, target_root_quat_wxyz
+                        )
+                        last_playback_target_root = target_root_pos
+                        if not applied_root and not root_track_warned:
+                            print(
+                                "[WARN] 当前环境不支持直接写 root 位姿，已跳过根位姿同步"
+                                f"（平移骨: {mmd_root_trans_bone}）"
+                            )
+                            root_track_warned = True
+                    else:
+                        last_playback_target_root = target_root_pos
+                        last_playback_target_root_quat = (
+                            list(target_root_quat_wxyz) if target_root_quat_wxyz is not None else None
+                        )
 
                     if pd_drive_enabled_ui and joint_pos_cmd is not None:
                         _apply_joint_pd_target(joint_pos_cmd)
@@ -1342,6 +1698,7 @@ def main():
                     joint_default=base_default,
                     motion_track_state=mt,
                 )
+                _apply_ankle_ground_comp_to_cmd(jp_cmd, tr_pos, tr_quat, joint_default=base_default)
                 if use_root_teleport and tr_pos is not None and tr_quat is not None:
                     apply_root_pos_instant(env, tr_pos, tr_quat)
                 if res is not None and jp_cmd is not None:
@@ -1364,6 +1721,21 @@ def main():
                     actions = zero_action
 
             env.step(actions)
+            # Physics (contacts + joint PD) can rotate the floating pelvis after the
+            # pre-step teleport; re-lock root/joints so sim matches the playback command.
+            if use_root_teleport and last_playback_target_root is not None:
+                apply_root_pos_instant(
+                    env,
+                    last_playback_target_root,
+                    last_playback_target_root_quat,
+                )
+            if (not pd_drive_enabled_ui) and last_frame_joint_pos_cmd is not None and joint_ids is not None:
+                apply_joint_state_instant(env, last_frame_joint_pos_cmd, joint_ids)
+            _update_ankle_link_debug_viz(
+                last_playback_target_root,
+                last_playback_target_root_quat,
+                frame_idx=last_csv_motion_frame,
+            )
 
     dance_listener.unsubscribe()
     env.close()

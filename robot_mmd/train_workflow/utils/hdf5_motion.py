@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 
+from robot_mmd.train_workflow.utils.mmd_fk import FootIkVizConfig
 from robot_mmd.train_workflow.utils.csv_motion_loader import (
     FootIkConfig,
     FootIkState,
@@ -22,6 +23,7 @@ from robot_mmd.train_workflow.utils.csv_motion_loader import (
     is_hand_joint_name,
     interpolate_bone,
     load_csv_motion,
+    update_foot_ik_mmd_viz_world,
 )
 from robot_mmd.train_workflow.utils.trans_util import (
     mmd_root_offset_quat_to_world,
@@ -278,6 +280,7 @@ def compile_csv_motion_to_hdf5_motion(
     root_quat_rpy_scale: tuple[float, float, float] = (1.0, 1.0, -1.0),
     root_quat_rpy_axis_idx: tuple[int, int, int] = (0, 1, 2),
     foot_ik_cfg: FootIkConfig | None = None,
+    foot_ik_viz_cfg: FootIkVizConfig | None = None,
 ) -> Hdf5Motion:
     frames_map = load_csv_motion(csv_path)
     has_hand_data = bool(frames_have_hand_data(frames_map))
@@ -354,6 +357,15 @@ def compile_csv_motion_to_hdf5_motion(
             foot_ik_root_quat = [float(v) for v in q_delta.tolist()]
 
         if frame_data:
+            update_foot_ik_mmd_viz_world(
+                foot_state,
+                frame_data,
+                float(groove_pos_to_world),
+                is_pose=bool(is_pose),
+                foot_ik_viz_cfg=foot_ik_viz_cfg,
+                target_root_pos=foot_ik_root_pos,
+                target_root_quat_wxyz=foot_ik_root_quat,
+            )
             target_pos = build_joint_positions_from_frame(
                 frame_data,
                 joint_names,
@@ -365,6 +377,7 @@ def compile_csv_motion_to_hdf5_motion(
                 foot_ik_frame_idx=int(frame),
                 foot_ik_root_pos_world=foot_ik_root_pos,
                 foot_ik_root_quat_wxyz=foot_ik_root_quat,
+                foot_ik_viz_cfg=foot_ik_viz_cfg,
             )
             joint_pos_delta[int(frame), :] = target_pos.astype(np.float32, copy=False)
 

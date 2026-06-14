@@ -20,9 +20,11 @@ from robot_mmd.train_workflow.utils.csv_motion_loader import (
     build_joint_positions_from_frame,
     get_frame_indices,
     interpolate_bone,
+    update_foot_ik_mmd_viz_world,
+    update_foot_ik_reach_clamp_flags,
 )
 from robot_mmd.train_workflow.utils.hdf5_motion import Hdf5Motion, sample_hdf5_frame
-from robot_mmd.train_workflow.utils.mmd_fk import FootIkVizConfig, compute_mmd_foot_ik_viz_bundle
+from robot_mmd.train_workflow.utils.mmd_fk import FootIkVizConfig
 from robot_mmd.train_workflow.utils.trans_util import (
     mmd_root_offset_quat_to_world,
     quat_from_waist_extrinsic_xyz,
@@ -187,43 +189,22 @@ def _update_foot_ik_mmd_viz_world(
     groove_pos_to_world: float,
     frames: Any,
     foot_ik_viz_cfg: FootIkVizConfig | None = None,
+    target_root_pos: tuple[float, float, float] | None = None,
+    target_root_quat_wxyz: list[float] | None = None,
+    root_trans_bone: str | None = None,
+    foot_ik_cfg: FootIkConfig | None = None,
 ) -> None:
-    """Compute MMD foot IK FK positions in absolute Isaac world (debug spheres)."""
-    if foot_ik_state is None:
-        return
-    foot_ik_state.last_left_foot_mmd_viz_world = None
-    foot_ik_state.last_right_foot_mmd_viz_world = None
-    foot_ik_state.last_left_toe_mmd_viz_world = None
-    foot_ik_state.last_right_toe_mmd_viz_world = None
-    foot_ik_state.last_left_foot_mmd_local_m = None
-    foot_ik_state.last_right_foot_mmd_local_m = None
-    foot_ik_state.last_left_foot_mmd_fk_world_m = None
-    foot_ik_state.last_right_foot_mmd_fk_world_m = None
-    foot_ik_state.last_left_toe_mmd_local_m = None
-    foot_ik_state.last_right_toe_mmd_local_m = None
-    foot_ik_state.last_left_toe_mmd_fk_world_m = None
-    foot_ik_state.last_right_toe_mmd_fk_world_m = None
-    if not frame_data:
-        return
-    try:
-        bundle = compute_mmd_foot_ik_viz_bundle(
-            frame_data,
-            pos_scale=float(groove_pos_to_world),
-            is_pose=motion_is_static_pose(frames),
-            viz_cfg=foot_ik_viz_cfg,
-        )
-    except Exception:
-        return
-
-    def _apply(prefix: str, block: dict[str, tuple[float, float, float] | None]) -> None:
-        setattr(foot_ik_state, f"last_{prefix}_mmd_local_m", block.get("local_m"))
-        setattr(foot_ik_state, f"last_{prefix}_mmd_fk_world_m", block.get("fk_world_m"))
-        setattr(foot_ik_state, f"last_{prefix}_mmd_viz_world", block.get("isaac_world_m"))
-
-    _apply("left_foot", bundle["left"])
-    _apply("right_foot", bundle["right"])
-    _apply("left_toe", bundle["left_toe"])
-    _apply("right_toe", bundle["right_toe"])
+    update_foot_ik_mmd_viz_world(
+        foot_ik_state,
+        frame_data,
+        groove_pos_to_world,
+        is_pose=motion_is_static_pose(frames),
+        foot_ik_viz_cfg=foot_ik_viz_cfg,
+        target_root_pos=target_root_pos,
+        target_root_quat_wxyz=target_root_quat_wxyz,
+        root_trans_bone=root_trans_bone,
+        foot_ik_cfg=foot_ik_cfg,
+    )
 
 
 def _interp_frame_data(
@@ -349,13 +330,6 @@ def compute_targets_for_motion_frame(
 
     interp_fd = _interp_frame_data(frame, frames, bone_frame_lists, all_bones)
     ui_debug.last_interp_frame_data = interp_fd
-    _update_foot_ik_mmd_viz_world(
-        foot_ik_state,
-        interp_fd,
-        groove_pos_to_world,
-        frames,
-        foot_ik_viz_cfg=foot_ik_viz_cfg,
-    )
 
     target_root_pos, target_root_quat_wxyz, mmd_root_trans_bone, csv_root_rotation_lookup = (
         _compute_csv_root_targets(
@@ -371,6 +345,24 @@ def compute_targets_for_motion_frame(
             root_quat_rpy_scale,
             root_quat_rpy_axis_idx,
         )
+    )
+
+    _update_foot_ik_mmd_viz_world(
+        foot_ik_state,
+        interp_fd,
+        groove_pos_to_world,
+        frames,
+        foot_ik_viz_cfg=foot_ik_viz_cfg,
+        target_root_pos=target_root_pos,
+        target_root_quat_wxyz=target_root_quat_wxyz,
+        root_trans_bone=mmd_root_trans_bone,
+        foot_ik_cfg=foot_ik_cfg,
+    )
+    update_foot_ik_reach_clamp_flags(
+        foot_ik_state,
+        foot_ik_cfg,
+        root_pos_world=target_root_pos,
+        root_quat_wxyz=target_root_quat_wxyz,
     )
 
     if not interp_fd or joint_names is None or default_joint_pos is None:

@@ -27,6 +27,7 @@ from robot_mmd.train_workflow.ui.retargeting_tune import (
     build_retarget_tune_window,
 )
 from robot_mmd.train_workflow.utils.audio_util import DEFAULT_VOLUME
+from robot_mmd.train_workflow.utils.mmd_fk import default_foot_ik_viz_config
 
 WINDOW_TITLE = "G1 Joint Mapping"
 _AUTO_OPEN = True
@@ -54,6 +55,8 @@ _pd_drive_provider: Callable[[], bool] | None = None
 _pd_drive_setter: Callable[[bool], None] | None = None
 _z_offset_enable_provider: Callable[[], bool] | None = None
 _z_offset_enable_setter: Callable[[bool], None] | None = None
+_foot_ground_comp_provider: Callable[[], bool] | None = None
+_foot_ground_comp_setter: Callable[[bool], None] | None = None
 _root_quat_rpy_provider: Callable[
     [], tuple[tuple[float, float, float], tuple[int, int, int]]
 ] | None = None
@@ -75,6 +78,7 @@ _pd_drive_sync_suppress_set: bool = False
 _z_offset_sync_suppress_set: bool = False
 _foot_ik_sync_suppress_set: bool = False
 _foot_ik_viz_sync_suppress_set: bool = False
+_foot_ground_comp_sync_suppress_set: bool = False
 _audio_volume_sync_suppress_set: bool = False
 
 # 映射表被用户修改后通知主循环（例如在非播放状态下按新映射重算当前姿势）
@@ -147,6 +151,16 @@ def set_z_offset_enable_callbacks(
     global _z_offset_enable_provider, _z_offset_enable_setter
     _z_offset_enable_provider = provider
     _z_offset_enable_setter = setter
+
+
+def set_foot_ground_comp_callbacks(
+    provider: Callable[[], bool] | None,
+    setter: Callable[[bool], None] | None,
+) -> None:
+    """Runtime ankle pitch/roll ground fix (Mapping UI checkbox)."""
+    global _foot_ground_comp_provider, _foot_ground_comp_setter
+    _foot_ground_comp_provider = provider
+    _foot_ground_comp_setter = setter
 
 
 def set_root_quat_rpy_callbacks(
@@ -505,52 +519,40 @@ def _build_mapping_window(ui):
 
         pd_drive_model = ui.SimpleBoolModel(False)
         z_offset_enable_model = ui.SimpleBoolModel(False)
+        foot_ground_comp_model = ui.SimpleBoolModel(True)
         audio_volume_model = ui.SimpleFloatModel(float(DEFAULT_VOLUME))
         foot_ik_enable_model = ui.SimpleBoolModel(False)
-        foot_ik_scale_model = ui.SimpleFloatModel(1.0)
         foot_ik_weight_model = ui.SimpleFloatModel(1.0)
         foot_ik_reach_model = ui.SimpleFloatModel(0.985)
-        foot_ik_axis_idx_models = (
-            ui.SimpleIntModel(0),
-            ui.SimpleIntModel(2),
-            ui.SimpleIntModel(1),
-        )
-        foot_ik_axis_sign_models = (
-            ui.SimpleFloatModel(-1.0),
-            ui.SimpleFloatModel(-1.0),
-            ui.SimpleFloatModel(1.0),
-        )
-        foot_ik_left_ref_models = (
-            ui.SimpleFloatModel(0.0),
-            ui.SimpleFloatModel(0.095),
-            ui.SimpleFloatModel(-0.42),
-        )
-        foot_ik_right_ref_models = (
-            ui.SimpleFloatModel(0.0),
-            ui.SimpleFloatModel(-0.095),
-            ui.SimpleFloatModel(-0.42),
-        )
+        foot_ik_leg_scale_model = ui.SimpleFloatModel(1.0)
+        foot_ik_ankle_offset_x_model = ui.SimpleFloatModel(0.0)
+        foot_ik_ankle_offset_y_model = ui.SimpleFloatModel(0.0)
+        foot_ik_ankle_offset_z_model = ui.SimpleFloatModel(0.02)
         foot_ik_debug_every_model = ui.SimpleIntModel(0)
-        sphere_map_scale_model = ui.SimpleFloatModel(1.0)
+        foot_ik_solver_model = ui.SimpleIntModel(0)
+        foot_ik_solver_combo = None
+        foot_ik_reg_weight_model = ui.SimpleFloatModel(0.15)
+        _sphere_viz_defaults = default_foot_ik_viz_config()
+        sphere_map_scale_model = ui.SimpleFloatModel(float(_sphere_viz_defaults.pos_scale))
         sphere_map_axis_idx_models = (
-            ui.SimpleIntModel(0),
-            ui.SimpleIntModel(1),
-            ui.SimpleIntModel(2),
+            ui.SimpleIntModel(int(_sphere_viz_defaults.axis_idx[0])),
+            ui.SimpleIntModel(int(_sphere_viz_defaults.axis_idx[1])),
+            ui.SimpleIntModel(int(_sphere_viz_defaults.axis_idx[2])),
         )
         sphere_map_axis_sign_models = (
-            ui.SimpleFloatModel(-1.0),
-            ui.SimpleFloatModel(-1.0),
-            ui.SimpleFloatModel(1.0),
+            ui.SimpleFloatModel(float(_sphere_viz_defaults.axis_sign[0])),
+            ui.SimpleFloatModel(float(_sphere_viz_defaults.axis_sign[1])),
+            ui.SimpleFloatModel(float(_sphere_viz_defaults.axis_sign[2])),
         )
         sphere_map_left_ref_origin_models = (
-            ui.SimpleFloatModel(-0.15),
-            ui.SimpleFloatModel(-0.15),
-            ui.SimpleFloatModel(0.0),
+            ui.SimpleFloatModel(float(_sphere_viz_defaults.left_ref_origin_m[0])),
+            ui.SimpleFloatModel(float(_sphere_viz_defaults.left_ref_origin_m[1])),
+            ui.SimpleFloatModel(float(_sphere_viz_defaults.left_ref_origin_m[2])),
         )
         sphere_map_right_ref_origin_models = (
-            ui.SimpleFloatModel(0.15),
-            ui.SimpleFloatModel(-0.15),
-            ui.SimpleFloatModel(0.0),
+            ui.SimpleFloatModel(float(_sphere_viz_defaults.right_ref_origin_m[0])),
+            ui.SimpleFloatModel(float(_sphere_viz_defaults.right_ref_origin_m[1])),
+            ui.SimpleFloatModel(float(_sphere_viz_defaults.right_ref_origin_m[2])),
         )
 
         def _dance_entries() -> list[DanceUiEntry]:
@@ -632,6 +634,16 @@ def _build_mapping_window(ui):
             except Exception:
                 pass
 
+        def _on_foot_ground_comp_changed(m: Any) -> None:
+            if _foot_ground_comp_sync_suppress_set:
+                return
+            if _foot_ground_comp_setter is None:
+                return
+            try:
+                _foot_ground_comp_setter(bool(m.get_value_as_bool()))
+            except Exception:
+                pass
+
         def _on_audio_volume_changed(m: Any) -> None:
             if _audio_volume_sync_suppress_set:
                 return
@@ -672,16 +684,17 @@ def _build_mapping_window(ui):
             try:
                 payload = {
                     "enable": bool(foot_ik_enable_model.get_value_as_bool()),
-                    "scale": float(foot_ik_scale_model.get_value_as_float()),
                     "weight": float(foot_ik_weight_model.get_value_as_float()),
                     "reach": float(foot_ik_reach_model.get_value_as_float()),
-                    "axis_idx": tuple(
-                        max(0, min(2, int(m.get_value_as_int()))) for m in foot_ik_axis_idx_models
-                    ),
-                    "axis_sign": tuple(float(m.get_value_as_float()) for m in foot_ik_axis_sign_models),
-                    "left_ref": tuple(float(m.get_value_as_float()) for m in foot_ik_left_ref_models),
-                    "right_ref": tuple(float(m.get_value_as_float()) for m in foot_ik_right_ref_models),
+                    "leg_scale": float(foot_ik_leg_scale_model.get_value_as_float()),
                     "debug_every": max(0, int(foot_ik_debug_every_model.get_value_as_int())),
+                    "solver": "planar" if int(foot_ik_solver_model.get_value_as_int()) == 1 else "full",
+                    "ik_reg_weight": float(foot_ik_reg_weight_model.get_value_as_float()),
+                    "ankle_offset": (
+                        float(foot_ik_ankle_offset_x_model.get_value_as_float()),
+                        float(foot_ik_ankle_offset_y_model.get_value_as_float()),
+                        float(foot_ik_ankle_offset_z_model.get_value_as_float()),
+                    ),
                 }
                 _foot_ik_setter(payload)
                 _notify_mapping_changed()
@@ -716,20 +729,19 @@ def _build_mapping_window(ui):
 
         pd_drive_model.add_value_changed_fn(_on_pd_drive_changed)
         z_offset_enable_model.add_value_changed_fn(_on_z_offset_enable_changed)
+        foot_ground_comp_model.add_value_changed_fn(_on_foot_ground_comp_changed)
         audio_volume_model.add_value_changed_fn(_on_audio_volume_changed)
         foot_ik_enable_model.add_value_changed_fn(lambda _m: _push_foot_ik())
-        foot_ik_scale_model.add_value_changed_fn(lambda _m: _push_foot_ik())
         foot_ik_weight_model.add_value_changed_fn(lambda _m: _push_foot_ik())
         foot_ik_reach_model.add_value_changed_fn(lambda _m: _push_foot_ik())
-        for _m in foot_ik_axis_idx_models:
-            _m.add_value_changed_fn(lambda _x: _push_foot_ik())
-        for _m in foot_ik_axis_sign_models:
-            _m.add_value_changed_fn(lambda _x: _push_foot_ik())
-        for _m in foot_ik_left_ref_models:
-            _m.add_value_changed_fn(lambda _x: _push_foot_ik())
-        for _m in foot_ik_right_ref_models:
-            _m.add_value_changed_fn(lambda _x: _push_foot_ik())
+        foot_ik_leg_scale_model.add_value_changed_fn(lambda _m: _push_foot_ik())
+        foot_ik_ankle_offset_x_model.add_value_changed_fn(lambda _m: _push_foot_ik())
+        foot_ik_ankle_offset_y_model.add_value_changed_fn(lambda _m: _push_foot_ik())
+        foot_ik_ankle_offset_z_model.add_value_changed_fn(lambda _m: _push_foot_ik())
         foot_ik_debug_every_model.add_value_changed_fn(lambda _m: _push_foot_ik())
+        foot_ik_solver_model.add_value_changed_fn(lambda _m: _push_foot_ik())
+        foot_ik_reg_weight_model.add_value_changed_fn(lambda _m: _push_foot_ik())
+
         sphere_map_scale_model.add_value_changed_fn(lambda _m: _push_sphere_map())
         for _m in sphere_map_axis_idx_models:
             _m.add_value_changed_fn(lambda _x: _push_sphere_map())
@@ -803,45 +815,100 @@ def _build_mapping_window(ui):
                     ui.CheckBox(model=z_offset_enable_model, width=24, height=22)
                     ui.Spacer()
                 with ui.HStack(height=28):
+                    ui.Label("Ankle ground comp", width=118)
+                    ui.CheckBox(model=foot_ground_comp_model, width=24, height=22)
+                    ui.Spacer()
+                with ui.HStack(height=28):
                     ui.Label("Robot Leg IK", width=118)
                     ui.CheckBox(model=foot_ik_enable_model, width=24, height=22)
                     ui.Spacer()
                 with ui.HStack(height=28):
-                    ui.Label("IK scale", width=118)
-                    ui.FloatField(model=foot_ik_scale_model, width=64)
-                    ui.FloatSlider(model=foot_ik_scale_model, min=0.0, max=2.0, width=140)
-                    ui.Label("weight", width=48)
+                    ui.Label("IK weight", width=118)
                     ui.FloatField(model=foot_ik_weight_model, width=56)
-                    ui.FloatSlider(model=foot_ik_weight_model, min=0.0, max=1.0, width=96)
+                    ui.FloatSlider(model=foot_ik_weight_model, min=0.0, max=1.0, width=140)
                     ui.Spacer()
                 with ui.HStack(height=28):
                     ui.Label("IK reach", width=118)
                     ui.FloatField(model=foot_ik_reach_model, width=64)
                     ui.FloatSlider(model=foot_ik_reach_model, min=0.6, max=1.2, width=140)
-                    ui.Label("dbgN", width=48)
-                    ui.IntField(model=foot_ik_debug_every_model, width=56)
                     ui.Spacer()
                 with ui.HStack(height=28):
-                    ui.Label("IK axis idx", width=118)
-                    for _m in foot_ik_axis_idx_models:
-                        ui.IntField(model=_m, width=32)
-                    ui.Spacer(width=10)
-                    ui.Label("sign", width=36)
-                    for _m in foot_ik_axis_sign_models:
-                        ui.FloatField(model=_m, width=46)
-                    ui.Spacer()
-                with ui.HStack(height=28):
-                    ui.Label("L ref xyz", width=118)
-                    for _m in foot_ik_left_ref_models:
-                        ui.FloatField(model=_m, width=62)
-                    ui.Spacer()
-                with ui.HStack(height=28):
-                    ui.Label("R ref xyz", width=118)
-                    for _m in foot_ik_right_ref_models:
-                        ui.FloatField(model=_m, width=62)
+                    ui.Label("Leg scale", width=118)
+                    ui.FloatField(model=foot_ik_leg_scale_model, width=64)
+                    ui.FloatSlider(model=foot_ik_leg_scale_model, min=0.5, max=1.2, width=140)
                     ui.Spacer()
                 ui.Label(
-                    "--- Red Sphere Map ---",
+                    "Ankle offset (root-local m). Orange sphere = red + offset.",
+                    height=20,
+                    style={"font_size": 12, "color": 0xFFAAAAAA},
+                )
+                with ui.HStack(height=28):
+                    ui.Label("offset X", width=118)
+                    ui.FloatField(model=foot_ik_ankle_offset_x_model, width=56)
+                    ui.FloatSlider(
+                        model=foot_ik_ankle_offset_x_model, min=-0.12, max=0.12, width=140
+                    )
+                    ui.Spacer()
+                with ui.HStack(height=28):
+                    ui.Label("offset Y", width=118)
+                    ui.FloatField(model=foot_ik_ankle_offset_y_model, width=56)
+                    ui.FloatSlider(
+                        model=foot_ik_ankle_offset_y_model, min=-0.12, max=0.12, width=140
+                    )
+                    ui.Spacer()
+                with ui.HStack(height=28):
+                    ui.Label("offset Z", width=118)
+                    ui.FloatField(model=foot_ik_ankle_offset_z_model, width=56)
+                    ui.FloatSlider(
+                        model=foot_ik_ankle_offset_z_model, min=-0.12, max=0.12, width=140
+                    )
+                    ui.Spacer()
+                with ui.HStack(height=22):
+                    ui.Label("L IK target", width=118)
+                    l_ik_target_label = ui.Label("x: -  y: -  z: -", width=300)
+                    ui.Spacer()
+                with ui.HStack(height=22):
+                    ui.Label("R IK target", width=118)
+                    r_ik_target_label = ui.Label("x: -  y: -  z: -", width=300)
+                    ui.Spacer()
+                with ui.CollapsableFrame("Foot IK Advanced", collapsed=True, height=0):
+                    with ui.VStack(spacing=4):
+                        ui.Label(
+                            "Planar solver is debug fallback only; full is recommended.",
+                            height=20,
+                            style={"font_size": 12, "color": 0xFFAAAAAA},
+                        )
+                        with ui.HStack(height=28):
+                            ui.Label("IK solver", width=118)
+                            foot_ik_solver_combo = ui.ComboBox(
+                                0, "full", "planar (debug)", width=140, height=22
+                            )
+                            ui.Spacer()
+                        with ui.HStack(height=28):
+                            ui.Label("Reg weight", width=118)
+                            ui.FloatField(model=foot_ik_reg_weight_model, width=56)
+                            ui.FloatSlider(
+                                model=foot_ik_reg_weight_model, min=0.0, max=1.0, width=140
+                            )
+                            ui.Spacer()
+                        with ui.HStack(height=28):
+                            ui.Label("Debug every N", width=118)
+                            ui.IntField(model=foot_ik_debug_every_model, width=56)
+                            ui.Spacer()
+
+                def _on_foot_ik_solver_combo(_m=None) -> None:
+                    if _foot_ik_sync_suppress_set or foot_ik_solver_combo is None:
+                        return
+                    idx = int(foot_ik_solver_combo.model.get_item_value_model().as_int)
+                    foot_ik_solver_model.set_value(idx)
+                    _push_foot_ik()
+
+                if foot_ik_solver_combo is not None:
+                    foot_ik_solver_combo.model.add_item_changed_fn(
+                        lambda _m: _on_foot_ik_solver_combo()
+                    )
+                ui.Label(
+                    "--- Red Sphere Map (sphere + IK target) ---",
                     height=22,
                     style={"font_size": 15, "font_style": "bold", "color": 0xFFFFFF00},
                 )
@@ -1069,6 +1136,7 @@ def _build_mapping_window(ui):
         "pd_drive_model": pd_drive_model,
         "audio_volume_model": audio_volume_model,
         "z_offset_enable_model": z_offset_enable_model,
+        "foot_ground_comp_model": foot_ground_comp_model,
         "max_label": max_frame_label,
         "btn_prev": btn_prev,
         "btn_next": btn_next,
@@ -1087,14 +1155,16 @@ def _build_mapping_window(ui):
         "dance_combo": dance_combo,
         "btn_gen_z_editted": btn_gen_z_editted,
         "foot_ik_enable_model": foot_ik_enable_model,
-        "foot_ik_scale_model": foot_ik_scale_model,
         "foot_ik_weight_model": foot_ik_weight_model,
         "foot_ik_reach_model": foot_ik_reach_model,
-        "foot_ik_axis_idx_models": foot_ik_axis_idx_models,
-        "foot_ik_axis_sign_models": foot_ik_axis_sign_models,
-        "foot_ik_left_ref_models": foot_ik_left_ref_models,
-        "foot_ik_right_ref_models": foot_ik_right_ref_models,
+        "foot_ik_leg_scale_model": foot_ik_leg_scale_model,
+        "foot_ik_ankle_offset_x_model": foot_ik_ankle_offset_x_model,
+        "foot_ik_ankle_offset_y_model": foot_ik_ankle_offset_y_model,
+        "foot_ik_ankle_offset_z_model": foot_ik_ankle_offset_z_model,
         "foot_ik_debug_every_model": foot_ik_debug_every_model,
+        "foot_ik_solver_model": foot_ik_solver_model,
+        "foot_ik_solver_combo": foot_ik_solver_combo,
+        "foot_ik_reg_weight_model": foot_ik_reg_weight_model,
         "sphere_map_scale_model": sphere_map_scale_model,
         "sphere_map_axis_idx_models": sphere_map_axis_idx_models,
         "sphere_map_axis_sign_models": sphere_map_axis_sign_models,
@@ -1104,6 +1174,8 @@ def _build_mapping_window(ui):
         "foot_ik_r_local_label": r_foot_local_label,
         "foot_ik_l_xyz_label": l_foot_xyz_label,
         "foot_ik_r_xyz_label": r_foot_xyz_label,
+        "foot_ik_l_ik_target_label": l_ik_target_label,
+        "foot_ik_r_ik_target_label": r_ik_target_label,
         "toe_ik_l_xyz_label": l_toe_xyz_label,
         "toe_ik_r_xyz_label": r_toe_xyz_label,
     }
@@ -1124,6 +1196,7 @@ async def _mapping_ui_refresh_loop() -> None:
 
     global _scrub_sync_suppress_seek, _root_quat_sync_suppress_set, _pd_drive_sync_suppress_set
     global _z_offset_sync_suppress_set, _foot_ik_sync_suppress_set, _foot_ik_viz_sync_suppress_set
+    global _foot_ground_comp_sync_suppress_set
     global _audio_volume_sync_suppress_set
     while True:
         await omni.kit.app.get_app().next_update_async()
@@ -1176,6 +1249,19 @@ async def _mapping_ui_refresh_loop() -> None:
                     pass
                 finally:
                     _z_offset_sync_suppress_set = False
+            if _foot_ground_comp_provider is not None:
+                try:
+                    fg_on = bool(_foot_ground_comp_provider())
+                except Exception:
+                    fg_on = True
+                _foot_ground_comp_sync_suppress_set = True
+                try:
+                    if bool(tr["foot_ground_comp_model"].get_value_as_bool()) != fg_on:
+                        tr["foot_ground_comp_model"].set_value(fg_on)
+                except Exception:
+                    pass
+                finally:
+                    _foot_ground_comp_sync_suppress_set = False
             if _audio_volume_provider is not None:
                 try:
                     vol = float(_audio_volume_provider())
@@ -1285,26 +1371,31 @@ async def _mapping_ui_refresh_loop() -> None:
                 try:
                     if "foot_ik_enable_model" in tr:
                         tr["foot_ik_enable_model"].set_value(bool(fk.get("enable", False)))
-                    if "foot_ik_scale_model" in tr:
-                        tr["foot_ik_scale_model"].set_value(float(fk.get("scale", 1.0)))
                     if "foot_ik_weight_model" in tr:
                         tr["foot_ik_weight_model"].set_value(float(fk.get("weight", 1.0)))
                     if "foot_ik_reach_model" in tr:
                         tr["foot_ik_reach_model"].set_value(float(fk.get("reach", 0.985)))
-                    axis_idx = tuple(fk.get("axis_idx", (0, 2, 1)))
-                    axis_sign = tuple(fk.get("axis_sign", (-1.0, -1.0, 1.0)))
-                    lref = tuple(fk.get("left_ref", (0.0, 0.095, -0.42)))
-                    rref = tuple(fk.get("right_ref", (0.0, -0.095, -0.42)))
-                    for _i, _m in enumerate(tr.get("foot_ik_axis_idx_models", ())):
-                        _m.set_value(int(axis_idx[_i]))
-                    for _i, _m in enumerate(tr.get("foot_ik_axis_sign_models", ())):
-                        _m.set_value(float(axis_sign[_i]))
-                    for _i, _m in enumerate(tr.get("foot_ik_left_ref_models", ())):
-                        _m.set_value(float(lref[_i]))
-                    for _i, _m in enumerate(tr.get("foot_ik_right_ref_models", ())):
-                        _m.set_value(float(rref[_i]))
+                    if "foot_ik_leg_scale_model" in tr:
+                        tr["foot_ik_leg_scale_model"].set_value(float(fk.get("leg_scale", 1.0)))
+                    ao = tuple(fk.get("ankle_offset", (0.0, 0.0, 0.02)))
+                    if len(ao) == 3:
+                        if "foot_ik_ankle_offset_x_model" in tr:
+                            tr["foot_ik_ankle_offset_x_model"].set_value(float(ao[0]))
+                        if "foot_ik_ankle_offset_y_model" in tr:
+                            tr["foot_ik_ankle_offset_y_model"].set_value(float(ao[1]))
+                        if "foot_ik_ankle_offset_z_model" in tr:
+                            tr["foot_ik_ankle_offset_z_model"].set_value(float(ao[2]))
                     if "foot_ik_debug_every_model" in tr:
                         tr["foot_ik_debug_every_model"].set_value(int(fk.get("debug_every", 0)))
+                    if "foot_ik_solver_model" in tr:
+                        solver = str(fk.get("solver", "full")).strip().lower()
+                        tr["foot_ik_solver_model"].set_value(1 if solver == "planar" else 0)
+                    combo = tr.get("foot_ik_solver_combo")
+                    if combo is not None:
+                        solver = str(fk.get("solver", "full")).strip().lower()
+                        combo.model.get_item_value_model().set_value(1 if solver == "planar" else 0)
+                    if "foot_ik_reg_weight_model" in tr:
+                        tr["foot_ik_reg_weight_model"].set_value(float(fk.get("ik_reg_weight", 0.15)))
                 except Exception:
                     pass
                 finally:
@@ -1316,12 +1407,13 @@ async def _mapping_ui_refresh_loop() -> None:
                     sv = {}
                 _foot_ik_viz_sync_suppress_set = True
                 try:
+                    _sphere_defaults = default_foot_ik_viz_config()
                     if "sphere_map_scale_model" in tr:
-                        tr["sphere_map_scale_model"].set_value(float(sv.get("scale", 1.0)))
-                    sidx = tuple(sv.get("axis_idx", (0, 1, 2)))
-                    ssig = tuple(sv.get("axis_sign", (-1.0, -1.0, 1.0)))
-                    lorig = tuple(sv.get("left_ref_origin", (-0.15, -0.15, 0.0)))
-                    rorig = tuple(sv.get("right_ref_origin", (0.15, -0.15, 0.0)))
+                        tr["sphere_map_scale_model"].set_value(float(sv.get("scale", _sphere_defaults.pos_scale)))
+                    sidx = tuple(sv.get("axis_idx", _sphere_defaults.axis_idx))
+                    ssig = tuple(sv.get("axis_sign", _sphere_defaults.axis_sign))
+                    lorig = tuple(sv.get("left_ref_origin", _sphere_defaults.left_ref_origin_m))
+                    rorig = tuple(sv.get("right_ref_origin", _sphere_defaults.right_ref_origin_m))
                     for _i, _m in enumerate(tr.get("sphere_map_axis_idx_models", ())):
                         _m.set_value(int(sidx[_i]))
                     for _i, _m in enumerate(tr.get("sphere_map_axis_sign_models", ())):
@@ -1366,6 +1458,8 @@ async def _mapping_ui_refresh_loop() -> None:
                 ("foot_ik_r_local_label", "__foot_ik_r_local_x", "__foot_ik_r_local_y", "__foot_ik_r_local_z"),
                 ("foot_ik_l_xyz_label", "__foot_ik_l_x", "__foot_ik_l_y", "__foot_ik_l_z"),
                 ("foot_ik_r_xyz_label", "__foot_ik_r_x", "__foot_ik_r_y", "__foot_ik_r_z"),
+                ("foot_ik_l_ik_target_label", "__ik_target_l_x", "__ik_target_l_y", "__ik_target_l_z"),
+                ("foot_ik_r_ik_target_label", "__ik_target_r_x", "__ik_target_r_y", "__ik_target_r_z"),
                 ("toe_ik_l_xyz_label", "__toe_ik_l_x", "__toe_ik_l_y", "__toe_ik_l_z"),
                 ("toe_ik_r_xyz_label", "__toe_ik_r_x", "__toe_ik_r_y", "__toe_ik_r_z"),
             ]:

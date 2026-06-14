@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from robot_mmd.train_workflow.utils.trans_util import (
+    mmd_storage_delta_to_isaac_world_delta,
     mmd_world_pos_to_isaac,
     quat_mul,
     quat_normalize,
@@ -13,20 +14,37 @@ from robot_mmd.train_workflow.utils.trans_util import (
     rotate_vec_by_quat_wxyz,
 )
 
+# Single source of truth for red-sphere / foot-target map defaults.
+FOOT_IK_VIZ_AXIS_IDX: tuple[int, int, int] = (0, 1, 2)
+FOOT_IK_VIZ_AXIS_SIGN: tuple[float, float, float] = (-1.0, -1.0, 1.0)
+FOOT_IK_VIZ_AXIS_SIGN_POSE: tuple[float, float, float] = (-1.0, 1.0, 1.0)
+FOOT_IK_VIZ_POS_SCALE: float = 1.0
+FOOT_IK_VIZ_LEFT_REF_ORIGIN_M: tuple[float, float, float] = (-0.10, -0.10, 0.0)
+FOOT_IK_VIZ_RIGHT_REF_ORIGIN_M: tuple[float, float, float] = (0.10, -0.10, 0.0)
+
 
 @dataclass
 class FootIkVizConfig:
-    """Runtime tuning for red-sphere B-aligned model world -> Isaac-world axis mapping."""
+    """Foot IK panel -> Isaac world map. Single source for red spheres and leg IK targets."""
 
     # B-aligned model world (mmdX, mmdZ, mmdY) -> Isaac; idx 0,1,2 direct.
-    axis_idx: tuple[int, int, int] = (0, 1, 2)
-    axis_sign: tuple[float, float, float] = (-1.0, -1.0, 1.0)
-    axis_sign_pose: tuple[float, float, float] = (-1.0, 1.0, 1.0)
-    pos_scale: float = 1.0
-    weight: float = 1.0
+    axis_idx: tuple[int, int, int] = FOOT_IK_VIZ_AXIS_IDX
+    axis_sign: tuple[float, float, float] = FOOT_IK_VIZ_AXIS_SIGN
+    axis_sign_pose: tuple[float, float, float] = FOOT_IK_VIZ_AXIS_SIGN_POSE
+    pos_scale: float = FOOT_IK_VIZ_POS_SCALE
     # Isaac-world rest origin when foot IK panel offset is zero (meters).
-    left_ref_origin_m: tuple[float, float, float] = (-0.15, -0.15, 0.0)
-    right_ref_origin_m: tuple[float, float, float] = (0.15, -0.15, 0.0)
+    left_ref_origin_m: tuple[float, float, float] = FOOT_IK_VIZ_LEFT_REF_ORIGIN_M
+    right_ref_origin_m: tuple[float, float, float] = FOOT_IK_VIZ_RIGHT_REF_ORIGIN_M
+
+
+def default_foot_ik_viz_config() -> FootIkVizConfig:
+    """Return a fresh config using module defaults (UI/CLI/batch tools should reference this)."""
+    return FootIkVizConfig()
+
+
+def foot_ik_viz_triplet_cli(values: tuple[float, float, float] | tuple[int, int, int]) -> str:
+    """Format xyz defaults for argparse comma-separated CLI options."""
+    return f"{values[0]},{values[1]},{values[2]}"
 
 
 def foot_ik_viz_ref_origin_isaac(
@@ -40,8 +58,8 @@ def foot_ik_viz_ref_origin_isaac(
         rv = viz_cfg.right_ref_origin_m
         return (float(rv[0]), float(rv[1]), float(rv[2]))
     if side == "left":
-        return (-0.15, -0.15, 0.0)
-    return (0.15, -0.15, 0.0)
+        return FOOT_IK_VIZ_LEFT_REF_ORIGIN_M
+    return FOOT_IK_VIZ_RIGHT_REF_ORIGIN_M
 
 # Standard MMD parent links (足IK親 / センター親 are helper bones, often not keyed in VMD).
 MMD_BONE_PARENT: dict[str, str | None] = {
@@ -212,7 +230,47 @@ def foot_ik_panel_to_mmd_world_raw(
     return _mmd_pos_to_model_world_aligned(foot_local_raw)
 
 
-def foot_ik_panel_to_isaac_world(
+def read_mmd_bone_pos_raw(
+    frame_data: dict[str, dict],
+    bone_candidates: tuple[str, ...],
+) -> tuple[float, float, float] | None:
+    bone = _resolve_bone_name(frame_data, bone_candidates)
+    if bone is None:
+        return None
+    data = _lookup_bone_data(frame_data, bone)
+    if data is None:
+        return None
+    pos_raw = data.get("pos")
+    if pos_raw is None or len(pos_raw) != 3:
+        return None
+    return (float(pos_raw[0]), float(pos_raw[1]), float(pos_raw[2]))
+
+
+_MMD_ROOT_TRANSLATION_BONES: tuple[tuple[str, ...], ...] = (
+    ("センター", "グルーブ"),
+    ("グルーブ", "センター"),
+)
+
+
+def resolve_mmd_root_translation_pos(
+    frame_data: dict[str, dict],
+    *,
+    preferred_bone: str | None = None,
+) -> tuple[tuple[float, float, float] | None, str | None]:
+    """Return (pos_raw, bone_name) for the bone driving root translation."""
+    if preferred_bone:
+        pos = read_mmd_bone_pos_raw(frame_data, (preferred_bone,))
+        if pos is not None:
+            return pos, preferred_bone
+    for candidates in _MMD_ROOT_TRANSLATION_BONES:
+        pos = read_mmd_bone_pos_raw(frame_data, candidates)
+        if pos is not None:
+            bone = _resolve_bone_name(frame_data, candidates)
+            return pos, bone
+    return None, None
+
+
+def _foot_ik_legacy_isaac_world(
     foot_local_raw: tuple[float, float, float],
     frame_data: dict[str, dict],
     *,
@@ -221,26 +279,86 @@ def foot_ik_panel_to_isaac_world(
     side: str = "left",
     viz_cfg: FootIkVizConfig | None = None,
 ) -> tuple[float, float, float]:
-    """Same Isaac-world target as the red debug sphere."""
     world_aligned = foot_ik_panel_to_mmd_world_raw(foot_local_raw, frame_data, side=side)
     origin = foot_ik_viz_ref_origin_isaac(side, viz_cfg)
     extra = float(viz_cfg.pos_scale) if viz_cfg is not None else 1.0
     scale = float(pos_scale) * extra
-    world_mmd = _model_world_aligned_to_mmd_storage(world_aligned)
-    legacy = mmd_world_pos_to_isaac(world_mmd, origin, scale, is_pose=is_pose)
+    if viz_cfg is None:
+        world_mmd = _model_world_aligned_to_mmd_storage(world_aligned)
+        return mmd_world_pos_to_isaac(world_mmd, origin, scale, is_pose=is_pose)
+    sign = viz_cfg.axis_sign_pose if is_pose else viz_cfg.axis_sign
+    return remap_mmd_world_to_isaac(world_aligned, origin, scale, viz_cfg.axis_idx, sign)
+
+
+def _foot_ik_delta_to_isaac_world(
+    delta_storage: tuple[float, float, float],
+    *,
+    pos_scale: float,
+    is_pose: bool = False,
+    viz_cfg: FootIkVizConfig | None = None,
+) -> tuple[float, float, float]:
+    extra = float(viz_cfg.pos_scale) if viz_cfg is not None else 1.0
+    scale = float(pos_scale) * extra
+    legacy = mmd_storage_delta_to_isaac_world_delta(
+        delta_storage[0],
+        delta_storage[1],
+        delta_storage[2],
+        scale,
+        is_pose=is_pose,
+    )
     if viz_cfg is None:
         return legacy
+    world_aligned = (
+        float(delta_storage[0]) * scale,
+        float(delta_storage[2]) * scale,
+        float(delta_storage[1]) * scale,
+    )
     sign = viz_cfg.axis_sign_pose if is_pose else viz_cfg.axis_sign
-    tuned = remap_mmd_world_to_isaac(world_aligned, origin, scale, viz_cfg.axis_idx, sign)
-    w = max(0.0, min(1.0, float(viz_cfg.weight)))
-    if w >= 1.0 - 1e-6:
-        return tuned
-    if w <= 1e-6:
-        return legacy
-    return (
-        legacy[0] * (1.0 - w) + tuned[0] * w,
-        legacy[1] * (1.0 - w) + tuned[1] * w,
-        legacy[2] * (1.0 - w) + tuned[2] * w,
+    return remap_mmd_world_to_isaac(world_aligned, (0.0, 0.0, 0.0), 1.0, viz_cfg.axis_idx, sign)
+
+
+def foot_ik_panel_to_isaac_world(
+    foot_local_raw: tuple[float, float, float],
+    frame_data: dict[str, dict],
+    *,
+    pos_scale: float,
+    is_pose: bool = False,
+    side: str = "left",
+    viz_cfg: FootIkVizConfig | None = None,
+    target_root_pos: tuple[float, float, float] | None = None,
+    target_root_quat_wxyz: list[float] | None = None,
+    center_mmd_pos: tuple[float, float, float] | None = None,
+) -> tuple[float, float, float]:
+    """Same Isaac-world target as the red debug sphere."""
+    if target_root_pos is not None and center_mmd_pos is not None:
+        delta_storage = (
+            float(foot_local_raw[0]) - float(center_mmd_pos[0]),
+            float(foot_local_raw[1]) - float(center_mmd_pos[1]),
+            float(foot_local_raw[2]) - float(center_mmd_pos[2]),
+        )
+        delta_world = _foot_ik_delta_to_isaac_world(
+            delta_storage,
+            pos_scale=pos_scale,
+            is_pose=is_pose,
+            viz_cfg=viz_cfg,
+        )
+        ref_local = foot_ik_viz_ref_origin_isaac(side, viz_cfg)
+        if target_root_quat_wxyz is not None:
+            ref_world = rotate_vec_by_quat_wxyz(target_root_quat_wxyz, ref_local)
+        else:
+            ref_world = ref_local
+        return (
+            float(target_root_pos[0]) + float(delta_world[0]) + float(ref_world[0]),
+            float(target_root_pos[1]) + float(delta_world[1]) + float(ref_world[1]),
+            float(target_root_pos[2]) + float(delta_world[2]) + float(ref_world[2]),
+        )
+    return _foot_ik_legacy_isaac_world(
+        foot_local_raw,
+        frame_data,
+        pos_scale=pos_scale,
+        is_pose=is_pose,
+        side=side,
+        viz_cfg=viz_cfg,
     )
 
 
@@ -286,7 +404,7 @@ def compute_mmd_foot_ik_viz_bundle(
     is_pose: bool = False,
     viz_cfg: FootIkVizConfig | None = None,
 ) -> dict[str, dict[str, tuple[float, float, float] | None]]:
-    """Foot/toe IK viz: MMD-local panel -> B-aligned world -> Isaac."""
+    """Foot/toe IK viz: legacy fixed ref-origin map (red debug spheres)."""
     empty = {
         "local_m": None,
         "fk_world_m": None,
@@ -311,7 +429,7 @@ def compute_mmd_foot_ik_viz_bundle(
             return
         raw = (float(pos_raw[0]), float(pos_raw[1]), float(pos_raw[2]))
         local_m = _raw_pos_to_meters(raw, pos_scale)
-        isaac_world = foot_ik_panel_to_isaac_world(
+        isaac_world = _foot_ik_legacy_isaac_world(
             raw,
             frame_data,
             pos_scale=pos_scale,

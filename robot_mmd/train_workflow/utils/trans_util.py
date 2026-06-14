@@ -183,6 +183,86 @@ def isaac_world_to_root_local(
     return rotate_vec_by_quat_wxyz(quat_inv(root_quat_wxyz), rel)
 
 
+def root_local_to_isaac_world(
+    pos_local: tuple[float, float, float],
+    root_pos_world: tuple[float, float, float],
+    root_quat_wxyz: list[float],
+) -> tuple[float, float, float]:
+    """Map a robot-root-local point to Isaac world coordinates."""
+    rotated = rotate_vec_by_quat_wxyz(root_quat_wxyz, pos_local)
+    return (
+        float(root_pos_world[0]) + float(rotated[0]),
+        float(root_pos_world[1]) + float(rotated[1]),
+        float(root_pos_world[2]) + float(rotated[2]),
+    )
+
+
+def mmd_storage_delta_to_isaac_world_delta(
+    delta_x: float,
+    delta_y: float,
+    delta_z: float,
+    scale: float,
+    *,
+    is_pose: bool = False,
+) -> tuple[float, float, float]:
+    """MMD storage (x,y,z) delta -> Isaac world delta (same axis remap as root translation)."""
+    s = float(scale)
+    if is_pose:
+        return (-float(delta_x) * s, float(delta_z) * s, float(delta_y) * s)
+    return (-float(delta_x) * s, -float(delta_z) * s, float(delta_y) * s)
+
+
+def dist3(
+    a: tuple[float, float, float] | None,
+    b: tuple[float, float, float] | None,
+) -> float | None:
+    if a is None or b is None:
+        return None
+    dx = float(a[0]) - float(b[0])
+    dy = float(a[1]) - float(b[1])
+    dz = float(a[2]) - float(b[2])
+    return float(math.sqrt(dx * dx + dy * dy + dz * dz))
+
+
+def quat_angular_error_deg(
+    q_a_wxyz: list[float] | None,
+    q_b_wxyz: list[float] | None,
+) -> float | None:
+    """Shortest rotation angle (degrees) from quaternion a to b."""
+    if q_a_wxyz is None or q_b_wxyz is None:
+        return None
+    qa = quat_normalize([float(v) for v in q_a_wxyz])
+    qb = quat_normalize([float(v) for v in q_b_wxyz])
+    qd = quat_mul(quat_inv(qa), qb)
+    w = max(-1.0, min(1.0, abs(float(qd[0]))))
+    return float(math.degrees(2.0 * math.acos(w)))
+
+
+def quat_wxyz_to_euler_xyz_deg(q_wxyz: list[float] | None) -> tuple[float, float, float] | None:
+    """Extrinsic XYZ Euler in degrees from Isaac wxyz quaternion."""
+    if q_wxyz is None or len(q_wxyz) != 4:
+        return None
+    qw, qx, qy, qz = (float(q_wxyz[0]), float(q_wxyz[1]), float(q_wxyz[2]), float(q_wxyz[3]))
+    qn = quat_normalize([qw, qx, qy, qz])
+    qw, qx, qy, qz = qn[0], qn[1], qn[2], qn[3]
+    sinr_cosp = 2.0 * (qw * qx + qy * qz)
+    cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+    sinp = 2.0 * (qw * qy - qz * qx)
+    if abs(sinp) >= 1.0:
+        pitch = math.copysign(math.pi / 2.0, sinp)
+    else:
+        pitch = math.asin(sinp)
+    siny_cosp = 2.0 * (qw * qz + qx * qy)
+    cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+    return (
+        float(math.degrees(roll)),
+        float(math.degrees(pitch)),
+        float(math.degrees(yaw)),
+    )
+
+
 def mmd_world_pos_to_isaac(
     pos_mmd: tuple[float, float, float],
     origin_isaac: tuple[float, float, float],
