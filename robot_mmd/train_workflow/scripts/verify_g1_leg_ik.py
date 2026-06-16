@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Compare FK-only / planar IK / full 6-DOF IK red->ankle errors on CSV motion."""
+"""Compare FK-only vs full 6-DOF IK red->ankle errors on CSV motion."""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from robot_mmd.train_workflow.retarget_unitreeG1 import euler_xyz_rad_waist_extr
 from robot_mmd.train_workflow.utils.csv_motion_loader import (
     FootIkConfig,
     FootIkState,
-    _foot_ik_target_root_local,
     build_joint_positions_from_frame,
     get_bone_frame_lists,
     get_frame_indices,
@@ -130,10 +129,8 @@ def _eval_frame(
     oz,
     rq0,
     groove: float,
-    solver: str,
+    use_ik: bool,
 ) -> tuple[float, float, float | None]:
-    import numpy as np
-
     fd = {b: interpolate_bone(frame, b, frames, bfl.get(b)) for b in bones}
     fd = {k: v for k, v in fd.items() if v is not None}
     rp, rq = _root_pose(frame, frames, bfl, ox, oy, oz, rq0, groove)
@@ -142,13 +139,7 @@ def _eval_frame(
     update_foot_ik_mmd_viz_world(
         st, fd, groove, foot_ik_viz_cfg=viz, target_root_pos=rp, target_root_quat_wxyz=rq
     )
-    cfg = FootIkConfig(enable=(solver != "fk"), solver=solver if solver != "fk" else "full")
-    if solver == "planar":
-        cfg = FootIkConfig(enable=True, solver="planar")
-    elif solver == "full":
-        cfg = FootIkConfig(enable=True, solver="full")
-    else:
-        cfg = FootIkConfig(enable=False)
+    cfg = FootIkConfig(enable=bool(use_ik))
 
     q = build_joint_positions_from_frame(
         fd,
@@ -197,7 +188,7 @@ def main() -> None:
     groove = 0.1
     max_frame = fl[-1] if fl else 0
 
-    stats: dict[str, list[float]] = {"fk_l": [], "planar_l": [], "full_l": []}
+    stats: dict[str, list[float]] = {"fk_l": [], "full_l": []}
     for frame in range(0, max_frame + 1, max(1, int(args.frame_step))):
         fk_l, fk_r, _ = _eval_frame(
             frame,
@@ -211,21 +202,7 @@ def main() -> None:
             oz=args.oz,
             rq0=rq0,
             groove=groove,
-            solver="fk",
-        )
-        pl, pr, _ = _eval_frame(
-            frame,
-            frames=frames,
-            bfl=bfl,
-            bones=bones,
-            joint_names=joint_names,
-            default_joint_pos=default_joint_pos,
-            ox=args.ox,
-            oy=args.oy,
-            oz=args.oz,
-            rq0=rq0,
-            groove=groove,
-            solver="planar",
+            use_ik=False,
         )
         fl_err, fr_err, res = _eval_frame(
             frame,
@@ -239,17 +216,13 @@ def main() -> None:
             oz=args.oz,
             rq0=rq0,
             groove=groove,
-            solver="full",
+            use_ik=True,
         )
         if math.isfinite(fk_l):
             stats["fk_l"].append(fk_l)
-        if math.isfinite(pl):
-            stats["planar_l"].append(pl)
         if math.isfinite(fl_err):
             stats["full_l"].append(fl_err)
-        print(
-            f"f={frame:5d} fkL={fk_l:.4f} planarL={pl:.4f} fullL={fl_err:.4f} ikRes={res}"
-        )
+        print(f"f={frame:5d} fkL={fk_l:.4f} fullL={fl_err:.4f} ikRes={res}")
 
     def _summary(name: str, vals: list[float]) -> str:
         if not vals:
@@ -260,7 +233,6 @@ def main() -> None:
 
     print("\n=== Summary (left red->ankle, meters) ===")
     print(_summary("FK", stats["fk_l"]))
-    print(_summary("planar", stats["planar_l"]))
     print(_summary("full", stats["full_l"]))
 
     tpose = g1_leg_fk_pos((0.0, 0.0, 0.0, 0.0, 0.0, 0.0), side="left")

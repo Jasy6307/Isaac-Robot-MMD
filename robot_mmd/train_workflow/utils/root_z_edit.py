@@ -75,8 +75,7 @@ class RootZEditConfig:
     root_quat_rpy_axis_idx: tuple[int, int, int] = tuple(MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT)
     knee_hinge_projection: bool = True
     mmd_foot_ik_enable: bool = True
-    mmd_foot_ik_weight: float = 1.0
-    mmd_foot_ik_max_reach_ratio: float = 0.985
+    mmd_foot_ik_max_reach_ratio: float = 1.0
     mmd_sphere_map_scale: float = FOOT_IK_VIZ_POS_SCALE
     mmd_sphere_map_axis_idx: tuple[int, int, int] = FOOT_IK_VIZ_AXIS_IDX
     mmd_sphere_map_axis_sign: tuple[float, float, float] = FOOT_IK_VIZ_AXIS_SIGN
@@ -89,7 +88,6 @@ class RootZEditConfig:
     mmd_foot_ik_shin_length: float = G1_FOOT_IK_SHIN_LENGTH_M
     mmd_foot_ik_hip_roll_gain: float = 0.85
     mmd_foot_ik_debug_every: int = 0
-    mmd_foot_ik_solver: str = "full"
     mmd_foot_ik_ik_max_iters: int = 20
     mmd_foot_ik_ik_pos_tol: float = 1e-3
     mmd_foot_ik_ik_reg_weight: float = 0.15
@@ -467,7 +465,6 @@ def generate_z_editted_motion(
     foot_ik_cfg = FootIkConfig(
         enable=bool(cfg.mmd_foot_ik_enable),
         groove_pos_to_world=float(cfg.groove_pos_to_world),
-        weight=float(cfg.mmd_foot_ik_weight),
         max_reach_ratio=float(cfg.mmd_foot_ik_max_reach_ratio),
         hip_offset_y=float(cfg.mmd_foot_ik_hip_offset_y),
         hip_offset_z=float(cfg.mmd_foot_ik_hip_offset_z),
@@ -475,7 +472,6 @@ def generate_z_editted_motion(
         shin_length=float(cfg.mmd_foot_ik_shin_length),
         hip_roll_gain=float(cfg.mmd_foot_ik_hip_roll_gain),
         debug_every_n_frames=max(0, int(cfg.mmd_foot_ik_debug_every)),
-        solver=str(cfg.mmd_foot_ik_solver),
         ik_max_iters=max(1, int(cfg.mmd_foot_ik_ik_max_iters)),
         ik_pos_tol_m=float(cfg.mmd_foot_ik_ik_pos_tol),
         ik_reg_weight=float(cfg.mmd_foot_ik_ik_reg_weight),

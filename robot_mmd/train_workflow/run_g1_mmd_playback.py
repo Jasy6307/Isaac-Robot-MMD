@@ -35,9 +35,7 @@ from isaaclab.app import AppLauncher
 from robot_mmd.train_workflow.utils.playback_cli import (
     apply_app_window_kit_flags,
     build_arg_parser,
-    foot_ankle_ground_comp_config_from_namespace,
-    foot_ik_config_from_namespace,
-    foot_ik_viz_config_from_namespace,
+    default_playback_foot_ik_config,
     parse_center_to_root_offset,
 )
 
@@ -99,7 +97,6 @@ from robot_mmd.train_workflow.ui.mapping import (
     set_dance_z_edit_callbacks,
     set_audio_volume_callbacks,
     set_foot_ik_callbacks,
-    set_foot_ik_viz_callbacks,
     set_foot_ground_comp_callbacks,
     set_joint_value_provider,
     set_mapping_changed_callback,
@@ -131,9 +128,11 @@ from robot_mmd.train_workflow.utils.motion_loader import (
     resolve_playback_motion_entry,
 )
 from robot_mmd.train_workflow.utils.foot_ankle_ground_comp import (
+    FootAnkleGroundCompConfig,
     FootAnkleGroundCompState,
     apply_ankle_ground_comp_to_joint_cmd,
 )
+from robot_mmd.train_workflow.utils.mmd_fk import default_foot_ik_viz_config
 from robot_mmd.train_workflow.utils.playback_keyboard import DanceKeyboardListener
 from robot_mmd.train_workflow.utils.root_z_edit import (
     RootZEditConfig,
@@ -649,34 +648,30 @@ def main():
     motion_has_wav = False
     root_quat_rpy_scale = list(MMD_ROOT_QUAT_RPY_SCALE_DEFAULT)
     root_quat_rpy_axis_idx = list(MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT)
-    foot_ik_cfg = foot_ik_config_from_namespace(
-        args_cli,
+    foot_ik_cfg = default_playback_foot_ik_config(
         groove_pos_to_world=float(args_cli.groove_pos_to_world),
     )
-    foot_ankle_ground_comp_cfg = foot_ankle_ground_comp_config_from_namespace(args_cli)
-    foot_ik_viz_cfg = foot_ik_viz_config_from_namespace(args_cli)
+    foot_ankle_ground_comp_cfg = FootAnkleGroundCompConfig()
+    foot_ik_viz_cfg = default_foot_ik_viz_config()
     print(
-        "[INFO] Leg IK: %s solver=%s (weight=%.3f reach=%.3f debug_every=%d)"
+        "[INFO] Leg IK: %s (reach=%.3f debug_every=%d)"
         % (
             "on" if foot_ik_cfg.enable else "off",
-            str(foot_ik_cfg.solver),
-            float(foot_ik_cfg.weight),
             float(foot_ik_cfg.max_reach_ratio),
             int(foot_ik_cfg.debug_every_n_frames),
         )
     )
-    if str(foot_ik_cfg.solver).lower() == "full":
-        print(
-            "[INFO] Full IK: iters=%d pos_tol=%.4fm reg=%.3f hy=%.2f ar=%.2f pass_through_ankle=%s"
-            % (
-                int(foot_ik_cfg.ik_max_iters),
-                float(foot_ik_cfg.ik_pos_tol_m),
-                float(foot_ik_cfg.ik_reg_weight),
-                float(foot_ik_cfg.ik_reg_hip_yaw),
-                float(foot_ik_cfg.ik_reg_ankle_roll),
-                "on" if foot_ik_cfg.ik_pass_through_ankle else "off",
-            )
+    print(
+        "[INFO] Leg IK DLS: iters=%d pos_tol=%.4fm reg=%.3f hy=%.2f ar=%.2f pass_through_ankle=%s"
+        % (
+            int(foot_ik_cfg.ik_max_iters),
+            float(foot_ik_cfg.ik_pos_tol_m),
+            float(foot_ik_cfg.ik_reg_weight),
+            float(foot_ik_cfg.ik_reg_hip_yaw),
+            float(foot_ik_cfg.ik_reg_ankle_roll),
+            "on" if foot_ik_cfg.ik_pass_through_ankle else "off",
         )
+    )
     print(
         "[INFO] Leg IK geom: hip_y=%.4f hip_z=%.4f thigh=%.4f shin=%.4f max_reach=%.4fm"
         % (
@@ -750,8 +745,6 @@ def main():
     def _update_ankle_link_debug_viz(
         target_root_pos: tuple[float, float, float] | None = None,
         target_root_quat_wxyz: list[float] | None = None,
-        *,
-        frame_idx: int | None = None,
     ) -> None:
         nonlocal ankle_link_body_indices
         left_ankle: tuple[float, float, float] | None = None
@@ -792,8 +785,6 @@ def main():
             left_ankle_world=left_ankle,
             right_ankle_world=right_ankle,
         )
-        if frame_idx is not None and is_playing:
-            _maybe_log_foot_root_debug(int(frame_idx))
 
     def _on_mapping_ui_changed():
         nonlocal mapping_reapply_requested
@@ -907,11 +898,9 @@ def main():
         off = foot_ik_cfg.ankle_target_offset_local
         return {
             "enable": bool(foot_ik_cfg.enable),
-            "weight": float(foot_ik_cfg.weight),
             "reach": float(foot_ik_cfg.max_reach_ratio),
             "leg_scale": float(foot_ik_cfg.leg_target_scale),
             "debug_every": int(foot_ik_cfg.debug_every_n_frames),
-            "solver": str(foot_ik_cfg.solver),
             "ik_reg_weight": float(foot_ik_cfg.ik_reg_weight),
             "ik_reg_hip_yaw": float(foot_ik_cfg.ik_reg_hip_yaw),
             "ik_reg_ankle_roll": float(foot_ik_cfg.ik_reg_ankle_roll),
@@ -923,8 +912,6 @@ def main():
         try:
             if "enable" in payload:
                 foot_ik_cfg.enable = bool(payload.get("enable"))
-            if "weight" in payload:
-                foot_ik_cfg.weight = float(payload.get("weight", foot_ik_cfg.weight))
             if "reach" in payload:
                 foot_ik_cfg.max_reach_ratio = float(payload.get("reach", foot_ik_cfg.max_reach_ratio))
             if "leg_scale" in payload:
@@ -933,9 +920,6 @@ def main():
                 )
             if "debug_every" in payload:
                 foot_ik_cfg.debug_every_n_frames = max(0, int(payload.get("debug_every", 0)))
-            if "solver" in payload:
-                solver = str(payload.get("solver", foot_ik_cfg.solver)).strip().lower()
-                foot_ik_cfg.solver = "planar" if solver == "planar" else "full"
             if "ik_reg_weight" in payload:
                 foot_ik_cfg.ik_reg_weight = float(payload.get("ik_reg_weight", foot_ik_cfg.ik_reg_weight))
             if "ik_reg_hip_yaw" in payload:
@@ -955,64 +939,15 @@ def main():
         except Exception:
             return
         print(
-            "[INFO] Leg IK UI: enable=%s solver=%s weight=%.3f reach=%.3f leg_scale=%.3f reg=%.3f offset=(%.4f,%.4f,%.4f)"
+            "[INFO] Leg IK UI: enable=%s reach=%.3f leg_scale=%.3f reg=%.3f offset=(%.4f,%.4f,%.4f)"
             % (
                 "on" if foot_ik_cfg.enable else "off",
-                str(foot_ik_cfg.solver),
-                float(foot_ik_cfg.weight),
                 float(foot_ik_cfg.max_reach_ratio),
                 float(foot_ik_cfg.leg_target_scale),
                 float(foot_ik_cfg.ik_reg_weight),
                 float(foot_ik_cfg.ankle_target_offset_local[0]),
                 float(foot_ik_cfg.ankle_target_offset_local[1]),
                 float(foot_ik_cfg.ankle_target_offset_local[2]),
-            )
-        )
-
-    def _get_foot_ik_viz_for_ui() -> dict[str, Any]:
-        return {
-            "scale": float(foot_ik_viz_cfg.pos_scale),
-            "axis_idx": tuple(int(v) for v in foot_ik_viz_cfg.axis_idx),
-            "axis_sign": tuple(float(v) for v in foot_ik_viz_cfg.axis_sign),
-            "left_ref_origin": tuple(float(v) for v in foot_ik_viz_cfg.left_ref_origin_m),
-            "right_ref_origin": tuple(float(v) for v in foot_ik_viz_cfg.right_ref_origin_m),
-        }
-
-    def _set_foot_ik_viz_from_ui(payload: dict[str, Any]) -> None:
-        nonlocal foot_ik_viz_cfg
-        try:
-            if "scale" in payload:
-                foot_ik_viz_cfg.pos_scale = float(payload.get("scale", foot_ik_viz_cfg.pos_scale))
-            if "axis_idx" in payload:
-                ai = tuple(payload.get("axis_idx", foot_ik_viz_cfg.axis_idx))
-                if len(ai) == 3:
-                    foot_ik_viz_cfg.axis_idx = (
-                        max(0, min(2, int(ai[0]))),
-                        max(0, min(2, int(ai[1]))),
-                        max(0, min(2, int(ai[2]))),
-                    )
-            if "axis_sign" in payload:
-                sg = tuple(payload.get("axis_sign", foot_ik_viz_cfg.axis_sign))
-                if len(sg) == 3:
-                    foot_ik_viz_cfg.axis_sign = (float(sg[0]), float(sg[1]), float(sg[2]))
-            if "left_ref_origin" in payload:
-                lv = tuple(payload.get("left_ref_origin", foot_ik_viz_cfg.left_ref_origin_m))
-                if len(lv) == 3:
-                    foot_ik_viz_cfg.left_ref_origin_m = (float(lv[0]), float(lv[1]), float(lv[2]))
-            if "right_ref_origin" in payload:
-                rv = tuple(payload.get("right_ref_origin", foot_ik_viz_cfg.right_ref_origin_m))
-                if len(rv) == 3:
-                    foot_ik_viz_cfg.right_ref_origin_m = (float(rv[0]), float(rv[1]), float(rv[2]))
-        except Exception:
-            return
-        print(
-            "[INFO] Sphere map UI: scale=%.3f idx=%s sign=%s Lorig=%s Rorig=%s"
-            % (
-                float(foot_ik_viz_cfg.pos_scale),
-                str(tuple(int(v) for v in foot_ik_viz_cfg.axis_idx)),
-                str(tuple(float(v) for v in foot_ik_viz_cfg.axis_sign)),
-                str(tuple(float(v) for v in foot_ik_viz_cfg.left_ref_origin_m)),
-                str(tuple(float(v) for v in foot_ik_viz_cfg.right_ref_origin_m)),
             )
         )
 
@@ -1027,7 +962,6 @@ def main():
     set_audio_volume_callbacks(_get_audio_volume_for_ui, _set_audio_volume_from_ui)
     set_root_quat_rpy_callbacks(_get_root_quat_rpy_for_ui, _set_root_quat_rpy_from_ui)
     set_foot_ik_callbacks(_get_foot_ik_for_ui, _set_foot_ik_from_ui)
-    set_foot_ik_viz_callbacks(_get_foot_ik_viz_for_ui, _set_foot_ik_viz_from_ui)
     set_root_rot_bone_name_provider(lambda: str(ui_debug.root_rot_bone_name or ""))
     set_mapping_changed_callback(_on_mapping_ui_changed)
     create_mapping_ui()
@@ -1195,54 +1129,6 @@ def main():
             target_root_world=target_root_pos,
             sim_root_world=sim_root,
         )
-
-    def _maybe_log_foot_root_debug(frame_idx: int) -> None:
-        stride = int(max(0, foot_ik_cfg.debug_every_n_frames))
-        if stride <= 0:
-            stride = 120
-        if int(frame_idx) % stride != 0:
-            return
-        rt = foot_ik_state.last_target_root_world
-        rs = foot_ik_state.last_dbg_sim_root_world
-        print(
-            "[DBG] f=%d rootT->redL=%.3fm rootT->redR=%.3fm redL->ankleL=%.3fm redR->ankleR=%.3fm "
-            "redL->predL=%.3fm predL->ankleL=%.3fm ikResL=%.4fm "
-            "simRoot->rootT=%.3fm orientErr=%.2fdeg"
-            % (
-                int(frame_idx),
-                float(foot_ik_state.last_dbg_root_target_to_red_l_m or -1.0),
-                float(foot_ik_state.last_dbg_root_target_to_red_r_m or -1.0),
-                float(foot_ik_state.last_dbg_red_to_ankle_l_m or -1.0),
-                float(foot_ik_state.last_dbg_red_to_ankle_r_m or -1.0),
-                float(foot_ik_state.last_dbg_red_to_pred_l_m or -1.0),
-                float(foot_ik_state.last_dbg_pred_to_ankle_l_m or -1.0),
-                float(foot_ik_state.last_left_ik_residual_m or -1.0),
-                float(foot_ik_state.last_dbg_sim_root_to_target_m or -1.0),
-                float(foot_ik_state.last_dbg_root_orient_err_deg or -1.0),
-            )
-        )
-        if rt is not None:
-            print("      rootTarget pos=(%.3f, %.3f, %.3f)" % (rt[0], rt[1], rt[2]))
-        if rs is not None:
-            print("      rootSim    pos=(%.3f, %.3f, %.3f)" % (rs[0], rs[1], rs[2]))
-        rpy_t = foot_ik_state.last_dbg_root_rpy_target_deg
-        rpy_s = foot_ik_state.last_dbg_root_rpy_sim_deg
-        rpy_d = foot_ik_state.last_dbg_root_rpy_delta_deg
-        if rpy_t is not None:
-            print(
-                "      rootTarget rpy=(R%+.1f P%+.1f Y%+.1f)deg"
-                % (rpy_t[0], rpy_t[1], rpy_t[2])
-            )
-        if rpy_s is not None:
-            print(
-                "      rootSim    rpy=(R%+.1f P%+.1f Y%+.1f)deg"
-                % (rpy_s[0], rpy_s[1], rpy_s[2])
-            )
-        if rpy_d is not None:
-            print(
-                "      sim-target rpy=(R%+.1f P%+.1f Y%+.1f)deg (sim minus cmd)"
-                % (rpy_d[0], rpy_d[1], rpy_d[2])
-            )
 
     def _set_control_reference_pose(new_default_joint_pos: Any) -> bool:
         nonlocal default_joint_pos
@@ -1734,7 +1620,6 @@ def main():
             _update_ankle_link_debug_viz(
                 last_playback_target_root,
                 last_playback_target_root_quat,
-                frame_idx=last_csv_motion_frame,
             )
 
     dance_listener.unsubscribe()

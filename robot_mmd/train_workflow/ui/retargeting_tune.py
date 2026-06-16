@@ -232,7 +232,7 @@ def build_retarget_tune_window(ui: Any, notify_mapping_changed: Callable[[], Non
 
         ui.Spacer(height=4)
         ui.Label(
-            "Joint angles / playback: «G1 Joint Mapping». Raw lines update when sim runs.",
+            "Joint angles / playback: «G1 MMD config». Raw lines update when sim runs.",
             height=22,
             style={"font_size": 11, "color": 0xFF888888},
         )

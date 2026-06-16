@@ -37,9 +37,6 @@ from robot_mmd.train_workflow.utils.g1_foot_ik_geometry import (
     G1_FOOT_IK_HIP_OFFSET_Z_M,
     G1_FOOT_IK_SHIN_LENGTH_M,
     G1_FOOT_IK_THIGH_LENGTH_M,
-    planar_leg_ik_forward_m,
-    planar_leg_ik_reach_clamped,
-    planar_leg_ik_reach_debug,
 )
 from robot_mmd.train_workflow.utils.g1_leg_kinematics import (
     LegIkResult,
@@ -85,9 +82,8 @@ class FootIkConfig:
 
     enable: bool = False
     groove_pos_to_world: float = 0.1
-    weight: float = 1.0
-    max_reach_ratio: float = 0.985
-    leg_target_scale: float = 1.0
+    max_reach_ratio: float = 1.0
+    leg_target_scale: float = 0.75
     leg_z_ground_clearance_m: float = 0.012
     leg_z_compress_power: float = 2.0
     leg_floor_z: float = 0.0
@@ -100,7 +96,6 @@ class FootIkConfig:
     hip_roll_gain: float = 0.85
     ankle_pitch_stabilize_gain: float = 0.75
     debug_every_n_frames: int = 0
-    solver: str = "full"
     ik_max_iters: int = 20
     ik_warm_start: bool = True
     ik_warm_reset_target_delta_m: float = 0.04
@@ -921,51 +916,6 @@ def _foot_ik_lock_ankle(cfg: FootIkConfig) -> bool:
     return bool(getattr(cfg, "ik_pass_through_ankle", True))
 
 
-def _solve_planar_leg_ik(
-    target_local_xyz: tuple[float, float, float],
-    *,
-    side: str,
-    cfg: FootIkConfig,
-    fk_hip_yaw: float,
-    fk_ankle_pitch: float,
-    fk_ankle_roll: float,
-) -> tuple[float, float, float, float, float, float]:
-    side_sign = 1.0 if side == "left" else -1.0
-    hx, hy, hz = 0.0, side_sign * float(cfg.hip_offset_y), float(cfg.hip_offset_z)
-    tx, ty, tz = target_local_xyz
-    vx, vy, vz = tx - hx, ty - hy, tz - hz
-
-    forward = planar_leg_ik_forward_m(vx, side=side)
-    down = float(max(1e-6, -vz))
-    lateral = float(vy)
-
-    l1 = max(1e-6, float(cfg.thigh_length))
-    l2 = max(1e-6, float(cfg.shin_length))
-    d = math.sqrt(forward * forward + down * down)
-    d = _clamp(d, 1e-6, (l1 + l2) * max(0.2, float(cfg.max_reach_ratio)))
-
-    cos_k = _clamp((l1 * l1 + l2 * l2 - d * d) / (2.0 * l1 * l2), -1.0, 1.0)
-    knee = math.pi - math.acos(cos_k)
-    cos_b = _clamp((l1 * l1 + d * d - l2 * l2) / (2.0 * l1 * d), -1.0, 1.0)
-    beta = math.acos(cos_b)
-    alpha = math.atan2(forward, down)
-    hip_pitch = alpha - beta + float(cfg.hip_pitch_offset)
-    hip_roll = math.atan2(lateral, max(1e-6, down)) * float(cfg.hip_roll_gain)
-    if _foot_ik_lock_ankle(cfg):
-        ankle_pitch = float(fk_ankle_pitch)
-        ankle_roll = float(fk_ankle_roll)
-    else:
-        ankle_pitch = -(hip_pitch + knee) * float(cfg.ankle_pitch_stabilize_gain)
-        ankle_roll = float(fk_ankle_roll)
-
-    hip_pitch = _clamp(hip_pitch, *_FOOT_IK_LIMITS["hip_pitch"])
-    hip_roll = _clamp(hip_roll, *_FOOT_IK_LIMITS["hip_roll"])
-    knee = _clamp(knee, *_FOOT_IK_LIMITS["knee"])
-    if not _foot_ik_lock_ankle(cfg):
-        ankle_pitch = _clamp(ankle_pitch, *_FOOT_IK_LIMITS["ankle_pitch"])
-    return hip_pitch, hip_roll, fk_hip_yaw, knee, ankle_pitch, ankle_roll
-
-
 def _pick_leg_ik_seed(
     q_fk: tuple[float, float, float, float, float, float],
     warm_q: tuple[float, float, float, float, float, float] | None,
@@ -1102,15 +1052,7 @@ def _solve_full_leg_ik_robust(
         primary, cfg=cfg, best_any=None, best_valid=None
     )
 
-    q_planar = _solve_planar_leg_ik(
-        target_use,
-        side=side,
-        cfg=cfg,
-        fk_hip_yaw=float(q_fk[2]),
-        fk_ankle_pitch=float(q_fk[4]),
-        fk_ankle_roll=float(q_fk[5]),
-    )
-    extra_seeds: list[tuple[float, float, float, float, float, float]] = [q_planar, q_fk]
+    extra_seeds: list[tuple[float, float, float, float, float, float]] = [q_fk]
     if float(q_fk[3]) < float(getattr(cfg, "ik_min_knee_rad", 0.12)) + 0.08:
         extra_seeds.append(
             (
@@ -1177,14 +1119,14 @@ def _solve_full_leg_ik_robust(
 
     pick = best_valid if best_valid is not None else best_any
     if pick is None:
-        q_planar = _finalize_q(q_planar)
-        planar_res = math.sqrt(
-            sum(
-                (float(target_use[i]) - float(g1_leg_fk_pos(q_planar, side=side)[i])) ** 2
-                for i in range(3)
+        q_fk_out = _finalize_q(q_fk)
+        fk_res = float(
+            np.linalg.norm(
+                np.asarray(target_use, dtype=np.float64)
+                - np.asarray(g1_leg_fk_pos(q_fk_out, side=side), dtype=np.float64)
             )
         )
-        return q_planar, float(planar_res), 0, False
+        return q_fk_out, fk_res, 0, False
 
     q_out = _finalize_q(pick.q)
     res = float(
@@ -1321,9 +1263,6 @@ def _apply_foot_ik_override_to_result(
     state.last_right_ik_residual_m = None
     state.last_left_ik_iters = None
     state.last_right_ik_iters = None
-    weight = _clamp(float(cfg.weight), 0.0, 1.0)
-    if weight <= 1e-6:
-        return
 
     center_pos = center_mmd_pos
     center_bone: str | None = None
@@ -1389,60 +1328,42 @@ def _apply_foot_ik_override_to_result(
             float(result[jidx[jn]] - default_joint_pos[jidx[jn]]) for jn in req
         )
         warm_q = state.last_left_q_ik if side == "left" else state.last_right_q_ik
-        solver = str(getattr(cfg, "solver", "full") or "full").strip().lower()
-        if solver == "planar":
-            fk_hip_yaw = float(q_fk[2])
-            fk_ankle_pitch = float(q_fk[4])
-            fk_ankle_roll = float(q_fk[5])
-            ik_vals = _solve_planar_leg_ik(
-                target_ik,
-                side=side,
-                cfg=cfg,
-                fk_hip_yaw=fk_hip_yaw,
-                fk_ankle_pitch=fk_ankle_pitch,
-                fk_ankle_roll=fk_ankle_roll,
-            )
-            ik_residual = None
-            ik_iters = None
-        else:
-            ik_vals, ik_residual, ik_iters, ik_accepted = _solve_full_leg_ik_robust(
-                target_ik,
-                q_fk,
-                warm_q=warm_q,
-                prev_target=prev_target,
-                side=side,
-                cfg=cfg,
-            )
-            warm_keep = max(
-                1e-6,
-                _leg_ik_max_apply_residual_m(cfg) * 2.5,
-            )
-            if ik_accepted or float(ik_residual) <= warm_keep:
-                if side == "left":
-                    state.last_left_q_ik = ik_vals
-                else:
-                    state.last_right_q_ik = ik_vals
-            pred_local = g1_leg_fk_pos(ik_vals, side=side)
-            pred_world = None
-            if foot_ik_root_pos_world is not None and foot_ik_root_quat_wxyz is not None:
-                pred_world = root_local_to_isaac_world(
-                    pred_local,
-                    foot_ik_root_pos_world,
-                    foot_ik_root_quat_wxyz,
-                )
+        ik_vals, ik_residual, ik_iters, ik_accepted = _solve_full_leg_ik_robust(
+            target_ik,
+            q_fk,
+            warm_q=warm_q,
+            prev_target=prev_target,
+            side=side,
+            cfg=cfg,
+        )
+        warm_keep = max(
+            1e-6,
+            _leg_ik_max_apply_residual_m(cfg) * 2.5,
+        )
+        if ik_accepted or float(ik_residual) <= warm_keep:
             if side == "left":
-                state.last_left_ik_pred_world = pred_world
-                state.last_left_ik_residual_m = ik_residual
-                state.last_left_ik_iters = ik_iters
+                state.last_left_q_ik = ik_vals
             else:
-                state.last_right_ik_pred_world = pred_world
-                state.last_right_ik_residual_m = ik_residual
-                state.last_right_ik_iters = ik_iters
+                state.last_right_q_ik = ik_vals
+        pred_local = g1_leg_fk_pos(ik_vals, side=side)
+        pred_world = None
+        if foot_ik_root_pos_world is not None and foot_ik_root_quat_wxyz is not None:
+            pred_world = root_local_to_isaac_world(
+                pred_local,
+                foot_ik_root_pos_world,
+                foot_ik_root_quat_wxyz,
+            )
+        if side == "left":
+            state.last_left_ik_pred_world = pred_world
+            state.last_left_ik_residual_m = ik_residual
+            state.last_left_ik_iters = ik_iters
+        else:
+            state.last_right_ik_pred_world = pred_world
+            state.last_right_ik_residual_m = ik_residual
+            state.last_right_ik_iters = ik_iters
         for jn, ik_angle in zip(req, ik_vals):
             ji = jidx[jn]
-            fk_angle = float(result[ji] - default_joint_pos[ji])
-            out_angle = fk_angle * (1.0 - weight) + float(ik_angle) * weight
-            result[ji] = float(default_joint_pos[ji] + out_angle)
+            result[ji] = float(default_joint_pos[ji] + float(ik_angle))
         debug_stride = int(max(0, int(cfg.debug_every_n_frames)))
         if (
             debug_stride > 0
@@ -1450,51 +1371,22 @@ def _apply_foot_ik_override_to_result(
             and int(frame_idx) >= 0
             and int(frame_idx) % debug_stride == 0
         ):
-            if solver == "planar":
-                reach = planar_leg_ik_reach_debug(
-                    target_ik,
-                    side=side,
-                    hip_offset_y=float(cfg.hip_offset_y),
-                    hip_offset_z=float(cfg.hip_offset_z),
-                    thigh_length=float(cfg.thigh_length),
-                    shin_length=float(cfg.shin_length),
-                    max_reach_ratio=float(cfg.max_reach_ratio),
+            red_z = foot_world[2] if foot_world is not None else float("nan")
+            print(
+                "[IKDBG] f=%d side=%s red_z=%.3f target_root_local=(%.3f,%.3f,%.3f) "
+                "residual=%.4fm iters=%s conv=%s"
+                % (
+                    int(frame_idx),
+                    side,
+                    float(red_z),
+                    float(target_ik[0]),
+                    float(target_ik[1]),
+                    float(target_ik[2]),
+                    float(ik_residual if ik_residual is not None else -1.0),
+                    str(ik_iters),
+                    "yes" if (ik_residual is not None and ik_residual <= float(cfg.ik_pos_tol_m)) else "no",
                 )
-                red_z = foot_world[2] if foot_world is not None else float("nan")
-                print(
-                    "[IKDBG] f=%d side=%s solver=planar red_z=%.3f target_root_local=(%.3f,%.3f,%.3f) "
-                    "reach d=%.3f->%.3f(max=%.3f) knee=%.1fdeg hip_p=%.1fdeg"
-                    % (
-                        int(frame_idx),
-                        side,
-                        float(red_z),
-                        float(target_ik[0]),
-                        float(target_ik[1]),
-                        float(target_ik[2]),
-                        float(reach["d_raw_m"]),
-                        float(reach["d_used_m"]),
-                        float(reach["d_max_m"]),
-                        math.degrees(float(ik_vals[3])),
-                        math.degrees(float(ik_vals[0])),
-                    )
-                )
-            else:
-                red_z = foot_world[2] if foot_world is not None else float("nan")
-                print(
-                    "[IKDBG] f=%d side=%s solver=full red_z=%.3f target_root_local=(%.3f,%.3f,%.3f) "
-                    "residual=%.4fm iters=%s conv=%s"
-                    % (
-                        int(frame_idx),
-                        side,
-                        float(red_z),
-                        float(target_ik[0]),
-                        float(target_ik[1]),
-                        float(target_ik[2]),
-                        float(ik_residual if ik_residual is not None else -1.0),
-                        str(ik_iters),
-                        "yes" if (ik_residual is not None and ik_residual <= float(cfg.ik_pos_tol_m)) else "no",
-                    )
-                )
+            )
 
 
 def _apply_knee_hinge_projection(
@@ -1861,25 +1753,12 @@ def update_foot_ik_reach_clamp_flags(
             float(target[1]) + float(offset[1]),
             float(target[2]) + float(offset[2]),
         )
-        solver = str(getattr(foot_ik_cfg, "solver", "full") or "full").strip().lower()
-        if solver == "full":
-            clamped = g1_leg_reach_clamped(
-                target_ik,
-                side=side,
-                max_reach_ratio=float(foot_ik_cfg.max_reach_ratio),
-                margin_m=float(margin_m),
-            )
-        else:
-            clamped = planar_leg_ik_reach_clamped(
-                target_ik,
-                side=side,
-                hip_offset_y=float(foot_ik_cfg.hip_offset_y),
-                hip_offset_z=float(foot_ik_cfg.hip_offset_z),
-                thigh_length=float(foot_ik_cfg.thigh_length),
-                shin_length=float(foot_ik_cfg.shin_length),
-                max_reach_ratio=float(foot_ik_cfg.max_reach_ratio),
-                margin_m=float(margin_m),
-            )
+        clamped = g1_leg_reach_clamped(
+            target_ik,
+            side=side,
+            max_reach_ratio=float(foot_ik_cfg.max_reach_ratio),
+            margin_m=float(margin_m),
+        )
         if side == "left":
             foot_ik_state.last_left_reach_clamped = clamped
         else:

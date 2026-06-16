@@ -27,9 +27,8 @@ from robot_mmd.train_workflow.ui.retargeting_tune import (
     build_retarget_tune_window,
 )
 from robot_mmd.train_workflow.utils.audio_util import DEFAULT_VOLUME
-from robot_mmd.train_workflow.utils.mmd_fk import default_foot_ik_viz_config
 
-WINDOW_TITLE = "G1 Joint Mapping"
+WINDOW_TITLE = "G1 MMD config"
 _AUTO_OPEN = True
 
 # 外部注入：用于在 UI 中显示“当前环境下的关节值（度制）”
@@ -66,8 +65,6 @@ _root_quat_rpy_setter: Callable[
 _root_rot_bone_name_provider: Callable[[], str] | None = None
 _foot_ik_provider: Callable[[], dict[str, Any]] | None = None
 _foot_ik_setter: Callable[[dict[str, Any]], None] | None = None
-_foot_ik_viz_provider: Callable[[], dict[str, Any]] | None = None
-_foot_ik_viz_setter: Callable[[dict[str, Any]], None] | None = None
 _audio_volume_provider: Callable[[], float] | None = None
 _audio_volume_setter: Callable[[float], None] | None = None
 
@@ -77,7 +74,6 @@ _root_quat_sync_suppress_set: bool = False
 _pd_drive_sync_suppress_set: bool = False
 _z_offset_sync_suppress_set: bool = False
 _foot_ik_sync_suppress_set: bool = False
-_foot_ik_viz_sync_suppress_set: bool = False
 _foot_ground_comp_sync_suppress_set: bool = False
 _audio_volume_sync_suppress_set: bool = False
 
@@ -206,16 +202,6 @@ def set_foot_ik_callbacks(
     global _foot_ik_provider, _foot_ik_setter
     _foot_ik_provider = provider
     _foot_ik_setter = setter
-
-
-def set_foot_ik_viz_callbacks(
-    provider: Callable[[], dict[str, Any]] | None,
-    setter: Callable[[dict[str, Any]], None] | None,
-) -> None:
-    """Set red-sphere MMD->Isaac axis map callbacks (independent of robot leg IK)."""
-    global _foot_ik_viz_provider, _foot_ik_viz_setter
-    _foot_ik_viz_provider = provider
-    _foot_ik_viz_setter = setter
 
 
 def set_audio_volume_callbacks(
@@ -375,6 +361,8 @@ JOINT_CATEGORIES: dict[str, list[str]] = {
     ],
 }
 
+_SECTION_HEADER_STYLE = {"font_size": 17, "font_style": "bold", "color": 0xFFFFFF00}
+
 # Root R/P/Y remapping rows (same slider layout as joint mapping; not in G1_JOINT_TO_MMD).
 ROOT_RPY_ROWS: tuple[tuple[str, str, str], ...] = (
     ("root_Roll", "out·R", "root_roll"),
@@ -399,6 +387,11 @@ def _build_mapping_window(ui):
     Layout (top to bottom): Upper Body, Lower Body, Waist. Left joints before right.
     """
     joint_models: dict[str, tuple] = {}
+
+    def _build_bold_section_header(_collapsed: bool, title: str) -> None:
+        with ui.HStack(height=22):
+            ui.Label(f"--- {title} ---", style=_SECTION_HEADER_STYLE)
+            ui.Spacer()
 
     def _bone_str(bones) -> str:
         """MMD bone names as English romaji labels for omni.ui."""
@@ -522,38 +515,13 @@ def _build_mapping_window(ui):
         foot_ground_comp_model = ui.SimpleBoolModel(True)
         audio_volume_model = ui.SimpleFloatModel(float(DEFAULT_VOLUME))
         foot_ik_enable_model = ui.SimpleBoolModel(False)
-        foot_ik_weight_model = ui.SimpleFloatModel(1.0)
-        foot_ik_reach_model = ui.SimpleFloatModel(0.985)
-        foot_ik_leg_scale_model = ui.SimpleFloatModel(1.0)
+        foot_ik_reach_model = ui.SimpleFloatModel(1.0)
+        foot_ik_leg_scale_model = ui.SimpleFloatModel(0.75)
         foot_ik_ankle_offset_x_model = ui.SimpleFloatModel(0.0)
         foot_ik_ankle_offset_y_model = ui.SimpleFloatModel(0.0)
         foot_ik_ankle_offset_z_model = ui.SimpleFloatModel(0.02)
         foot_ik_debug_every_model = ui.SimpleIntModel(0)
-        foot_ik_solver_model = ui.SimpleIntModel(0)
-        foot_ik_solver_combo = None
         foot_ik_reg_weight_model = ui.SimpleFloatModel(0.15)
-        _sphere_viz_defaults = default_foot_ik_viz_config()
-        sphere_map_scale_model = ui.SimpleFloatModel(float(_sphere_viz_defaults.pos_scale))
-        sphere_map_axis_idx_models = (
-            ui.SimpleIntModel(int(_sphere_viz_defaults.axis_idx[0])),
-            ui.SimpleIntModel(int(_sphere_viz_defaults.axis_idx[1])),
-            ui.SimpleIntModel(int(_sphere_viz_defaults.axis_idx[2])),
-        )
-        sphere_map_axis_sign_models = (
-            ui.SimpleFloatModel(float(_sphere_viz_defaults.axis_sign[0])),
-            ui.SimpleFloatModel(float(_sphere_viz_defaults.axis_sign[1])),
-            ui.SimpleFloatModel(float(_sphere_viz_defaults.axis_sign[2])),
-        )
-        sphere_map_left_ref_origin_models = (
-            ui.SimpleFloatModel(float(_sphere_viz_defaults.left_ref_origin_m[0])),
-            ui.SimpleFloatModel(float(_sphere_viz_defaults.left_ref_origin_m[1])),
-            ui.SimpleFloatModel(float(_sphere_viz_defaults.left_ref_origin_m[2])),
-        )
-        sphere_map_right_ref_origin_models = (
-            ui.SimpleFloatModel(float(_sphere_viz_defaults.right_ref_origin_m[0])),
-            ui.SimpleFloatModel(float(_sphere_viz_defaults.right_ref_origin_m[1])),
-            ui.SimpleFloatModel(float(_sphere_viz_defaults.right_ref_origin_m[2])),
-        )
 
         def _dance_entries() -> list[DanceUiEntry]:
             if _dance_entries_provider is None:
@@ -684,11 +652,9 @@ def _build_mapping_window(ui):
             try:
                 payload = {
                     "enable": bool(foot_ik_enable_model.get_value_as_bool()),
-                    "weight": float(foot_ik_weight_model.get_value_as_float()),
                     "reach": float(foot_ik_reach_model.get_value_as_float()),
                     "leg_scale": float(foot_ik_leg_scale_model.get_value_as_float()),
                     "debug_every": max(0, int(foot_ik_debug_every_model.get_value_as_int())),
-                    "solver": "planar" if int(foot_ik_solver_model.get_value_as_int()) == 1 else "full",
                     "ik_reg_weight": float(foot_ik_reg_weight_model.get_value_as_float()),
                     "ankle_offset": (
                         float(foot_ik_ankle_offset_x_model.get_value_as_float()),
@@ -701,56 +667,18 @@ def _build_mapping_window(ui):
             except Exception:
                 pass
 
-        def _push_sphere_map() -> None:
-            if _foot_ik_viz_sync_suppress_set:
-                return
-            if _foot_ik_viz_setter is None:
-                return
-            try:
-                payload = {
-                    "scale": float(sphere_map_scale_model.get_value_as_float()),
-                    "axis_idx": tuple(
-                        max(0, min(2, int(m.get_value_as_int()))) for m in sphere_map_axis_idx_models
-                    ),
-                    "axis_sign": tuple(
-                        float(m.get_value_as_float()) for m in sphere_map_axis_sign_models
-                    ),
-                    "left_ref_origin": tuple(
-                        float(m.get_value_as_float()) for m in sphere_map_left_ref_origin_models
-                    ),
-                    "right_ref_origin": tuple(
-                        float(m.get_value_as_float()) for m in sphere_map_right_ref_origin_models
-                    ),
-                }
-                _foot_ik_viz_setter(payload)
-                _notify_mapping_changed()
-            except Exception:
-                pass
-
         pd_drive_model.add_value_changed_fn(_on_pd_drive_changed)
         z_offset_enable_model.add_value_changed_fn(_on_z_offset_enable_changed)
         foot_ground_comp_model.add_value_changed_fn(_on_foot_ground_comp_changed)
         audio_volume_model.add_value_changed_fn(_on_audio_volume_changed)
         foot_ik_enable_model.add_value_changed_fn(lambda _m: _push_foot_ik())
-        foot_ik_weight_model.add_value_changed_fn(lambda _m: _push_foot_ik())
         foot_ik_reach_model.add_value_changed_fn(lambda _m: _push_foot_ik())
         foot_ik_leg_scale_model.add_value_changed_fn(lambda _m: _push_foot_ik())
         foot_ik_ankle_offset_x_model.add_value_changed_fn(lambda _m: _push_foot_ik())
         foot_ik_ankle_offset_y_model.add_value_changed_fn(lambda _m: _push_foot_ik())
         foot_ik_ankle_offset_z_model.add_value_changed_fn(lambda _m: _push_foot_ik())
         foot_ik_debug_every_model.add_value_changed_fn(lambda _m: _push_foot_ik())
-        foot_ik_solver_model.add_value_changed_fn(lambda _m: _push_foot_ik())
         foot_ik_reg_weight_model.add_value_changed_fn(lambda _m: _push_foot_ik())
-
-        sphere_map_scale_model.add_value_changed_fn(lambda _m: _push_sphere_map())
-        for _m in sphere_map_axis_idx_models:
-            _m.add_value_changed_fn(lambda _x: _push_sphere_map())
-        for _m in sphere_map_axis_sign_models:
-            _m.add_value_changed_fn(lambda _x: _push_sphere_map())
-        for _m in sphere_map_left_ref_origin_models:
-            _m.add_value_changed_fn(lambda _x: _push_sphere_map())
-        for _m in sphere_map_right_ref_origin_models:
-            _m.add_value_changed_fn(lambda _x: _push_sphere_map())
 
         with ui.VStack(spacing=4):
             with ui.HStack(height=28):
@@ -777,7 +705,8 @@ def _build_mapping_window(ui):
             with ui.HStack(height=28):
                 ui.Label("Audio volume", width=88, height=22)
                 ui.FloatField(model=audio_volume_model, width=48, height=22)
-                ui.FloatSlider(model=audio_volume_model, min=0.0, max=1.0, width=160, height=22)
+                ui.Spacer(width=4)
+                ui.FloatSlider(model=audio_volume_model, min=0.0, max=1.0, width=112, height=22)
                 ui.Spacer()
         btn_prev.visible = False
         btn_next.visible = False
@@ -823,19 +752,16 @@ def _build_mapping_window(ui):
                     ui.CheckBox(model=foot_ik_enable_model, width=24, height=22)
                     ui.Spacer()
                 with ui.HStack(height=28):
-                    ui.Label("IK weight", width=118)
-                    ui.FloatField(model=foot_ik_weight_model, width=56)
-                    ui.FloatSlider(model=foot_ik_weight_model, min=0.0, max=1.0, width=140)
-                    ui.Spacer()
-                with ui.HStack(height=28):
                     ui.Label("IK reach", width=118)
                     ui.FloatField(model=foot_ik_reach_model, width=64)
-                    ui.FloatSlider(model=foot_ik_reach_model, min=0.6, max=1.2, width=140)
+                    ui.Spacer(width=4)
+                    ui.FloatSlider(model=foot_ik_reach_model, min=0.6, max=1.2, width=98)
                     ui.Spacer()
                 with ui.HStack(height=28):
                     ui.Label("Leg scale", width=118)
                     ui.FloatField(model=foot_ik_leg_scale_model, width=64)
-                    ui.FloatSlider(model=foot_ik_leg_scale_model, min=0.5, max=1.2, width=140)
+                    ui.Spacer(width=4)
+                    ui.FloatSlider(model=foot_ik_leg_scale_model, min=0.5, max=1.2, width=98)
                     ui.Spacer()
                 ui.Label(
                     "Ankle offset (root-local m). Orange sphere = red + offset.",
@@ -843,25 +769,13 @@ def _build_mapping_window(ui):
                     style={"font_size": 12, "color": 0xFFAAAAAA},
                 )
                 with ui.HStack(height=28):
-                    ui.Label("offset X", width=118)
-                    ui.FloatField(model=foot_ik_ankle_offset_x_model, width=56)
-                    ui.FloatSlider(
-                        model=foot_ik_ankle_offset_x_model, min=-0.12, max=0.12, width=140
-                    )
-                    ui.Spacer()
-                with ui.HStack(height=28):
-                    ui.Label("offset Y", width=118)
-                    ui.FloatField(model=foot_ik_ankle_offset_y_model, width=56)
-                    ui.FloatSlider(
-                        model=foot_ik_ankle_offset_y_model, min=-0.12, max=0.12, width=140
-                    )
-                    ui.Spacer()
-                with ui.HStack(height=28):
-                    ui.Label("offset Z", width=118)
-                    ui.FloatField(model=foot_ik_ankle_offset_z_model, width=56)
-                    ui.FloatSlider(
-                        model=foot_ik_ankle_offset_z_model, min=-0.12, max=0.12, width=140
-                    )
+                    ui.Label("Ankle offset", width=118)
+                    ui.Label("X", width=16)
+                    ui.FloatField(model=foot_ik_ankle_offset_x_model, width=62)
+                    ui.Label("Y", width=16)
+                    ui.FloatField(model=foot_ik_ankle_offset_y_model, width=62)
+                    ui.Label("Z", width=16)
+                    ui.FloatField(model=foot_ik_ankle_offset_z_model, width=62)
                     ui.Spacer()
                 with ui.HStack(height=22):
                     ui.Label("L IK target", width=118)
@@ -873,98 +787,18 @@ def _build_mapping_window(ui):
                     ui.Spacer()
                 with ui.CollapsableFrame("Foot IK Advanced", collapsed=True, height=0):
                     with ui.VStack(spacing=4):
-                        ui.Label(
-                            "Planar solver is debug fallback only; full is recommended.",
-                            height=20,
-                            style={"font_size": 12, "color": 0xFFAAAAAA},
-                        )
-                        with ui.HStack(height=28):
-                            ui.Label("IK solver", width=118)
-                            foot_ik_solver_combo = ui.ComboBox(
-                                0, "full", "planar (debug)", width=140, height=22
-                            )
-                            ui.Spacer()
                         with ui.HStack(height=28):
                             ui.Label("Reg weight", width=118)
                             ui.FloatField(model=foot_ik_reg_weight_model, width=56)
+                            ui.Spacer(width=4)
                             ui.FloatSlider(
-                                model=foot_ik_reg_weight_model, min=0.0, max=1.0, width=140
+                                model=foot_ik_reg_weight_model, min=0.0, max=1.0, width=98
                             )
                             ui.Spacer()
                         with ui.HStack(height=28):
                             ui.Label("Debug every N", width=118)
                             ui.IntField(model=foot_ik_debug_every_model, width=56)
                             ui.Spacer()
-
-                def _on_foot_ik_solver_combo(_m=None) -> None:
-                    if _foot_ik_sync_suppress_set or foot_ik_solver_combo is None:
-                        return
-                    idx = int(foot_ik_solver_combo.model.get_item_value_model().as_int)
-                    foot_ik_solver_model.set_value(idx)
-                    _push_foot_ik()
-
-                if foot_ik_solver_combo is not None:
-                    foot_ik_solver_combo.model.add_item_changed_fn(
-                        lambda _m: _on_foot_ik_solver_combo()
-                    )
-                ui.Label(
-                    "--- Red Sphere Map (sphere + IK target) ---",
-                    height=22,
-                    style={"font_size": 15, "font_style": "bold", "color": 0xFFFFFF00},
-                )
-                with ui.HStack(height=28):
-                    ui.Label("L ref origin", width=118)
-                    for _m in sphere_map_left_ref_origin_models:
-                        ui.FloatField(model=_m, width=62)
-                    ui.Spacer()
-                with ui.HStack(height=28):
-                    ui.Label("R ref origin", width=118)
-                    for _m in sphere_map_right_ref_origin_models:
-                        ui.FloatField(model=_m, width=62)
-                    ui.Spacer()
-                with ui.HStack(height=28):
-                    ui.Label("Sphere scale", width=118)
-                    ui.FloatField(model=sphere_map_scale_model, width=64)
-                    ui.FloatSlider(model=sphere_map_scale_model, min=0.0, max=2.0, width=140)
-                    ui.Spacer()
-                with ui.HStack(height=28):
-                    ui.Label("Sphere idx", width=118)
-                    for _m in sphere_map_axis_idx_models:
-                        ui.IntField(model=_m, width=32)
-                    ui.Spacer(width=10)
-                    ui.Label("sign", width=36)
-                    for _m in sphere_map_axis_sign_models:
-                        ui.FloatField(model=_m, width=46)
-                    ui.Spacer()
-                ui.Label(
-                    "Panel local z is NOT Isaac height; sphere z comes from rotated MMD Y.",
-                    height=20,
-                    style={"font_size": 12, "color": 0xFFAAAAAA},
-                )
-                with ui.HStack(height=22):
-                    ui.Label("L panel local", width=118)
-                    l_foot_local_label = ui.Label("x: -  y: -  z: -", width=300)
-                    ui.Spacer()
-                with ui.HStack(height=22):
-                    ui.Label("L sphere", width=118)
-                    l_foot_xyz_label = ui.Label("x: -  y: -  z: -", width=300)
-                    ui.Spacer()
-                with ui.HStack(height=22):
-                    ui.Label("R panel local", width=118)
-                    r_foot_local_label = ui.Label("x: -  y: -  z: -", width=300)
-                    ui.Spacer()
-                with ui.HStack(height=22):
-                    ui.Label("R sphere", width=118)
-                    r_foot_xyz_label = ui.Label("x: -  y: -  z: -", width=300)
-                    ui.Spacer()
-                with ui.HStack(height=22):
-                    ui.Label("L toe sphere", width=118)
-                    l_toe_xyz_label = ui.Label("x: -  y: -  z: -", width=300)
-                    ui.Spacer()
-                with ui.HStack(height=22):
-                    ui.Label("R toe sphere", width=118)
-                    r_toe_xyz_label = ui.Label("x: -  y: -  z: -", width=300)
-                    ui.Spacer()
                 ui.Spacer(height=4)
 
                 ui.Label(
@@ -988,7 +822,7 @@ def _build_mapping_window(ui):
                         ui.Spacer(width=8)
                         ui.FloatField(model=scale_model, width=50)
                         ui.Spacer(width=4)
-                        ui.FloatSlider(model=scale_model, min=-3.0, max=3.0, width=112)
+                        ui.FloatSlider(model=scale_model, min=-3.0, max=3.0, width=78)
                         scale_model.add_value_changed_fn(lambda _m: _push_root_quat_rpy())
                         ui.Spacer(width=8)
                         ui.Button(
@@ -1010,117 +844,119 @@ def _build_mapping_window(ui):
                 ui.Spacer(height=2)
 
                 for category_name, joint_names in JOINT_CATEGORIES.items():
-                    # 分类标题
-                    ui.Label(
-                        f"--- {category_name} ---",
-                        height=22,
-                        style={"font_size": 17, "font_style": "bold", "color": 0xFFFFFF00},
-                    )
-                    if category_name == "Waist":
-                        global _waist_pair_conj_status_labels
+                    collapsed_default = category_name.startswith("Hand ")
+                    with ui.CollapsableFrame(
+                        category_name,
+                        collapsed=collapsed_default,
+                        height=0,
+                        build_header_fn=_build_bold_section_header,
+                    ):
+                        with ui.VStack(spacing=2):
+                            if category_name == "Waist":
+                                global _waist_pair_conj_status_labels
 
-                        def _waist_conj_toggle(which: int) -> None:
-                            toggle_waist_upper_pair_quat_conjugate(which)
-                            _sync_waist_pair_conj_status_labels()
-                            _notify_mapping_changed()
+                                def _waist_conj_toggle(which: int) -> None:
+                                    toggle_waist_upper_pair_quat_conjugate(which)
+                                    _sync_waist_pair_conj_status_labels()
+                                    _notify_mapping_changed()
 
-                        ui.Label(
-                            "Waist quats: optionally conjugate (invert) each bone before q_upper*q_upper2. Toggle each.",
-                            height=20,
-                            style={"font_size": 12, "color": 0xFFAAAAAA},
-                        )
-                        with ui.HStack(height=26):
-                            ui.Spacer(width=8)
-                            lbl_ub = ui.Label("", width=108, height=22)
-                            ui.Button(
-                                "Toggle",
-                                width=52,
-                                height=22,
-                                clicked_fn=lambda: _waist_conj_toggle(0),
-                            )
-                            ui.Spacer(width=8)
-                            lbl_ub2 = ui.Label("", width=108, height=22)
-                            ui.Button(
-                                "Toggle",
-                                width=52,
-                                height=22,
-                                clicked_fn=lambda: _waist_conj_toggle(1),
-                            )
-                            ui.Spacer()
-                        _waist_pair_conj_status_labels[0] = lbl_ub
-                        _waist_pair_conj_status_labels[1] = lbl_ub2
-                        _sync_waist_pair_conj_status_labels()
-                    for joint_name in joint_names:
-                        if joint_name not in G1_JOINT_TO_MMD:
-                            continue
-                        bones, euler_idx, scale = G1_JOINT_TO_MMD[joint_name]
-                        val_w = 204 if joint_name in _HINGE_DETAIL_ROW_JOINTS else 72
+                                ui.Label(
+                                    "Waist quats: optionally conjugate (invert) each bone before q_upper*q_upper2. Toggle each.",
+                                    height=20,
+                                    style={"font_size": 12, "color": 0xFFAAAAAA},
+                                )
+                                with ui.HStack(height=26):
+                                    ui.Spacer(width=8)
+                                    lbl_ub = ui.Label("", width=108, height=22)
+                                    ui.Button(
+                                        "Toggle",
+                                        width=52,
+                                        height=22,
+                                        clicked_fn=lambda: _waist_conj_toggle(0),
+                                    )
+                                    ui.Spacer(width=8)
+                                    lbl_ub2 = ui.Label("", width=108, height=22)
+                                    ui.Button(
+                                        "Toggle",
+                                        width=52,
+                                        height=22,
+                                        clicked_fn=lambda: _waist_conj_toggle(1),
+                                    )
+                                    ui.Spacer()
+                                _waist_pair_conj_status_labels[0] = lbl_ub
+                                _waist_pair_conj_status_labels[1] = lbl_ub2
+                                _sync_waist_pair_conj_status_labels()
+                            for joint_name in joint_names:
+                                if joint_name not in G1_JOINT_TO_MMD:
+                                    continue
+                                bones, euler_idx, scale = G1_JOINT_TO_MMD[joint_name]
+                                val_w = 204 if joint_name in _HINGE_DETAIL_ROW_JOINTS else 72
 
-                        def _main_hstack_row() -> tuple:
-                            # 列1：G1 关节名（去掉 _joint 和 _）
-                            ui.Label(
-                                joint_name.replace("_joint", ""),
-                                width=118,
-                            )
-                            # 列2：对应的 MMD 骨骼名（R_/L_ 短罗马音）
-                            ui.Label(_bone_str(bones), width=102)
-                            # 列3：欧拉分量索引输入框（0/1/2）
-                            euler_model = ui.SimpleIntModel(euler_idx)
-                            ui.IntField(model=euler_model, width=30)
-                            euler_model.add_value_changed_fn(
-                                lambda m, j=joint_name: _on_euler_changed(j, m)
-                            )
-                            ui.Spacer(width=8)
-                            scale_model = ui.SimpleFloatModel(scale)
-                            ui.FloatField(model=scale_model, width=50)
-                            ui.Spacer(width=4)
-                            ui.FloatSlider(model=scale_model, min=-3.0, max=3.0, width=112)
-                            scale_model.add_value_changed_fn(
-                                lambda m, j=joint_name: _on_scale_changed(j, m)
-                            )
-                            ui.Spacer(width=8)
-                            ui.Button(
-                                "Flip",
-                                width=44,
-                                height=22,
-                                clicked_fn=lambda j=joint_name: _on_flip_scale(j),
-                            )
-                            ui.Spacer(width=8)
-                            value_label = ui.Label("N/A", width=val_w)
-                            return euler_model, scale_model, value_label
+                                def _main_hstack_row() -> tuple:
+                                    # 列1：G1 关节名（去掉 _joint 和 _）
+                                    ui.Label(
+                                        joint_name.replace("_joint", ""),
+                                        width=118,
+                                    )
+                                    # 列2：对应的 MMD 骨骼名（R_/L_ 短罗马音）
+                                    ui.Label(_bone_str(bones), width=102)
+                                    # 列3：欧拉分量索引输入框（0/1/2）
+                                    euler_model = ui.SimpleIntModel(euler_idx)
+                                    ui.IntField(model=euler_model, width=30)
+                                    euler_model.add_value_changed_fn(
+                                        lambda m, j=joint_name: _on_euler_changed(j, m)
+                                    )
+                                    ui.Spacer(width=8)
+                                    scale_model = ui.SimpleFloatModel(scale)
+                                    ui.FloatField(model=scale_model, width=50)
+                                    ui.Spacer(width=4)
+                                    ui.FloatSlider(model=scale_model, min=-3.0, max=3.0, width=78)
+                                    scale_model.add_value_changed_fn(
+                                        lambda m, j=joint_name: _on_scale_changed(j, m)
+                                    )
+                                    ui.Spacer(width=8)
+                                    ui.Button(
+                                        "Flip",
+                                        width=44,
+                                        height=22,
+                                        clicked_fn=lambda j=joint_name: _on_flip_scale(j),
+                                    )
+                                    ui.Spacer(width=8)
+                                    value_label = ui.Label("N/A", width=val_w)
+                                    return euler_model, scale_model, value_label
 
-                        if joint_name in _HINGE_DETAIL_ROW_JOINTS:
-                            absorb_model = ui.SimpleFloatModel(get_hinge_swing_absorb(joint_name))
-                            with ui.VStack(spacing=2):
-                                with ui.HStack(height=28):
-                                    euler_model, scale_model, value_label = _main_hstack_row()
-                                if joint_name in _KNEE_JOINT_NAMES:
-                                    with ui.HStack(height=22):
-                                        ui.Spacer(width=218)
-                                        ui.Label("swing abs", width=72)
-                                        ui.FloatField(model=absorb_model, width=50)
-                                        absorb_model.add_value_changed_fn(
-                                            lambda m, j=joint_name: _on_absorb_changed(j, m)
-                                        )
-                                        ui.Button(
-                                            "AbsFlip",
-                                            width=52,
-                                            height=22,
-                                            clicked_fn=lambda j=joint_name: _on_absorb_flip(j),
-                                        )
-                                        ui.Spacer()
+                                if joint_name in _HINGE_DETAIL_ROW_JOINTS:
+                                    absorb_model = ui.SimpleFloatModel(get_hinge_swing_absorb(joint_name))
+                                    with ui.VStack(spacing=2):
+                                        with ui.HStack(height=28):
+                                            euler_model, scale_model, value_label = _main_hstack_row()
+                                        if joint_name in _KNEE_JOINT_NAMES:
+                                            with ui.HStack(height=22):
+                                                ui.Spacer(width=218)
+                                                ui.Label("swing abs", width=72)
+                                                ui.FloatField(model=absorb_model, width=50)
+                                                absorb_model.add_value_changed_fn(
+                                                    lambda m, j=joint_name: _on_absorb_changed(j, m)
+                                                )
+                                                ui.Button(
+                                                    "AbsFlip",
+                                                    width=52,
+                                                    height=22,
+                                                    clicked_fn=lambda j=joint_name: _on_absorb_flip(j),
+                                                )
+                                                ui.Spacer()
+                                        else:
+                                            absorb_model = None
+                                    joint_models[joint_name] = (
+                                        euler_model,
+                                        scale_model,
+                                        value_label,
+                                        absorb_model,
+                                    )
                                 else:
-                                    absorb_model = None
-                            joint_models[joint_name] = (
-                                euler_model,
-                                scale_model,
-                                value_label,
-                                absorb_model,
-                            )
-                        else:
-                            with ui.HStack(height=28):
-                                euler_model, scale_model, value_label = _main_hstack_row()
-                            joint_models[joint_name] = (euler_model, scale_model, value_label, None)
+                                    with ui.HStack(height=28):
+                                        euler_model, scale_model, value_label = _main_hstack_row()
+                                    joint_models[joint_name] = (euler_model, scale_model, value_label, None)
                     ui.Spacer(height=4)  # 分类之间的间隔
 
         ui.Spacer(height=8)
@@ -1155,29 +991,15 @@ def _build_mapping_window(ui):
         "dance_combo": dance_combo,
         "btn_gen_z_editted": btn_gen_z_editted,
         "foot_ik_enable_model": foot_ik_enable_model,
-        "foot_ik_weight_model": foot_ik_weight_model,
         "foot_ik_reach_model": foot_ik_reach_model,
         "foot_ik_leg_scale_model": foot_ik_leg_scale_model,
         "foot_ik_ankle_offset_x_model": foot_ik_ankle_offset_x_model,
         "foot_ik_ankle_offset_y_model": foot_ik_ankle_offset_y_model,
         "foot_ik_ankle_offset_z_model": foot_ik_ankle_offset_z_model,
         "foot_ik_debug_every_model": foot_ik_debug_every_model,
-        "foot_ik_solver_model": foot_ik_solver_model,
-        "foot_ik_solver_combo": foot_ik_solver_combo,
         "foot_ik_reg_weight_model": foot_ik_reg_weight_model,
-        "sphere_map_scale_model": sphere_map_scale_model,
-        "sphere_map_axis_idx_models": sphere_map_axis_idx_models,
-        "sphere_map_axis_sign_models": sphere_map_axis_sign_models,
-        "sphere_map_left_ref_origin_models": sphere_map_left_ref_origin_models,
-        "sphere_map_right_ref_origin_models": sphere_map_right_ref_origin_models,
-        "foot_ik_l_local_label": l_foot_local_label,
-        "foot_ik_r_local_label": r_foot_local_label,
-        "foot_ik_l_xyz_label": l_foot_xyz_label,
-        "foot_ik_r_xyz_label": r_foot_xyz_label,
         "foot_ik_l_ik_target_label": l_ik_target_label,
         "foot_ik_r_ik_target_label": r_ik_target_label,
-        "toe_ik_l_xyz_label": l_toe_xyz_label,
-        "toe_ik_r_xyz_label": r_toe_xyz_label,
     }
     return joint_models, playback_title_label, transport_refs
 
@@ -1195,7 +1017,7 @@ async def _mapping_ui_refresh_loop() -> None:
     import omni.kit.app
 
     global _scrub_sync_suppress_seek, _root_quat_sync_suppress_set, _pd_drive_sync_suppress_set
-    global _z_offset_sync_suppress_set, _foot_ik_sync_suppress_set, _foot_ik_viz_sync_suppress_set
+    global _z_offset_sync_suppress_set, _foot_ik_sync_suppress_set
     global _foot_ground_comp_sync_suppress_set
     global _audio_volume_sync_suppress_set
     while True:
@@ -1371,12 +1193,10 @@ async def _mapping_ui_refresh_loop() -> None:
                 try:
                     if "foot_ik_enable_model" in tr:
                         tr["foot_ik_enable_model"].set_value(bool(fk.get("enable", False)))
-                    if "foot_ik_weight_model" in tr:
-                        tr["foot_ik_weight_model"].set_value(float(fk.get("weight", 1.0)))
                     if "foot_ik_reach_model" in tr:
-                        tr["foot_ik_reach_model"].set_value(float(fk.get("reach", 0.985)))
+                        tr["foot_ik_reach_model"].set_value(float(fk.get("reach", 1.0)))
                     if "foot_ik_leg_scale_model" in tr:
-                        tr["foot_ik_leg_scale_model"].set_value(float(fk.get("leg_scale", 1.0)))
+                        tr["foot_ik_leg_scale_model"].set_value(float(fk.get("leg_scale", 0.75)))
                     ao = tuple(fk.get("ankle_offset", (0.0, 0.0, 0.02)))
                     if len(ao) == 3:
                         if "foot_ik_ankle_offset_x_model" in tr:
@@ -1387,45 +1207,12 @@ async def _mapping_ui_refresh_loop() -> None:
                             tr["foot_ik_ankle_offset_z_model"].set_value(float(ao[2]))
                     if "foot_ik_debug_every_model" in tr:
                         tr["foot_ik_debug_every_model"].set_value(int(fk.get("debug_every", 0)))
-                    if "foot_ik_solver_model" in tr:
-                        solver = str(fk.get("solver", "full")).strip().lower()
-                        tr["foot_ik_solver_model"].set_value(1 if solver == "planar" else 0)
-                    combo = tr.get("foot_ik_solver_combo")
-                    if combo is not None:
-                        solver = str(fk.get("solver", "full")).strip().lower()
-                        combo.model.get_item_value_model().set_value(1 if solver == "planar" else 0)
                     if "foot_ik_reg_weight_model" in tr:
                         tr["foot_ik_reg_weight_model"].set_value(float(fk.get("ik_reg_weight", 0.15)))
                 except Exception:
                     pass
                 finally:
                     _foot_ik_sync_suppress_set = False
-            if _foot_ik_viz_provider is not None:
-                try:
-                    sv = _foot_ik_viz_provider() or {}
-                except Exception:
-                    sv = {}
-                _foot_ik_viz_sync_suppress_set = True
-                try:
-                    _sphere_defaults = default_foot_ik_viz_config()
-                    if "sphere_map_scale_model" in tr:
-                        tr["sphere_map_scale_model"].set_value(float(sv.get("scale", _sphere_defaults.pos_scale)))
-                    sidx = tuple(sv.get("axis_idx", _sphere_defaults.axis_idx))
-                    ssig = tuple(sv.get("axis_sign", _sphere_defaults.axis_sign))
-                    lorig = tuple(sv.get("left_ref_origin", _sphere_defaults.left_ref_origin_m))
-                    rorig = tuple(sv.get("right_ref_origin", _sphere_defaults.right_ref_origin_m))
-                    for _i, _m in enumerate(tr.get("sphere_map_axis_idx_models", ())):
-                        _m.set_value(int(sidx[_i]))
-                    for _i, _m in enumerate(tr.get("sphere_map_axis_sign_models", ())):
-                        _m.set_value(float(ssig[_i]))
-                    for _i, _m in enumerate(tr.get("sphere_map_left_ref_origin_models", ())):
-                        _m.set_value(float(lorig[_i]))
-                    for _i, _m in enumerate(tr.get("sphere_map_right_ref_origin_models", ())):
-                        _m.set_value(float(rorig[_i]))
-                except Exception:
-                    pass
-                finally:
-                    _foot_ik_viz_sync_suppress_set = False
 
             if _root_rot_bone_name_provider is not None:
                 try:
@@ -1454,14 +1241,8 @@ async def _mapping_ui_refresh_loop() -> None:
                     except (TypeError, ValueError):
                         _lw.text = "N/A"
             for _lbl_key, _xk, _yk, _zk in [
-                ("foot_ik_l_local_label", "__foot_ik_l_local_x", "__foot_ik_l_local_y", "__foot_ik_l_local_z"),
-                ("foot_ik_r_local_label", "__foot_ik_r_local_x", "__foot_ik_r_local_y", "__foot_ik_r_local_z"),
-                ("foot_ik_l_xyz_label", "__foot_ik_l_x", "__foot_ik_l_y", "__foot_ik_l_z"),
-                ("foot_ik_r_xyz_label", "__foot_ik_r_x", "__foot_ik_r_y", "__foot_ik_r_z"),
                 ("foot_ik_l_ik_target_label", "__ik_target_l_x", "__ik_target_l_y", "__ik_target_l_z"),
                 ("foot_ik_r_ik_target_label", "__ik_target_r_x", "__ik_target_r_y", "__ik_target_r_z"),
-                ("toe_ik_l_xyz_label", "__toe_ik_l_x", "__toe_ik_l_y", "__toe_ik_l_z"),
-                ("toe_ik_r_xyz_label", "__toe_ik_r_x", "__toe_ik_r_y", "__toe_ik_r_z"),
             ]:
                 _lbl = tr.get(_lbl_key)
                 if _lbl is None:
@@ -1574,10 +1355,6 @@ async def _dock_window_to_property_tab(window: Any, window_title: str) -> None:
                 window.dock_in(target_handle, ui.DockPosition.SAME, 1.0)
             except Exception:
                 pass
-            try:
-                window.dock_in_window(target_name, ui.DockPosition.SAME, 1.0)
-            except Exception:
-                pass
             custom_handle = ui.Workspace.get_window(window_title)
             if custom_handle is not None:
                 try:
@@ -1647,7 +1424,7 @@ def create_mapping_ui():
 
     schedule_mapping_ui_refresh_loop()
 
-    print("[INFO] G1 Joint Mapping: Window menu →", WINDOW_TITLE)
+    print("[INFO] G1 MMD config: Window menu →", WINDOW_TITLE)
     return True
 
 

@@ -20,15 +20,13 @@ MOTION_EXTENSIONS = (".csv", ".h5", ".hdf5")
 
 
 def format_playback_log_label(label: str) -> str:
-    """Format internal motion label for playback logs, e.g. dance [Y : deepbluetown]."""
+    """Format internal motion label for playback logs, e.g. dance [deepbluetown]."""
     m = re.match(r"^(dance|pose)\[([^\]]+)\]\s+(.+)$", label)
     if not m:
         return label
-    kind, key_or_idx, path = m.group(1), m.group(2), m.group(3).strip()
+    kind, _key_or_idx, path = m.group(1), m.group(2), m.group(3).strip()
     base = os.path.splitext(os.path.basename(path))[0]
-    if kind == "dance":
-        return f"dance [{key_or_idx} : {base}]"
-    return f"pose [{key_or_idx} : {base}]"
+    return f"{kind} [{base}]"
 
 
 def load_motion(filepath: str) -> MotionBundle | None:
@@ -299,32 +297,6 @@ def resolve_playback_motion_entry(
         f"'{os.path.basename(path)}'; using original motion."
     )
     return entry, False
-
-
-def build_dance_hdf5_motion_by_key(
-    dance_motion_by_key: dict[str, tuple[str, MotionBundle]],
-) -> dict[str, tuple[str, MotionBundle]]:
-    """Map each dance key to a sibling .h5/.hdf5 when available."""
-    out: dict[str, tuple[str, MotionBundle]] = {}
-    for dkey, (_name, data) in dance_motion_by_key.items():
-        kind = str(data.get("kind", ""))
-        path = str(data.get("path", ""))
-        if kind == "hdf5":
-            out[dkey] = (_name, data)
-            continue
-        if kind != "csv" or not path:
-            continue
-        stem = os.path.splitext(path)[0]
-        for ext in (".h5", ".hdf5"):
-            alt_path = stem + ext
-            if not os.path.isfile(alt_path):
-                continue
-            alt_data = load_motion(alt_path)
-            if alt_data is None or str(alt_data.get("kind", "")) != "hdf5":
-                continue
-            out[dkey] = (os.path.basename(alt_path), alt_data)
-            break
-    return out
 
 
 def build_dance_hand_motion_by_key(

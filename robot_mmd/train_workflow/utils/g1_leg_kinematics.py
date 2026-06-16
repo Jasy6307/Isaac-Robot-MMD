@@ -244,7 +244,7 @@ def g1_leg_hip_pitch_origin(side: str) -> tuple[float, float, float]:
     return (float(xyz[0]), float(xyz[1]), float(xyz[2]))
 
 
-def g1_leg_max_reach_m(*, max_reach_ratio: float = 0.985) -> float:
+def g1_leg_max_reach_m(*, max_reach_ratio: float = 1.0) -> float:
     """Conservative straight-leg reach from hip_pitch origin (both legs similar)."""
     base = float(G1_FOOT_IK_THIGH_LENGTH_M + G1_FOOT_IK_SHIN_LENGTH_M + 0.017558)
     return base * max(0.2, float(max_reach_ratio))
@@ -265,7 +265,7 @@ def g1_leg_reach_clamped(
     return dist > g1_leg_max_reach_m(max_reach_ratio=max_reach_ratio) + max(0.0, float(margin_m))
 
 
-def g1_leg_ground_z_ref_local(*, side: str, max_reach_ratio: float = 0.985) -> float:
+def g1_leg_ground_z_ref_local(*, side: str, max_reach_ratio: float = 1.0) -> float:
     """Nominal lowest foot Z in pelvis frame when the leg is extended downward."""
     hip_z = float(g1_leg_hip_pitch_origin(side)[2])
     return hip_z - g1_leg_max_reach_m(max_reach_ratio=max_reach_ratio) * 0.95
@@ -276,7 +276,7 @@ def g1_leg_remap_foot_ik_target(
     *,
     side: str,
     xy_scale: float,
-    max_reach_ratio: float = 0.985,
+    max_reach_ratio: float = 1.0,
     ground_clearance_m: float = 0.012,
     z_compress_power: float = 2.0,
 ) -> tuple[float, float, float]:
@@ -323,7 +323,7 @@ def g1_leg_scale_foot_target_from_hip(
     *,
     side: str,
     scale: float,
-    max_reach_ratio: float = 0.985,
+    max_reach_ratio: float = 1.0,
     ground_clearance_m: float = 0.012,
     z_compress_power: float = 2.0,
 ) -> tuple[float, float, float]:

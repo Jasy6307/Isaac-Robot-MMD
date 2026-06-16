@@ -53,7 +53,12 @@ def apply_app_window_kit_flags(ns: argparse.Namespace) -> None:
 
 
 def build_arg_parser(pose_dir: str) -> argparse.ArgumentParser:
-    """Build command-line parser for playback."""
+    """Build command-line parser for interactive playback.
+
+    Foot IK, sphere map, and ankle ground-comp tuning live in the Mapping UI;
+    batch tools (csv_2_hdf5, edit_csv_root_z) keep their own CLI via
+    ``add_mmd_foot_ik_solver_cli_args`` / ``add_mmd_sphere_map_cli_args``.
+    """
     parser = argparse.ArgumentParser(description="宇树 G1 站立 - 零动作运行。")
     parser.add_argument("--num_envs", type=int, default=1, help="环境数量（默认 1）")
     parser.add_argument("--disable_fabric", action="store_true", help="禁用 fabric，使用 USD I/O")
@@ -96,140 +101,6 @@ def build_arg_parser(pose_dir: str) -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="将 MMD ひざ的非铰链 swing 分量并回父骨(足)，由 hip 三轴吸收；默认开启",
-    )
-    parser.add_argument(
-        "--mmd_foot_ik_enable",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="启用 VMD 足IK目标驱动腿部 IK 覆盖（默认开启）",
-    )
-    parser.add_argument(
-        "--mmd_foot_ik_weight",
-        type=float,
-        default=1.0,
-        help="FK/IK 混合权重，0=纯FK，1=纯IK（默认 1.0）",
-    )
-    parser.add_argument(
-        "--mmd_foot_ik_max_reach_ratio",
-        type=float,
-        default=0.985,
-        help="IK 最远可达比例（相对 thigh+shin，默认 0.985）",
-    )
-    parser.add_argument(
-        "--mmd-foot-ik-leg-scale",
-        type=float,
-        default=1.0,
-        dest="mmd_foot_ik_leg_scale",
-        help="Scale foot IK target about hip (1=full MMD stride, 0.85=shorter robot legs)",
-    )
-    add_mmd_sphere_map_cli_args(parser)
-    parser.add_argument(
-        "--mmd_foot_ik_hip_offset_y",
-        type=float,
-        default=G1_FOOT_IK_HIP_OFFSET_Y_M,
-        help="髋关节左右偏置（米，默认 G1 URDF hip_pitch Y）",
-    )
-    parser.add_argument(
-        "--mmd_foot_ik_hip_offset_z",
-        type=float,
-        default=G1_FOOT_IK_HIP_OFFSET_Z_M,
-        help="髋关节高度偏置（米，默认 G1 URDF hip_pitch Z）",
-    )
-    parser.add_argument(
-        "--mmd_foot_ik_thigh_length",
-        type=float,
-        default=G1_FOOT_IK_THIGH_LENGTH_M,
-        help="大腿长度（米，默认 G1 URDF hip_pitch->knee 链长）",
-    )
-    parser.add_argument(
-        "--mmd_foot_ik_shin_length",
-        type=float,
-        default=G1_FOOT_IK_SHIN_LENGTH_M,
-        help="小腿长度（米，默认 G1 URDF knee->ankle_roll 链长）",
-    )
-    parser.add_argument(
-        "--mmd_foot_ik_hip_roll_gain",
-        type=float,
-        default=0.85,
-        help="侧向 hip roll 增益",
-    )
-    parser.add_argument(
-        "--mmd_foot_ik_debug_every",
-        type=int,
-        default=0,
-        help="每 N 帧打印 IK debug；0=关闭",
-    )
-    parser.add_argument(
-        "--mmd_foot_ik_solver",
-        type=str,
-        choices=("full", "planar"),
-        default="full",
-        help="Leg IK solver: full=6-DOF URDF DLS (default), planar=legacy 2-link",
-    )
-    parser.add_argument(
-        "--mmd_foot_ik_ik_max_iters",
-        type=int,
-        default=20,
-        help="Full IK max iterations (default 20; warm-start usually needs 1-6)",
-    )
-    parser.add_argument(
-        "--mmd_foot_ik_ik_pos_tol",
-        type=float,
-        default=1e-3,
-        help="Full IK position tolerance in meters (default 0.001)",
-    )
-    parser.add_argument(
-        "--mmd_foot_ik_ik_reg_weight",
-        type=float,
-        default=0.15,
-        help="Full IK null-space FK regularization base weight",
-    )
-    parser.add_argument(
-        "--mmd_foot_ik_ik_reg_hip_yaw",
-        type=float,
-        default=0.8,
-        help="Extra FK regularization weight on hip_yaw (multiplier)",
-    )
-    parser.add_argument(
-        "--mmd_foot_ik_ik_reg_ankle_roll",
-        type=float,
-        default=0.8,
-        help="Extra FK regularization weight on ankle_roll (multiplier)",
-    )
-    parser.add_argument(
-        "--foot-ankle-ground-comp",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        dest="foot_ankle_ground_comp",
-        help="Adjust ankle pitch/roll when foot sole penetrates floor; unchanged if clear (default on)",
-    )
-    parser.add_argument(
-        "--foot-ground-z",
-        type=float,
-        default=0.0,
-        dest="foot_ground_z",
-        help="Floor height in Isaac world Z (meters)",
-    )
-    parser.add_argument(
-        "--foot-ground-clearance",
-        type=float,
-        default=0.005,
-        dest="foot_ground_clearance",
-        help="Target gap between foot collision sphere and floor (meters)",
-    )
-    parser.add_argument(
-        "--foot-ankle-ground-max-pitch-deg",
-        type=float,
-        default=60.0,
-        dest="foot_ankle_ground_max_pitch_deg",
-        help="Max ankle pitch change from ankle ground comp (degrees)",
-    )
-    parser.add_argument(
-        "--foot-ankle-ground-max-roll-deg",
-        type=float,
-        default=18.0,
-        dest="foot_ankle_ground_max_roll_deg",
-        help="Max ankle roll change from ankle ground comp (degrees)",
     )
     for _flag, _default, _help in (
         ("--width", 1920, "视口/生成图像宽度（像素）；默认 1280"),
@@ -335,7 +206,7 @@ def add_mmd_sphere_map_cli_args(parser: argparse.ArgumentParser) -> None:
 
 
 def add_mmd_foot_ik_solver_cli_args(parser: argparse.ArgumentParser) -> None:
-    """Leg IK solver knobs only (target coords come from sphere map)."""
+    """Leg IK knobs for batch tools (target coords come from sphere map)."""
     parser.add_argument(
         "--mmd-foot-ik-enable",
         action=argparse.BooleanOptionalAction,
@@ -344,18 +215,11 @@ def add_mmd_foot_ik_solver_cli_args(parser: argparse.ArgumentParser) -> None:
         help="Enable leg IK override from foot IK targets (default off for batch tools)",
     )
     parser.add_argument(
-        "--mmd-foot-ik-weight",
-        type=float,
-        default=1.0,
-        dest="mmd_foot_ik_weight",
-        help="FK/IK blend weight, 0=FK only, 1=IK only (default 1.0)",
-    )
-    parser.add_argument(
         "--mmd-foot-ik-max-reach-ratio",
         type=float,
-        default=0.985,
+        default=1.0,
         dest="mmd_foot_ik_max_reach_ratio",
-        help="Max reach ratio vs thigh+shin (default 0.985)",
+        help="Max reach ratio vs thigh+shin (default 1.0)",
     )
     parser.add_argument(
         "--mmd-foot-ik-hip-offset-y",
@@ -400,14 +264,6 @@ def add_mmd_foot_ik_solver_cli_args(parser: argparse.ArgumentParser) -> None:
         help="Print IK debug every N frames; 0=off",
     )
     parser.add_argument(
-        "--mmd-foot-ik-solver",
-        type=str,
-        choices=("full", "planar"),
-        default="full",
-        dest="mmd_foot_ik_solver",
-        help="Leg IK solver: full=6-DOF URDF DLS (default), planar=legacy 2-link",
-    )
-    parser.add_argument(
         "--mmd-foot-ik-ik-max-iters",
         type=int,
         default=12,
@@ -441,6 +297,16 @@ def add_mmd_foot_ik_solver_cli_args(parser: argparse.ArgumentParser) -> None:
         default=0.8,
         dest="mmd_foot_ik_ik_reg_ankle_roll",
         help="Extra FK regularization weight on ankle_roll (multiplier)",
+    )
+
+
+def default_playback_foot_ik_config(*, groove_pos_to_world: float = 0.1) -> FootIkConfig:
+    """Defaults for interactive playback; tune live in Mapping UI."""
+    from robot_mmd.train_workflow.utils.csv_motion_loader import FootIkConfig
+
+    return FootIkConfig(
+        enable=True,
+        groove_pos_to_world=float(groove_pos_to_world),
     )
 
 
@@ -480,16 +346,14 @@ def foot_ik_config_from_namespace(ns: argparse.Namespace, *, groove_pos_to_world
     return FootIkConfig(
         enable=bool(getattr(ns, "mmd_foot_ik_enable", False)),
         groove_pos_to_world=float(groove_pos_to_world),
-        weight=float(getattr(ns, "mmd_foot_ik_weight", 1.0)),
-        max_reach_ratio=float(getattr(ns, "mmd_foot_ik_max_reach_ratio", 0.985)),
-        leg_target_scale=float(getattr(ns, "mmd_foot_ik_leg_scale", 1.0)),
+        max_reach_ratio=float(getattr(ns, "mmd_foot_ik_max_reach_ratio", 1.0)),
+        leg_target_scale=float(getattr(ns, "mmd_foot_ik_leg_scale", 0.75)),
         hip_offset_y=float(getattr(ns, "mmd_foot_ik_hip_offset_y", G1_FOOT_IK_HIP_OFFSET_Y_M)),
         hip_offset_z=float(getattr(ns, "mmd_foot_ik_hip_offset_z", G1_FOOT_IK_HIP_OFFSET_Z_M)),
         thigh_length=float(getattr(ns, "mmd_foot_ik_thigh_length", G1_FOOT_IK_THIGH_LENGTH_M)),
         shin_length=float(getattr(ns, "mmd_foot_ik_shin_length", G1_FOOT_IK_SHIN_LENGTH_M)),
         hip_roll_gain=float(getattr(ns, "mmd_foot_ik_hip_roll_gain", 0.85)),
         debug_every_n_frames=max(0, int(getattr(ns, "mmd_foot_ik_debug_every", 0))),
-        solver=str(getattr(ns, "mmd_foot_ik_solver", "full")),
         ik_max_iters=max(1, int(getattr(ns, "mmd_foot_ik_ik_max_iters", 20))),
         ik_pos_tol_m=float(getattr(ns, "mmd_foot_ik_ik_pos_tol", 1e-3)),
         ik_reg_weight=float(getattr(ns, "mmd_foot_ik_ik_reg_weight", 0.15)),
