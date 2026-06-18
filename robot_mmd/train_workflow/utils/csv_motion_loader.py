@@ -61,13 +61,18 @@ from robot_mmd.train_workflow.retarget_unitreeG1 import (
     ANKLE_JOINT_TO_SIDE_BONE,
     HIP_JOINT_TO_AXIS_INDEX,
     HIP_JOINT_TO_SIDE_BONE,
+    ELBOW_JOINT_TO_SIDE_BONE,
     SHOULDER_JOINT_TO_AXIS_INDEX,
     SHOULDER_JOINT_TO_SIDE_BONES,
     WAIST_JOINT_TO_AXIS_INDEX,
+    WRIST_JOINT_TO_AXIS_INDEX,
+    WRIST_JOINT_TO_SIDE_BONE,
     compute_ankle_angles,
+    compute_elbow_angle,
     compute_hip_angles,
     compute_shoulder_angles,
     compute_waist_angles,
+    compute_wrist_angles,
     leg_debug_info as _leg_debug_info,
     shoulder_debug_info as _shoulder_debug_info,
 )
@@ -1494,11 +1499,36 @@ def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> flo
         side, sho_bone, arm_bone = SHOULDER_JOINT_TO_SIDE_BONES[joint_name]
         q_sho = _read_bone_quat_xyzw(frame_data, sho_bone)
         q_arm = _read_bone_quat_xyzw(frame_data, arm_bone)
+        q_elbow = _read_bone_quat_xyzw(frame_data, "左ひじ" if side == "left" else "右ひじ")
         if q_sho is None and q_arm is None:
             return None
-        pitch, roll, yaw = compute_shoulder_angles(side, q_sho, q_arm)
+        pitch, roll, yaw = compute_shoulder_angles(side, q_sho, q_arm, q_elbow)
         triple = (pitch, roll, yaw)
         base_val = triple[SHOULDER_JOINT_TO_AXIS_INDEX[joint_name]]
+        return float(base_val * scale)
+
+    # 肘部 1DOF：前臂长轴夹角弯曲（剔除烘焙进肘骨的前臂自转）。
+    if joint_name in ELBOW_JOINT_TO_SIDE_BONE:
+        side, elbow_bone = ELBOW_JOINT_TO_SIDE_BONE[joint_name]
+        q_elbow = _read_bone_quat_xyzw(frame_data, elbow_bone)
+        if q_elbow is None:
+            return None
+        bend = compute_elbow_angle(side, q_elbow)
+        return float(bend * scale)
+
+    # 腕部 3DOF 走专用重定向（YXZ intrinsic + MMD->G1 基变换），
+    # 取代旧的三轴独立 swing-twist 提取。并把肘骨的前臂自转(pronation)转交给腕，
+    # 恢复手心朝向。
+    if joint_name in WRIST_JOINT_TO_AXIS_INDEX:
+        side, wrist_bone = WRIST_JOINT_TO_SIDE_BONE[joint_name]
+        elbow_bone = "左ひじ" if side == "left" else "右ひじ"
+        q_wrist = _read_bone_quat_xyzw(frame_data, wrist_bone)
+        q_elbow = _read_bone_quat_xyzw(frame_data, elbow_bone)
+        if q_wrist is None and q_elbow is None:
+            return None
+        pitch, roll, yaw = compute_wrist_angles(side, q_wrist, q_elbow)
+        triple = (pitch, roll, yaw)
+        base_val = triple[WRIST_JOINT_TO_AXIS_INDEX[joint_name]]
         return float(base_val * scale)
 
     # 腰部 3DOF：专用链式反解（物理轴→语义 pitch/roll/yaw）
@@ -1573,8 +1603,6 @@ def build_joint_positions_from_frame(
         mapping = get_mapping()
         _apply_knee_hinge_projection(source_frame_data, "left", mapping)
         _apply_knee_hinge_projection(source_frame_data, "right", mapping)
-        _apply_elbow_hinge_projection(source_frame_data, "left", mapping)
-        _apply_elbow_hinge_projection(source_frame_data, "right", mapping)
 
     result = default_joint_pos.copy()
     for i, jname in enumerate(joint_names):

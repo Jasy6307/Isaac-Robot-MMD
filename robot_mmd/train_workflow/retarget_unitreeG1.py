@@ -12,12 +12,13 @@ from typing import Literal
 
 import numpy as np
 
-RetargetNamespace = Literal["arm", "leg"]
+RetargetNamespace = Literal["arm", "leg", "wrist"]
 Side = Literal["left", "right"]
 QuatXYZW = tuple[float, float, float, float]
 
 _NS_ARM: RetargetNamespace = "arm"
 _NS_LEG: RetargetNamespace = "leg"
+_NS_WRIST: RetargetNamespace = "wrist"
 
 # G1 torso row vectors in MMD limb-root local space
 B_FIXED_MMD_TO_G1 = np.array(
@@ -32,6 +33,7 @@ B_FIXED_MMD_TO_G1 = np.array(
 _DEFAULT_TUNE_DEG: dict[RetargetNamespace, dict[str, tuple[float, float, float]]] = {
     "arm": {"left": (-30.0, 0.0, 0.0), "right": (30.0, 0.0, 0.0)},
     "leg": {"left": (0.0, 0.0, 0.0), "right": (0.0, 0.0, 0.0)},
+    "wrist": {"left": (0.0, 0.0, 0.0), "right": (0.0, 0.0, 0.0)},
 }
 
 _tune_deg: dict[str, dict[str, list[float]]] = {
@@ -124,6 +126,22 @@ def decompose_rotmat_yx(R: np.ndarray) -> tuple[float, float]:
     roll = math.atan2(float(-R[1, 2]), float(R[1, 1]))
     pitch = math.atan2(float(-R[2, 0]), float(R[0, 0]))
     return pitch, roll
+
+
+def decompose_rotmat_xyz(R: np.ndarray) -> tuple[float, float, float]:
+    """R = Rx(roll)·Ry(pitch)·Rz(yaw) -> (roll, pitch, yaw)，弧度。
+
+    用于 G1 手腕链（URDF 顺序 roll(X)→pitch(Y)→yaw(Z)）。
+    """
+    s_pitch = max(-1.0, min(1.0, float(R[0, 2])))
+    if abs(s_pitch) > 0.999999:
+        pitch = math.copysign(math.pi / 2.0, s_pitch)
+        roll = math.atan2(float(R[2, 1]), float(R[1, 1]))
+        return roll, pitch, 0.0
+    pitch = math.asin(s_pitch)
+    roll = math.atan2(-float(R[1, 2]), float(R[2, 2]))
+    yaw = math.atan2(-float(R[0, 1]), float(R[0, 0]))
+    return roll, pitch, yaw
 
 
 # ---------------------------------------------------------------------------
@@ -287,11 +305,29 @@ def compute_shoulder_angles(
     side: str,
     q_shoulder_xyzw: QuatXYZW | None,
     q_arm_xyzw: QuatXYZW | None,
+    q_elbow_xyzw: QuatXYZW | None = None,
 ) -> tuple[float, float, float]:
     q = _combine_bone_quats(q_shoulder_xyzw, q_arm_xyzw)
     if q is None:
         return (0.0, 0.0, 0.0)
-    return _retarget_yxz(_NS_ARM, side, q)
+    pitch, roll, yaw = _retarget_yxz(_NS_ARM, side, q)
+    if q_elbow_xyzw is not None:
+        # Shoulder side-drift correction for near-straight forward reach:
+        # MMD upper-arm local twist around Y can leak into shoulder roll after
+        # basis transform/decomposition, causing arm direction to drift toward ±Y.
+        # Instead of brute-force roll damping, estimate the leaked twist term
+        # from q_arm and subtract it from shoulder roll.
+        bend_deg = math.degrees(compute_elbow_angle(side, q_elbow_xyzw))
+        pitch_abs_deg = abs(math.degrees(pitch))
+        if q_arm_xyzw is not None and bend_deg < 20.0 and pitch_abs_deg > 60.0:
+            w_ext = max(0.0, min(1.0, (20.0 - bend_deg) / 20.0))
+            w_fwd = max(0.0, min(1.0, (pitch_abs_deg - 60.0) / 50.0))
+            leak_w = w_ext * w_fwd
+            arm_twist_y = _signed_twist_angle_about_axis_xyzw(q_arm_xyzw, (0.0, 1.0, 0.0))
+            # Tuned leak gain: enough to pull IRIS straight-reach back to +X,
+            # while keeping gokuraku shoulder behavior near original.
+            roll -= 0.18 * arm_twist_y * leak_w
+    return (pitch, roll, yaw)
 
 
 def shoulder_debug_info(
@@ -331,6 +367,266 @@ SHOULDER_JOINT_TO_SIDE_BONES: dict[str, tuple[str, str, str]] = {
     "right_shoulder_pitch_joint": ("right", "右肩", "右腕"),
     "right_shoulder_roll_joint": ("right", "右肩", "右腕"),
     "right_shoulder_yaw_joint": ("right", "右肩", "右腕"),
+}
+
+
+# ---------------------------------------------------------------------------
+# Wrist 3DOF
+# ---------------------------------------------------------------------------
+
+
+def _twist_quat_about_axis_xyzw(q_xyzw: QuatXYZW, axis: tuple[float, float, float]) -> QuatXYZW:
+    """提取 q 绕单位轴 axis 的扭转分量（swing-twist 的 twist 部分，xyzw）。"""
+    ax, ay, az = axis
+    n = math.sqrt(ax * ax + ay * ay + az * az)
+    if n < 1e-12:
+        return (0.0, 0.0, 0.0, 1.0)
+    ax, ay, az = ax / n, ay / n, az / n
+    qx, qy, qz, qw = normalize_quat_xyzw_short_arc(q_xyzw)
+    dot = ax * qx + ay * qy + az * qz
+    return normalize_quat_xyzw_short_arc((ax * dot, ay * dot, az * dot, qw))
+
+
+def _signed_twist_angle_about_axis_xyzw(q_xyzw: QuatXYZW, axis: tuple[float, float, float]) -> float:
+    """Signed twist angle (rad) of q around axis, in [-pi, pi]."""
+    ax, ay, az = axis
+    n = math.sqrt(ax * ax + ay * ay + az * az)
+    if n < 1e-12:
+        return 0.0
+    ax, ay, az = ax / n, ay / n, az / n
+    qx, qy, qz, qw = normalize_quat_xyzw_short_arc(q_xyzw)
+    dot = ax * qx + ay * qy + az * qz
+    tx, ty, tz, tw = (ax * dot, ay * dot, az * dot, qw)
+    tn = math.sqrt(tx * tx + ty * ty + tz * tz + tw * tw)
+    if tn < 1e-12:
+        return 0.0
+    tx, ty, tz, tw = tx / tn, ty / tn, tz / tn, tw / tn
+    sin_half = math.sqrt(tx * tx + ty * ty + tz * tz)
+    angle = 2.0 * math.atan2(sin_half, tw)
+    if dot < 0.0:
+        angle = -angle
+    if angle > math.pi:
+        angle -= 2.0 * math.pi
+    elif angle < -math.pi:
+        angle += 2.0 * math.pi
+    return angle
+
+
+def _wrap_pi(a: float) -> float:
+    while a > math.pi:
+        a -= 2.0 * math.pi
+    while a < -math.pi:
+        a += 2.0 * math.pi
+    return a
+
+
+# 把肘骨自转(pronation)注入腕时的符号（按模型/侧可调，sim 里看手心翻转方向）。
+_WRIST_PRONATION_SIGN: dict[str, float] = {"left": 1.0, "right": 1.0}
+_WRIST_ROLL_LIMIT = (-1.972222054, 1.972222054)
+_WRIST_PITCH_LIMIT = (-1.614429558, 1.614429558)
+_WRIST_YAW_LIMIT = (-1.614429558, 1.614429558)
+
+
+def get_wrist_pronation_sign(side: str) -> float:
+    return float(_WRIST_PRONATION_SIGN[side])
+
+
+def set_wrist_pronation_sign(side: str, sign: float) -> None:
+    _WRIST_PRONATION_SIGN[side] = float(sign)
+
+
+def _clamp_wrist_xyz(roll: float, pitch: float, yaw: float) -> tuple[float, float, float]:
+    r = min(max(float(roll), _WRIST_ROLL_LIMIT[0]), _WRIST_ROLL_LIMIT[1])
+    p = min(max(float(pitch), _WRIST_PITCH_LIMIT[0]), _WRIST_PITCH_LIMIT[1])
+    y = min(max(float(yaw), _WRIST_YAW_LIMIT[0]), _WRIST_YAW_LIMIT[1])
+    return r, p, y
+
+
+def _wrist_basis(side: str) -> np.ndarray:
+    """MMD 世界对齐系 → G1 前臂系 的基 B（行向量为 G1 轴在 MMD 系中的坐标）。
+
+    G1 前臂系：X=前臂长轴(=wrist_roll 轴, 指向手), Z≈竖直向上(投影到⊥前臂), Y=Z×X。
+    叠加 _NS_WRIST 的 tune 便于运行时微调。
+    """
+    d = _normalize_vec3(tuple(_elbow_forearm_axis[side]))  # type: ignore[arg-type]
+    x_hat = np.array(d, dtype=np.float64)
+    # Isaac / USD uses Z-up. Using Y-up here mixes wrist pitch/yaw decomposition.
+    up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    if abs(float(x_hat @ up)) > 0.99:
+        up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    z_tmp = up - float(up @ x_hat) * x_hat
+    z_hat = z_tmp / float(np.linalg.norm(z_tmp))
+    y_hat = np.cross(z_hat, x_hat)
+    y_hat = y_hat / float(np.linalg.norm(y_hat))
+    b0 = np.array([x_hat, y_hat, z_hat], dtype=np.float64)
+    t = _tune_deg[_NS_WRIST][side]
+    return _make_tune_rotation_mat(t[0], t[1], t[2]) @ b0
+
+
+def compute_wrist_angles(
+    side: str,
+    q_wrist_xyzw: QuatXYZW | None,
+    q_elbow_xyzw: QuatXYZW | None = None,
+) -> tuple[float, float, float]:
+    """MMD 手首局部四元数 → G1 腕 (pitch, roll, yaw)。
+
+    G1 手腕链 URDF 顺序为 roll(X)→pitch(Y)→yaw(Z)，故用 **XYZ** 分解（区别于肩的 YXZ），
+    且 roll 轴 = 前臂长轴。专用基 ``_wrist_basis`` 把前臂长轴对到 G1 的 X(roll)。
+
+    若给定 ``q_elbow_xyzw``，把肘骨绕前臂长轴的自转(pronation)前乘到手首：
+    G1 肘是纯铰链(只弯曲)，MMD 烘焙进 ひじ 的前臂自转转交腕 roll，恢复手心朝向。
+    """
+    q_in = q_wrist_xyzw if q_wrist_xyzw is not None else (0.0, 0.0, 0.0, 1.0)
+    if q_elbow_xyzw is not None:
+        d = _normalize_vec3(tuple(_elbow_forearm_axis[side]))  # type: ignore[arg-type]
+        q_pron = _twist_quat_about_axis_xyzw(q_elbow_xyzw, d)
+        if _WRIST_PRONATION_SIGN[side] < 0.0:
+            q_pron = quat_conjugate_xyzw(q_pron)
+        # Elbow->wrist pronation transfer confidence:
+        # - very low bend (~straight elbow): elbow bone pronation is often noisy,
+        #   avoid injecting it to prevent wrist outward-flip artifacts.
+        # - very high bend (~90+ deg): swing-twist around forearm axis also gets
+        #   unstable, attenuate to avoid over-bent wrist.
+        bend_deg = math.degrees(compute_elbow_angle(side, q_elbow_xyzw))
+        w_low_bend = max(0.0, min(1.0, (bend_deg - 8.0) / 20.0))
+        w_high_bend = max(0.0, min(1.0, (105.0 - bend_deg) / 55.0))
+        pron_w = w_low_bend * w_high_bend
+        if pron_w < 1.0:
+            # Slerp(identity, q_pron, pron_w)
+            px, py, pz, pw = q_pron
+            if pw < 0.0:
+                px, py, pz, pw = -px, -py, -pz, -pw
+            vn = math.sqrt(px * px + py * py + pz * pz)
+            if vn > 1e-12:
+                half = math.atan2(vn, pw)
+                nh = half * pron_w
+                s = math.sin(nh) / vn
+                q_pron = normalize_quat_xyzw_short_arc((px * s, py * s, pz * s, math.cos(nh)))
+            else:
+                q_pron = (0.0, 0.0, 0.0, 1.0)
+        q_in = normalize_quat_xyzw_short_arc(quat_mul_xyzw(q_pron, q_in))
+    b = _wrist_basis(side)
+    r_g1 = b @ quat_xyzw_to_mat3(normalize_quat_xyzw_short_arc(q_in)) @ b.T
+    roll, pitch, yaw = decompose_rotmat_xyz(r_g1)
+    # XYZ Euler has an equivalent branch:
+    # (r,p,y) and (r+pi, pi-p, y+pi). Pick branch closer to single-axis twist
+    # reference from raw wrist local quat to reduce frame-to-frame branch flips.
+    if q_wrist_xyzw is not None:
+        p_ref = _signed_twist_angle_about_axis_xyzw(q_wrist_xyzw, (1.0, 0.0, 0.0))
+        r_ref = _signed_twist_angle_about_axis_xyzw(q_wrist_xyzw, (0.0, 1.0, 0.0))
+        y_ref = _signed_twist_angle_about_axis_xyzw(q_wrist_xyzw, (0.0, 0.0, 1.0))
+        roll2 = _wrap_pi(roll + math.pi)
+        pitch2 = _wrap_pi(math.pi - pitch)
+        yaw2 = _wrap_pi(yaw + math.pi)
+        d1 = abs(_wrap_pi(roll - r_ref)) + abs(_wrap_pi(pitch - p_ref)) + abs(_wrap_pi(yaw - y_ref))
+        d2 = (
+            abs(_wrap_pi(roll2 - r_ref))
+            + abs(_wrap_pi(pitch2 - p_ref))
+            + abs(_wrap_pi(yaw2 - y_ref))
+        )
+        # Only switch branch near obvious wrap/singularity zones; avoid
+        # re-routing normal frames where main branch is already stable.
+        near_wrap = (
+            abs(math.degrees(roll)) > 85.0
+            or abs(math.degrees(pitch)) > 85.0
+            or abs(math.degrees(yaw)) > 85.0
+        )
+        if near_wrap and d2 + 1e-6 < d1:
+            roll, pitch, yaw = roll2, pitch2, yaw2
+    roll, pitch, yaw = _clamp_wrist_xyz(roll, pitch, yaw)
+    return (pitch, roll, yaw)
+
+
+def get_wrist_tune_axes_deg(side: str) -> tuple[float, float, float]:
+    return _get_tune_axes_deg_ns(_NS_WRIST, side)
+
+
+def set_wrist_tune_axes_deg(side: str, rx: float, ry: float, rz: float) -> None:
+    _set_tune_axes_deg_ns(_NS_WRIST, side, rx, ry, rz)
+
+
+def reset_wrist_tune_axes(side: str | None = None) -> None:
+    _reset_tune_axes_ns(_NS_WRIST, side)
+
+
+WRIST_JOINT_TO_AXIS_INDEX: dict[str, int] = {
+    "left_wrist_pitch_joint": 0,
+    "left_wrist_roll_joint": 1,
+    "left_wrist_yaw_joint": 2,
+    "right_wrist_pitch_joint": 0,
+    "right_wrist_roll_joint": 1,
+    "right_wrist_yaw_joint": 2,
+}
+
+WRIST_JOINT_TO_SIDE_BONE: dict[str, tuple[str, str]] = {
+    "left_wrist_pitch_joint": ("left", "左手首"),
+    "left_wrist_roll_joint": ("left", "左手首"),
+    "left_wrist_yaw_joint": ("left", "左手首"),
+    "right_wrist_pitch_joint": ("right", "右手首"),
+    "right_wrist_roll_joint": ("right", "右手首"),
+    "right_wrist_yaw_joint": ("right", "右手首"),
+}
+
+
+# ---------------------------------------------------------------------------
+# Elbow 1DOF (hinge flexion)
+# ---------------------------------------------------------------------------
+
+# MMD 肘骨常把"前臂自转(pronation)"和真实弯曲(flexion)一起烘焙进 ひじ 局部旋转，
+# 旋转轴在帧间漂移，故"绕固定轴 twist"会低估弯曲（O 型手势等帧手臂摊开）。
+# 改用"前臂长轴在旋转前后的夹角"作为弯曲角：绕前臂长轴的自转不改变该方向→自动剔除，
+# 仅保留把前臂掰弯的成分。前臂长轴在 ひじ 局部系（MMD rest 下与世界轴对齐）中，
+# 大致沿手臂指向（左臂 +X 偏下、右臂 -X 偏下），做成可调以便按模型微调。
+_DEFAULT_ELBOW_FOREARM_AXIS: dict[str, tuple[float, float, float]] = {
+    "left": (0.77, -0.64, 0.0),
+    "right": (-0.77, -0.64, 0.0),
+}
+_elbow_forearm_axis: dict[str, list[float]] = {
+    s: list(v) for s, v in _DEFAULT_ELBOW_FOREARM_AXIS.items()
+}
+
+
+def _normalize_vec3(v: tuple[float, float, float]) -> tuple[float, float, float]:
+    n = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+    if n < 1e-12:
+        return (1.0, 0.0, 0.0)
+    return (v[0] / n, v[1] / n, v[2] / n)
+
+
+def compute_elbow_angle(side: str, q_elbow_xyzw: QuatXYZW | None) -> float:
+    """肘弯曲角（无符号，弧度）：前臂长轴 d 在肘骨旋转 R 前后的夹角 acos(d·Rd)。"""
+    if q_elbow_xyzw is None:
+        return 0.0
+    d = _normalize_vec3(tuple(_elbow_forearm_axis[side]))  # type: ignore[arg-type]
+    q = normalize_quat_xyzw_short_arc(q_elbow_xyzw)
+    r = quat_xyzw_to_mat3(q)
+    rd = (
+        r[0, 0] * d[0] + r[0, 1] * d[1] + r[0, 2] * d[2],
+        r[1, 0] * d[0] + r[1, 1] * d[1] + r[1, 2] * d[2],
+        r[2, 0] * d[0] + r[2, 1] * d[1] + r[2, 2] * d[2],
+    )
+    dot = max(-1.0, min(1.0, d[0] * rd[0] + d[1] * rd[1] + d[2] * rd[2]))
+    return math.acos(dot)
+
+
+def get_elbow_forearm_axis(side: str) -> tuple[float, float, float]:
+    v = _elbow_forearm_axis[side]
+    return (float(v[0]), float(v[1]), float(v[2]))
+
+
+def set_elbow_forearm_axis(side: str, x: float, y: float, z: float) -> None:
+    _elbow_forearm_axis[side] = [float(x), float(y), float(z)]
+
+
+def reset_elbow_forearm_axis(side: str | None = None) -> None:
+    sides = ["left", "right"] if side is None else [side]
+    for s in sides:
+        _elbow_forearm_axis[s] = list(_DEFAULT_ELBOW_FOREARM_AXIS[s])
+
+
+ELBOW_JOINT_TO_SIDE_BONE: dict[str, tuple[str, str]] = {
+    "left_elbow_joint": ("left", "左ひじ"),
+    "right_elbow_joint": ("right", "右ひじ"),
 }
 
 

@@ -62,6 +62,31 @@ class MotionRootTrackState:
     root_quat_wxyz: list[float] | None = None
 
 
+@dataclass
+class RootZCompressConfig:
+    """Symmetric root-Z attenuation around a baseline."""
+
+    baseline_offset_m: float = 0.76
+    outlier_scale: float = 0.6
+
+
+def _apply_root_z_compress(
+    target_root_pos: tuple[float, float, float] | None,
+    state: MotionRootTrackState,
+    cfg: RootZCompressConfig,
+) -> tuple[float, float, float] | None:
+    if target_root_pos is None:
+        return None
+    s = max(0.0, min(1.0, float(cfg.outlier_scale)))
+    if abs(s - 1.0) <= 1e-9:
+        return target_root_pos
+    # Use an absolute world-Z baseline so behavior is consistent across dances.
+    baseline_world_z = float(cfg.baseline_offset_m)
+    dz = float(target_root_pos[2]) - baseline_world_z
+    z_new = baseline_world_z + dz * s
+    return (float(target_root_pos[0]), float(target_root_pos[1]), float(z_new))
+
+
 def build_joint_pos_deg_cache(joint_names: list[str], joint_pos_cmd: Any) -> dict[str, float]:
     """Convert joint radians to UI degree cache."""
     return {j: float(deg) for j, deg in zip(joint_names, joint_pos_cmd * (180.0 / math.pi))}
@@ -233,6 +258,7 @@ def _compute_csv_root_targets(
     mmd_center_to_root_offset_local_xyz: tuple[float, float, float],
     root_quat_rpy_scale: tuple[float, float, float],
     root_quat_rpy_axis_idx: tuple[int, int, int],
+    root_z_compress_cfg: RootZCompressConfig,
 ) -> tuple[
     tuple[float, float, float] | None,
     list[float] | None,
@@ -299,6 +325,7 @@ def _compute_csv_root_targets(
         except Exception:
             pass
 
+    target_root_pos = _apply_root_z_compress(target_root_pos, state, root_z_compress_cfg)
     return target_root_pos, target_root_quat_wxyz, mmd_root_trans_bone, csv_root_rotation_lookup
 
 
@@ -319,6 +346,7 @@ def compute_targets_for_motion_frame(
     mmd_center_to_root_offset_local_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0),
     root_quat_rpy_scale: tuple[float, float, float] = MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
     root_quat_rpy_axis_idx: tuple[int, int, int] = MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
+    root_z_compress_cfg: RootZCompressConfig | None = None,
     enable_hand: bool = True,
     foot_ik_cfg: FootIkConfig | None = None,
     foot_ik_state: FootIkState | None = None,
@@ -344,6 +372,7 @@ def compute_targets_for_motion_frame(
             mmd_center_to_root_offset_local_xyz,
             root_quat_rpy_scale,
             root_quat_rpy_axis_idx,
+            root_z_compress_cfg or RootZCompressConfig(),
         )
     )
 
@@ -398,6 +427,7 @@ def compute_targets_for_hdf5_frame(
     robot: Any,
     ui_debug: PlaybackUiDebugState,
     root_snapshot_row: Any | None = None,
+    root_z_compress_cfg: RootZCompressConfig | None = None,
 ) -> tuple[Any, tuple[float, float, float] | None, list[float] | None, Any, str | None, bool | None]:
     """Compute joint/root targets for one precompiled HDF5 frame."""
     ui_debug.last_interp_frame_data = None
@@ -419,6 +449,12 @@ def compute_targets_for_hdf5_frame(
         ui_debug.root_rpy_euler_scaled_deg = (float(rr[0]), float(rr[1]), float(rr[2]))
     rb = str(debug.get("root_rot_bone") or "")
     ui_debug.root_rot_bone_name = rb if rb else None
+
+    target_root_pos = _apply_root_z_compress(
+        target_root_pos,
+        state,
+        root_z_compress_cfg or RootZCompressConfig(),
+    )
 
     result = (joint_pos_cmd - np.asarray(default_joint_pos, dtype=np.float32)) / float(action_scale)
     csv_root_rotation_lookup: bool | None = bool(debug.get("root_valid"))

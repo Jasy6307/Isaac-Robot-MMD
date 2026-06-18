@@ -54,6 +54,8 @@ _pd_drive_provider: Callable[[], bool] | None = None
 _pd_drive_setter: Callable[[bool], None] | None = None
 _z_offset_enable_provider: Callable[[], bool] | None = None
 _z_offset_enable_setter: Callable[[bool], None] | None = None
+_root_z_compress_provider: Callable[[], tuple[float, float]] | None = None
+_root_z_compress_setter: Callable[[float, float], None] | None = None
 _foot_ground_comp_provider: Callable[[], bool] | None = None
 _foot_ground_comp_setter: Callable[[bool], None] | None = None
 _root_quat_rpy_provider: Callable[
@@ -73,6 +75,7 @@ _scrub_sync_suppress_seek: bool = False
 _root_quat_sync_suppress_set: bool = False
 _pd_drive_sync_suppress_set: bool = False
 _z_offset_sync_suppress_set: bool = False
+_root_z_compress_sync_suppress_set: bool = False
 _foot_ik_sync_suppress_set: bool = False
 _foot_ground_comp_sync_suppress_set: bool = False
 _audio_volume_sync_suppress_set: bool = False
@@ -147,6 +150,16 @@ def set_z_offset_enable_callbacks(
     global _z_offset_enable_provider, _z_offset_enable_setter
     _z_offset_enable_provider = provider
     _z_offset_enable_setter = setter
+
+
+def set_root_z_compress_callbacks(
+    provider: Callable[[], tuple[float, float]] | None,
+    setter: Callable[[float, float], None] | None,
+) -> None:
+    """Set root-Z attenuation callbacks: (baseline_offset_m, outlier_scale[0..1])."""
+    global _root_z_compress_provider, _root_z_compress_setter
+    _root_z_compress_provider = provider
+    _root_z_compress_setter = setter
 
 
 def set_foot_ground_comp_callbacks(
@@ -465,6 +478,8 @@ def _build_mapping_window(ui):
         root_roll_scale_model.set_value(float(_sr))
         root_pitch_scale_model.set_value(float(_sp))
         root_yaw_scale_model.set_value(float(_sy))
+        root_z_baseline_offset_model.set_value(0.76)
+        root_z_outlier_scale_model.set_value(0.6)
         _sync_waist_pair_conj_status_labels()
 
     # ========== 整体布局：垂直堆叠 ==========
@@ -512,6 +527,8 @@ def _build_mapping_window(ui):
 
         pd_drive_model = ui.SimpleBoolModel(False)
         z_offset_enable_model = ui.SimpleBoolModel(False)
+        root_z_baseline_offset_model = ui.SimpleFloatModel(0.76)
+        root_z_outlier_scale_model = ui.SimpleFloatModel(0.6)
         foot_ground_comp_model = ui.SimpleBoolModel(True)
         audio_volume_model = ui.SimpleFloatModel(float(DEFAULT_VOLUME))
         foot_ik_enable_model = ui.SimpleBoolModel(False)
@@ -602,6 +619,20 @@ def _build_mapping_window(ui):
             except Exception:
                 pass
 
+        def _push_root_z_compress() -> None:
+            if _root_z_compress_sync_suppress_set:
+                return
+            if _root_z_compress_setter is None:
+                return
+            try:
+                baseline_off = float(root_z_baseline_offset_model.get_value_as_float())
+                outlier_scale = float(root_z_outlier_scale_model.get_value_as_float())
+                outlier_scale = max(0.0, min(1.0, outlier_scale))
+                _root_z_compress_setter(baseline_off, outlier_scale)
+                _notify_mapping_changed()
+            except Exception:
+                pass
+
         def _on_foot_ground_comp_changed(m: Any) -> None:
             if _foot_ground_comp_sync_suppress_set:
                 return
@@ -669,6 +700,8 @@ def _build_mapping_window(ui):
 
         pd_drive_model.add_value_changed_fn(_on_pd_drive_changed)
         z_offset_enable_model.add_value_changed_fn(_on_z_offset_enable_changed)
+        root_z_baseline_offset_model.add_value_changed_fn(lambda _m: _push_root_z_compress())
+        root_z_outlier_scale_model.add_value_changed_fn(lambda _m: _push_root_z_compress())
         foot_ground_comp_model.add_value_changed_fn(_on_foot_ground_comp_changed)
         audio_volume_model.add_value_changed_fn(_on_audio_volume_changed)
         foot_ik_enable_model.add_value_changed_fn(lambda _m: _push_foot_ik())
@@ -742,6 +775,18 @@ def _build_mapping_window(ui):
                 with ui.HStack(height=28):
                     ui.Label("Z_offset_enable", width=118)
                     ui.CheckBox(model=z_offset_enable_model, width=24, height=22)
+                    ui.Spacer()
+                with ui.HStack(height=28):
+                    ui.Label("Root Z baseline (m)", width=118)
+                    ui.FloatField(model=root_z_baseline_offset_model, width=64)
+                    ui.Spacer(width=4)
+                    ui.FloatSlider(model=root_z_baseline_offset_model, min=0.2, max=1.2, width=98)
+                    ui.Spacer()
+                with ui.HStack(height=28):
+                    ui.Label("Root Z outlier scale", width=118)
+                    ui.FloatField(model=root_z_outlier_scale_model, width=64)
+                    ui.Spacer(width=4)
+                    ui.FloatSlider(model=root_z_outlier_scale_model, min=0.0, max=1.0, width=98)
                     ui.Spacer()
                 with ui.HStack(height=28):
                     ui.Label("Ankle ground comp", width=118)
@@ -972,6 +1017,8 @@ def _build_mapping_window(ui):
         "pd_drive_model": pd_drive_model,
         "audio_volume_model": audio_volume_model,
         "z_offset_enable_model": z_offset_enable_model,
+        "root_z_baseline_offset_model": root_z_baseline_offset_model,
+        "root_z_outlier_scale_model": root_z_outlier_scale_model,
         "foot_ground_comp_model": foot_ground_comp_model,
         "max_label": max_frame_label,
         "btn_prev": btn_prev,
@@ -1017,7 +1064,7 @@ async def _mapping_ui_refresh_loop() -> None:
     import omni.kit.app
 
     global _scrub_sync_suppress_seek, _root_quat_sync_suppress_set, _pd_drive_sync_suppress_set
-    global _z_offset_sync_suppress_set, _foot_ik_sync_suppress_set
+    global _z_offset_sync_suppress_set, _root_z_compress_sync_suppress_set, _foot_ik_sync_suppress_set
     global _foot_ground_comp_sync_suppress_set
     global _audio_volume_sync_suppress_set
     while True:
@@ -1071,6 +1118,24 @@ async def _mapping_ui_refresh_loop() -> None:
                     pass
                 finally:
                     _z_offset_sync_suppress_set = False
+            if _root_z_compress_provider is not None:
+                try:
+                    z_base_off, z_scale = _root_z_compress_provider()
+                except Exception:
+                    z_base_off, z_scale = 0.0, 1.0
+                _root_z_compress_sync_suppress_set = True
+                try:
+                    cur_off = float(tr["root_z_baseline_offset_model"].get_value_as_float())
+                    cur_scale = float(tr["root_z_outlier_scale_model"].get_value_as_float())
+                    if abs(cur_off - float(z_base_off)) > 1e-5:
+                        tr["root_z_baseline_offset_model"].set_value(float(z_base_off))
+                    z_scale = max(0.0, min(1.0, float(z_scale)))
+                    if abs(cur_scale - z_scale) > 1e-5:
+                        tr["root_z_outlier_scale_model"].set_value(z_scale)
+                except Exception:
+                    pass
+                finally:
+                    _root_z_compress_sync_suppress_set = False
             if _foot_ground_comp_provider is not None:
                 try:
                     fg_on = bool(_foot_ground_comp_provider())

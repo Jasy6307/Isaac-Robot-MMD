@@ -105,6 +105,7 @@ from robot_mmd.train_workflow.ui.mapping import (
     set_playback_transport_callbacks,
     set_root_rot_bone_name_provider,
     set_root_quat_rpy_callbacks,
+    set_root_z_compress_callbacks,
     set_z_offset_enable_callbacks,
 )
 from robot_mmd.train_workflow.utils import audio_util
@@ -143,6 +144,7 @@ from robot_mmd.train_workflow.utils.root_z_edit import (
 from robot_mmd.train_workflow.utils.playback_targets import (
     MotionRootTrackState,
     PlaybackUiDebugState,
+    RootZCompressConfig,
     build_joint_pos_deg_cache,
     compute_targets_for_hdf5_frame,
     compute_targets_for_motion_frame,
@@ -718,6 +720,8 @@ def main():
     pd_hold_joint_pos_cmd: Any = None
     pd_drive_enabled_ui = False
     z_offset_enabled_ui = False
+    root_z_baseline_offset_m_ui = 0.76
+    root_z_outlier_scale_ui = 0.6
     foot_ankle_ground_comp_enabled_ui = bool(foot_ankle_ground_comp_cfg.enable)
 
     def _apply_ankle_ground_comp_to_cmd(
@@ -812,6 +816,26 @@ def main():
         if prev != z_offset_enabled_ui:
             mode = "on (*_z_editted sibling)" if z_offset_enabled_ui else "off (original motion)"
             print(f"[INFO] Z_offset_enable -> {mode}")
+
+    def _get_root_z_compress_for_ui() -> tuple[float, float]:
+        return float(root_z_baseline_offset_m_ui), float(root_z_outlier_scale_ui)
+
+    def _set_root_z_compress_from_ui(baseline_offset_m: float, outlier_scale: float) -> None:
+        nonlocal root_z_baseline_offset_m_ui, root_z_outlier_scale_ui, mapping_reapply_requested
+        new_off = float(baseline_offset_m)
+        new_scale = max(0.0, min(1.0, float(outlier_scale)))
+        changed = (
+            abs(float(root_z_baseline_offset_m_ui) - new_off) > 1e-6
+            or abs(float(root_z_outlier_scale_ui) - new_scale) > 1e-6
+        )
+        root_z_baseline_offset_m_ui = new_off
+        root_z_outlier_scale_ui = new_scale
+        if changed:
+            mapping_reapply_requested = True
+            print(
+                "[INFO] Root Z compress -> baseline_off=%.3fm outlier_scale=%.3f"
+                % (root_z_baseline_offset_m_ui, root_z_outlier_scale_ui)
+            )
 
     def _get_foot_ground_comp_for_ui() -> bool:
         return bool(foot_ankle_ground_comp_enabled_ui)
@@ -958,6 +982,7 @@ def main():
     set_dance_z_edit_callbacks(_dance_has_z_editted, _on_z_edit_request_from_ui, _z_edit_busy_for_ui)
     set_pd_drive_callbacks(_get_pd_drive_for_ui, _set_pd_drive_from_ui)
     set_z_offset_enable_callbacks(_get_z_offset_enable_for_ui, _set_z_offset_enable_from_ui)
+    set_root_z_compress_callbacks(_get_root_z_compress_for_ui, _set_root_z_compress_from_ui)
     set_foot_ground_comp_callbacks(_get_foot_ground_comp_for_ui, _set_foot_ground_comp_from_ui)
     set_audio_volume_callbacks(_get_audio_volume_for_ui, _set_audio_volume_from_ui)
     set_root_quat_rpy_callbacks(_get_root_quat_rpy_for_ui, _set_root_quat_rpy_from_ui)
@@ -1246,6 +1271,10 @@ def main():
         enable_hand = bool(motion_bundle.get("has_hand_data", False))
         foot_cfg = FootIkConfig(**vars(foot_ik_cfg))
         foot_cfg.is_static_pose = bool(len(motion_bundle["frame_list"]) <= 1)
+        root_z_cfg = RootZCompressConfig(
+            baseline_offset_m=float(root_z_baseline_offset_m_ui),
+            outlier_scale=float(root_z_outlier_scale_ui),
+        )
         if kind == "hdf5":
             return compute_targets_for_hdf5_frame(
                 frame_idx,
@@ -1257,6 +1286,7 @@ def main():
                 robot_inner,
                 ui_debug,
                 root_snapshot_row=initial_root_snapshot_row,
+                root_z_compress_cfg=root_z_cfg,
             )
         return compute_targets_for_motion_frame(
             frame_idx,
@@ -1275,6 +1305,7 @@ def main():
             mmd_center_to_root_offset_local_xyz=args_cli.mmd_center_to_root_offset_local_xyz,
             root_quat_rpy_scale=tuple(root_quat_rpy_scale),
             root_quat_rpy_axis_idx=tuple(root_quat_rpy_axis_idx),
+            root_z_compress_cfg=root_z_cfg,
             enable_hand=enable_hand,
             foot_ik_cfg=foot_cfg,
             foot_ik_state=foot_ik_state,

@@ -13,7 +13,12 @@ G1 关节 -> MMD 骨骼的紧凑轴映射（轴索引 0/1/2 对应 x/y/z，见 c
 - 腰部 (waist_*) 走 ``retarget_unitreeG1.compute_waist_angles``（外旋 szxy + 物理轴→语义重排）：
   axis_idx: **0=pitch, 1=roll, 2=yaw**（与肩/髋一致）；scale 仅作 ±1 微调。
   两骨骼在合成 **q_上半身·q_上半身2** 之前，可按 ``MMD_WAIST_UPPER_PAIR_QUAT_CONJUGATE`` 分别对该骨四元数取**共轭（逆旋转）**，便于与 UI 双按钮联动试方向。
-- 单骨骼 (肘/腕/膝等) 仍按 Swing-Twist 单轴提取。
+- 肘 (左/右 elbow) 走 ``retarget_unitreeG1.compute_elbow_angle``：取前臂长轴在肘骨旋转
+  前后的夹角作为铰链弯曲角（自动剔除被烘焙进肘骨的前臂自转 pronation）。
+  axis_idx 在此分支不再使用；scale 仅作 ±1 sign（两肘默认 -1，均朝负向弯）。
+- 腕 (左/右 wrist) 走 ``retarget_unitreeG1.compute_wrist_angles``（与肩同架构：
+  MMD->G1 基变换 + YXZ 反解）；axis_idx: 0=pitch, 1=roll, 2=yaw；scale 仅作 ±1 sign。
+- 其余单骨骼 (膝等) 仍按 Swing-Twist 单轴提取。
 """
 
 from __future__ import annotations
@@ -38,14 +43,14 @@ G1_JOINT_AXIS_MAP_RAW: dict[str, AxisMapRawEntry] = {
     "left_shoulder_yaw_joint": (["左肩", "左腕"], 2, 1.0),
     "left_elbow_joint": ("左ひじ", 1, -1.0),
     "left_wrist_pitch_joint": ("左手首", 0, -1.0),
-    "left_wrist_roll_joint": ("左手首", 1, 1.0),
+    "left_wrist_roll_joint": ("左手首", 1, -1.0),
     "left_wrist_yaw_joint": ("左手首", 2, 1.0),
     "right_shoulder_pitch_joint": (["右肩", "右腕"], 0, 1.0),
     "right_shoulder_roll_joint": (["右肩", "右腕"], 1, 1.0),
     "right_shoulder_yaw_joint": (["右肩", "右腕"], 2, 1.0),
-    "right_elbow_joint": ("右ひじ", 1, 1.0),
+    "right_elbow_joint": ("右ひじ", 1, -1.0),
     "right_wrist_pitch_joint": ("右手首", 0, -1.0),
-    "right_wrist_roll_joint": ("右手首", 1, 1.0),
+    "right_wrist_roll_joint": ("右手首", 1, -1.0),
     "right_wrist_yaw_joint": ("右手首", 2, 1.0),
     # 腿部：hip -> (pitch, roll, yaw), ankle -> (pitch, roll)
     "left_hip_pitch_joint": ("左足", 0, 1.0),
