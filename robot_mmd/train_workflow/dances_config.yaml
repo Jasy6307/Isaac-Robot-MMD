@@ -19,22 +19,17 @@ dances:
     motion: dance/girls.csv
     audio: dance/girls.wav
 
-
   - id: deepbluetown
-    key: I
     motion: dance/deepbluetown.csv
     audio: dance/deepbluetown.wav
 
   - id: you are important
-    key: O
     motion: dance/you_are_important.csv
     audio: dance/you_are_important.wav
 
   - id: iris out
-    key: U
     motion: dance/IRIS_OUT.csv
     audio: dance/IRIS_OUT.wav
-
 
   - id: galaxias
     motion: dance/galaxias.csv

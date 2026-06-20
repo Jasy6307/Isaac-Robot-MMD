@@ -59,6 +59,7 @@ wandb/
 # ============ IDE / 编辑器 ============
 .vscode/
 .idea/
+pyrightconfig.json
 *.swp
 *.swo
 *~

@@ -8,8 +8,7 @@ Example
 -------
 .. code-block:: powershell
 
-    & C:/Users/Administrator/.conda/envs/env_isaaclab_mmd/python.exe `
-      i:/robot_isaac/robot_mmd/train_workflow/scripts/play_g1_dance_track.py `
+    ./isaac_workspace/IsaacLab/isaaclab.bat -p robot_mmd/train_workflow/play_g1_dance_track.py `
       --task Isaac-G1-Dance-Track-C0-v0 --num_envs 16
 """
 

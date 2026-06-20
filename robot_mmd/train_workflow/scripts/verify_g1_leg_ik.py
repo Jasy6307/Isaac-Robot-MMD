@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[3]
+_DEFAULT_CSV = _REPO / "robot_mmd" / "media" / "dance" / "gokurakujyodo.csv"
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
@@ -168,7 +169,7 @@ def main() -> None:
     p.add_argument(
         "--csv",
         type=str,
-        default="i:/robot_isaac/robot_mmd/media/dance/gokurakujyodo.csv",
+        default=str(_DEFAULT_CSV),
     )
     p.add_argument("--frame-step", type=int, default=120)
     p.add_argument("--ox", type=float, default=0.0463)
