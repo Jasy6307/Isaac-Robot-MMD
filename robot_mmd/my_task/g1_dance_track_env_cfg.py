@@ -335,15 +335,16 @@ class G1DanceTrackC0EnvCfg(ManagerBasedRLEnvCfg):
     events: EventCfg = EventCfg()
 
     viewer: ViewerCfg = ViewerCfg(
-        eye=(-2.0, 11.0, 5.0),
-        lookat=(0.0, 0.0, 1.0),
+        eye=(0, 11.0, 5.0),
+        lookat=(0.0, 0.0, -5.0),
+        resolution=(640, 360),
     )
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        # Control loop: dt=1/300  physics, decimation=10 -> 30Hz control.
-        self.sim.dt = 1.0 / 60.0   # 物理 300 Hz
-        self.decimation = 2         # 控制 300/10 = 30 Hz
+        # Control loop: dt=1/60  physics, decimation=2 -> 30Hz control.
+        self.sim.dt = 1.0 / 60.0   # 物理 60 Hz
+        self.decimation = 2         # 控制 6/2 = 30 Hz
         self.sim.render_interval = self.decimation
         self.sim.physics_material = self.scene.terrain.physics_material
         # Window length must match the reference buffer window seconds.

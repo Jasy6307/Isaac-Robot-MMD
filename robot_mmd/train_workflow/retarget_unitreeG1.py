@@ -327,6 +327,31 @@ def compute_shoulder_angles(
             # Tuned leak gain: enough to pull IRIS straight-reach back to +X,
             # while keeping gokuraku shoulder behavior near original.
             roll -= 0.18 * arm_twist_y * leak_w
+    if q_arm_xyzw is not None and q_elbow_xyzw is not None:
+        # Re-distribute a portion of upper-arm Z-twist from shoulder roll to yaw.
+        # This targets bent-arm side-lift poses (e.g. gokuraku ~435/441) where
+        # roll is over-assigned while yaw is under-assigned.
+        # Use smooth weights (instead of hard if-gates) to avoid frame-to-frame
+        # on/off jumps that look like twitching.
+        def _smoothstep(edge0: float, edge1: float, x: float) -> float:
+            if edge1 <= edge0:
+                return 0.0
+            t = max(0.0, min(1.0, (x - edge0) / (edge1 - edge0)))
+            return t * t * (3.0 - 2.0 * t)
+
+        bend_deg = math.degrees(compute_elbow_angle(side, q_elbow_xyzw))
+        pitch_abs_deg = abs(math.degrees(pitch))
+        yaw_abs_deg = abs(math.degrees(yaw))
+        arm_twist_z_deg = math.degrees(_signed_twist_angle_about_axis_xyzw(q_arm_xyzw, (0.0, 0.0, 1.0)))
+        w_bend_in = _smoothstep(45.0, 65.0, bend_deg)
+        w_bend_out = 1.0 - _smoothstep(120.0, 145.0, bend_deg)
+        w_pitch = 1.0 - _smoothstep(40.0, 65.0, pitch_abs_deg)
+        w_yaw = 1.0 - _smoothstep(25.0, 45.0, yaw_abs_deg)
+        w_twist = _smoothstep(0.0, 30.0, abs(arm_twist_z_deg))
+        redist_w = max(0.0, min(1.0, w_bend_in * w_bend_out * w_pitch * w_yaw * w_twist))
+        dz = math.radians(0.45 * arm_twist_z_deg * redist_w)
+        roll -= dz
+        yaw += dz
     return (pitch, roll, yaw)
 
 

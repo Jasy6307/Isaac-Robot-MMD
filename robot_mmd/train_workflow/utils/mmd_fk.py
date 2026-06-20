@@ -118,6 +118,93 @@ _TOE_IK_BONES: dict[str, tuple[str, ...]] = {
     "right": ("右つま先ＩＫ", "右つま先IK"),
 }
 
+_TOE_IK_KEYFRAME_POS_EPS: float = 1e-6
+_TOE_IK_KEYFRAME_QUAT_EPS: float = 1e-6
+
+
+def _toe_ik_keyframe_is_meaningful(bone_data: dict) -> bool:
+    """True when a toe-IK row carries non-default pos or rotation (not a frame-0 stub)."""
+    pos = bone_data.get("pos")
+    if pos is not None and len(pos) >= 3:
+        if abs(float(pos[0])) + abs(float(pos[1])) + abs(float(pos[2])) > _TOE_IK_KEYFRAME_POS_EPS:
+            return True
+    quat_wxyz = bone_data.get("quat_wxyz")
+    if quat_wxyz is not None and len(quat_wxyz) >= 4:
+        qw, qx, qy, qz = (
+            float(quat_wxyz[0]),
+            float(quat_wxyz[1]),
+            float(quat_wxyz[2]),
+            float(quat_wxyz[3]),
+        )
+        if abs(qx) + abs(qy) + abs(qz) > _TOE_IK_KEYFRAME_QUAT_EPS:
+            return True
+        if abs(abs(qw) - 1.0) > _TOE_IK_KEYFRAME_QUAT_EPS:
+            return True
+        return False
+    quat_xyzw = bone_data.get("quat")
+    if quat_xyzw is not None and len(quat_xyzw) >= 4:
+        qx, qy, qz, qw = (
+            float(quat_xyzw[0]),
+            float(quat_xyzw[1]),
+            float(quat_xyzw[2]),
+            float(quat_xyzw[3]),
+        )
+        if abs(qx) + abs(qy) + abs(qz) > _TOE_IK_KEYFRAME_QUAT_EPS:
+            return True
+        if abs(abs(qw) - 1.0) > _TOE_IK_KEYFRAME_QUAT_EPS:
+            return True
+    return False
+
+
+def motion_side_has_valid_toe_ik_keyframes(
+    frames: dict[int, dict[str, dict]] | None,
+    side: str,
+) -> bool:
+    """Return True when motion CSV/VMD contains at least one meaningful toe-IK keyframe."""
+    if not frames:
+        return False
+    candidates = _TOE_IK_BONES.get(side)
+    if not candidates:
+        return False
+    for frame_data in frames.values():
+        for bone_name in candidates:
+            bone_data = frame_data.get(bone_name)
+            if bone_data is None:
+                continue
+            if _toe_ik_keyframe_is_meaningful(bone_data):
+                return True
+    return False
+
+
+def motion_side_has_valid_foot_ik_keyframes(
+    frames: dict[int, dict[str, dict]] | None,
+    side: str,
+) -> bool:
+    """Return True when motion CSV/VMD contains at least one meaningful foot-IK keyframe."""
+    if not frames:
+        return False
+    candidates = _FOOT_IK_BONES.get(side)
+    if not candidates:
+        return False
+    for frame_data in frames.values():
+        for bone_name in candidates:
+            bone_data = frame_data.get(bone_name)
+            if bone_data is None:
+                continue
+            if _toe_ik_keyframe_is_meaningful(bone_data):
+                return True
+    return False
+
+
+def motion_has_embedded_foot_ik(frames: dict[int, dict[str, dict]] | None) -> bool:
+    """True when CSV/VMD embeds MMD foot-IK data (足IK); Z_editted generation is not needed."""
+    if not frames:
+        return False
+    return motion_side_has_valid_foot_ik_keyframes(
+        frames, "left"
+    ) or motion_side_has_valid_foot_ik_keyframes(frames, "right")
+
+
 _BONE_FRAME_ALIASES: dict[str, tuple[str, ...]] = {
     "左足ＩＫ": ("左足ＩＫ", "左足IK"),
     "右足ＩＫ": ("右足ＩＫ", "右足IK"),

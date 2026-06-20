@@ -90,10 +90,11 @@ from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
     MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
     MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
 )
-from robot_mmd.train_workflow.ui.mapping import (
-    create_mapping_ui,
-    create_retarget_tune_ui,
+from robot_mmd.train_workflow.ui.jointRPY_maping_ui import create_joint_rpy_mapping_ui
+from robot_mmd.train_workflow.ui.mmd_config_ui import (
+    create_mmd_config_ui,
     set_dance_play_callbacks,
+    set_dance_record_h5_callbacks,
     set_dance_z_edit_callbacks,
     set_audio_volume_callbacks,
     set_foot_ik_callbacks,
@@ -108,6 +109,7 @@ from robot_mmd.train_workflow.ui.mapping import (
     set_root_z_compress_callbacks,
     set_z_offset_enable_callbacks,
 )
+from robot_mmd.train_workflow.ui.retargeting_tune_ui import create_retarget_tune_ui
 from robot_mmd.train_workflow.utils import audio_util
 from robot_mmd.train_workflow.utils.csv_motion_loader import (
     FootIkConfig,
@@ -122,9 +124,13 @@ from robot_mmd.train_workflow.utils.motion_loader import (
     build_dance_hand_hdf5_motion_by_key,
     build_dance_hand_motion_by_key,
     build_dance_hdf5_motion_by_key,
+    delete_h5_siblings,
+    delete_z_editted_siblings,
     format_playback_log_label,
+    has_deletable_h5_sibling,
     has_z_editted_sibling,
     load_dances_from_yaml,
+    load_motion,
     load_pose_motion_dir,
     resolve_playback_motion_entry,
 )
@@ -133,7 +139,11 @@ from robot_mmd.train_workflow.utils.foot_ankle_ground_comp import (
     FootAnkleGroundCompState,
     apply_ankle_ground_comp_to_joint_cmd,
 )
-from robot_mmd.train_workflow.utils.mmd_fk import default_foot_ik_viz_config
+from robot_mmd.train_workflow.utils.mmd_fk import (
+    default_foot_ik_viz_config,
+    motion_has_embedded_foot_ik,
+)
+from robot_mmd.train_workflow.utils.playback_h5_recorder import PlaybackH5Recorder
 from robot_mmd.train_workflow.utils.playback_keyboard import DanceKeyboardListener
 from robot_mmd.train_workflow.utils.root_z_edit import (
     RootZEditConfig,
@@ -203,10 +213,15 @@ class _FootIkTargetViz:
     _ROOT_TARGET = "/World/Debug/FootIkTargets/RootTarget"
     _ROOT_SIM = "/World/Debug/FootIkTargets/RootSim"
 
+    _TRANSLATE_EPS_M = 1e-5
+
     def __init__(self) -> None:
         self._ready = False
         self._stage = None
         self._xform_cache: dict[str, Any] = {}
+        self._last_translate: dict[str, tuple[float, float, float]] = {}
+        self._last_visible: dict[str, bool] = {}
+        self._last_color: dict[str, tuple[float, float, float]] = {}
 
     def _ensure(self) -> bool:
         if self._ready:
@@ -302,6 +317,9 @@ class _FootIkTargetViz:
     def _set_visible(self, path: str, visible: bool) -> None:
         from pxr import UsdGeom
 
+        if self._last_visible.get(path) == visible:
+            return
+        self._last_visible[path] = visible
         stage = self._stage
         if stage is None:
             return
@@ -314,20 +332,33 @@ class _FootIkTargetViz:
     def _set_translate(self, path: str, pos_xyz: tuple[float, float, float]) -> None:
         from pxr import Gf
 
+        key = (float(pos_xyz[0]), float(pos_xyz[1]), float(pos_xyz[2]))
+        prev = self._last_translate.get(path)
+        eps = self._TRANSLATE_EPS_M
+        if prev is not None:
+            if (
+                abs(prev[0] - key[0]) <= eps
+                and abs(prev[1] - key[1]) <= eps
+                and abs(prev[2] - key[2]) <= eps
+            ):
+                return
+        self._last_translate[path] = key
         xformable = self._xform_cache.get(path)
         if xformable is None:
             return
         ops = xformable.GetOrderedXformOps()
         if ops:
-            ops[0].Set(Gf.Vec3d(float(pos_xyz[0]), float(pos_xyz[1]), float(pos_xyz[2])))
+            ops[0].Set(Gf.Vec3d(key[0], key[1], key[2]))
         else:
-            xformable.AddTranslateOp().Set(
-                Gf.Vec3d(float(pos_xyz[0]), float(pos_xyz[1]), float(pos_xyz[2]))
-            )
+            xformable.AddTranslateOp().Set(Gf.Vec3d(key[0], key[1], key[2]))
 
     def _set_display_color(self, path: str, rgb: tuple[float, float, float]) -> None:
         from pxr import Gf, Sdf, UsdGeom
 
+        key = (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+        if self._last_color.get(path) == key:
+            return
+        self._last_color[path] = key
         stage = self._stage
         if stage is None:
             return
@@ -463,6 +494,19 @@ class _FootIkTargetViz:
                 self._set_translate(path, pos)
                 self._set_visible(path, True)
 
+    def clear(self) -> None:
+        """Hide all debug spheres (idle / stop / reset)."""
+        self.update(
+            left_world=None,
+            right_world=None,
+            left_toe_world=None,
+            right_toe_world=None,
+        )
+        self.update_ankle_links(left_ankle_world=None, right_ankle_world=None)
+        self.update_ik_pred(left_pred_world=None, right_pred_world=None)
+        self.update_ik_target(left_target_world=None, right_target_world=None)
+        self.update_root_debug(target_root_world=None, sim_root_world=None)
+
 
 def main():
     """零动作运行 G1 站立环境。"""
@@ -569,14 +613,19 @@ def main():
         pending_dance_prefer_hdf5 = bool(prefer_hdf5)
         pending_dance_prefer_hand = bool(prefer_hand)
 
+    def _dance_combo_label(filename: str, key: str) -> str:
+        name = str(filename)
+        if name.lower().endswith(".csv"):
+            name = name[:-4]
+        if str(key).startswith("ui:"):
+            return name
+        return f"[{key}] {name}"
+
     def _dance_entries_for_ui() -> list[tuple[str, str]]:
         entries: list[tuple[str, str]] = []
         for key in dance_motion_by_key.keys():
             filename, _data = dance_motion_by_key[key]
-            if str(key).startswith("ui:"):
-                entries.append((str(key), filename))
-            else:
-                entries.append((str(key), f"[{key}] {filename}"))
+            entries.append((str(key), _dance_combo_label(filename, key)))
         return entries
 
     def _on_dance_request_from_ui(key: str, prefer_hdf5: bool) -> None:
@@ -591,9 +640,26 @@ def main():
             return True
         return has_z_editted_sibling(path)
 
+    def _dance_z_edit_ui_status(key: str) -> str:
+        dkey = _dance_lookup_key(key) if not str(key).startswith("ui:") else str(key)
+        entry = dance_motion_by_key.get(dkey)
+        if entry is not None:
+            _name, data = entry
+            if str(data.get("kind", "")) == "csv":
+                frames = data.get("frames")
+                if motion_has_embedded_foot_ik(frames):
+                    return "ik_control"
+        path = dance_path_by_key.get(dkey, "")
+        if path and has_z_editted_sibling(path):
+            return "available"
+        return "missing"
+
     def _on_z_edit_request_from_ui(key: str) -> None:
         nonlocal pending_z_edit_key
         dkey = _dance_lookup_key(key) if not str(key).startswith("ui:") else str(key)
+        if _dance_z_edit_ui_status(key) == "ik_control":
+            print(f"[INFO] dance [{dkey}] has foot IK data; Z_editted is not needed")
+            return
         if z_edit_busy:
             print("[WARN] Z_editted generation already in progress")
             return
@@ -609,6 +675,67 @@ def main():
 
     def _z_edit_busy_for_ui() -> bool:
         return bool(z_edit_busy)
+
+    def _h5_record_busy_for_ui() -> bool:
+        return bool(h5_record_busy)
+
+    def _dance_has_h5(key: str) -> bool:
+        dkey = _dance_lookup_key(key) if not str(key).startswith("ui:") else str(key)
+        return dkey in dance_hdf5_motion_by_key
+
+    def _dance_h5_deletable(key: str) -> bool:
+        dkey = _dance_lookup_key(key) if not str(key).startswith("ui:") else str(key)
+        path = dance_path_by_key.get(dkey, "")
+        return has_deletable_h5_sibling(path)
+
+    def _on_delete_z_edit_from_ui(key: str) -> None:
+        if z_edit_busy or is_playing or h5_record_busy:
+            print("[WARN] Cannot delete Z_editted while playback or generation is active")
+            return
+        dkey = _dance_lookup_key(key) if not str(key).startswith("ui:") else str(key)
+        if _dance_z_edit_ui_status(key) != "available":
+            print(f"[INFO] dance [{dkey}] has no deletable Z_editted sibling")
+            return
+        path = dance_path_by_key.get(dkey, "")
+        if not path:
+            print(f"[WARN] dance [{dkey}] has no motion path")
+            return
+        deleted = delete_z_editted_siblings(path)
+        if deleted:
+            print(
+                f"[INFO] Deleted Z_editted sibling(s) for dance [{dkey}]: "
+                + ", ".join(os.path.basename(p) for p in deleted)
+            )
+        else:
+            print(f"[WARN] No Z_editted sibling deleted for dance [{dkey}]")
+
+    def _on_delete_h5_from_ui(key: str) -> None:
+        nonlocal dance_hdf5_motion_by_key, dance_hand_hdf5_motion_by_key
+        if h5_record_busy or is_playing or z_edit_busy:
+            print("[WARN] Cannot delete H5 while playback or recording is active")
+            return
+        dkey = _dance_lookup_key(key) if not str(key).startswith("ui:") else str(key)
+        path = dance_path_by_key.get(dkey, "")
+        if not has_deletable_h5_sibling(path):
+            print(f"[INFO] dance [{dkey}] has no deletable H5 sibling")
+            return
+        deleted = delete_h5_siblings(path)
+        dance_hdf5_motion_by_key = build_dance_hdf5_motion_by_key(dance_motion_by_key)
+        dance_hand_hdf5_motion_by_key = build_dance_hand_hdf5_motion_by_key(dance_hand_motion_by_key)
+        if deleted:
+            print(
+                f"[INFO] Deleted H5 sibling(s) for dance [{dkey}]: "
+                + ", ".join(os.path.basename(p) for p in deleted)
+            )
+        else:
+            print(f"[WARN] No H5 sibling deleted for dance [{dkey}]")
+
+    def _on_record_h5_request_from_ui(key: str) -> None:
+        nonlocal pending_record_h5_key
+        if h5_record_busy or is_playing:
+            print("[WARN] Cannot start H5 recording while playback is active")
+            return
+        pending_record_h5_key = str(key)
 
     keyboard.add_callback("L", _on_reset)
     keyboard.add_callback(pose_cycle_key, _request_cycle_play)
@@ -646,7 +773,14 @@ def main():
     playback_paused = False
     pause_hold_frame = 0
     pending_playback_toggle = False
+    pending_playback_stop = False
     pending_seek_frame: int | None = None
+    pending_record_h5_key: str | None = None
+    h5_record_busy = False
+    h5_record_active = False
+    h5_recorder: PlaybackH5Recorder | None = None
+    h5_record_frame_cursor = 0
+    h5_record_dance_key: str | None = None
     motion_has_wav = False
     root_quat_rpy_scale = list(MMD_ROOT_QUAT_RPY_SCALE_DEFAULT)
     root_quat_rpy_axis_idx = list(MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT)
@@ -862,6 +996,21 @@ def main():
         audio_util.set_volume(volume)
 
     def _playback_status_for_ui() -> dict[str, Any]:
+        if h5_record_active and is_playing and current_motion and (current_motion_label or "").strip():
+            tag = format_playback_log_label(current_motion_label)
+            frame_list = current_motion["frame_list"]
+            max_f = int(frame_list[-1])
+            fr = int(h5_record_frame_cursor)
+            if fr > max_f:
+                fr = max_f
+            return {
+                "playing": True,
+                "tag": f"{tag} [Record H5]",
+                "frame": fr,
+                "max_frame": max_f,
+                "playback_paused": False,
+                "kind": "dance",
+            }
         if not is_playing or not current_motion or not (current_motion_label or "").strip():
             return {"playing": False}
         tag = format_playback_log_label(current_motion_label)
@@ -887,6 +1036,11 @@ def main():
         nonlocal pending_playback_toggle
         if is_playing and current_motion:
             pending_playback_toggle = True
+
+    def _ui_stop_playback() -> None:
+        nonlocal pending_playback_stop
+        if is_playing and current_motion:
+            pending_playback_stop = True
 
     def _ui_seek_frame(idx: int) -> None:
         nonlocal pending_seek_frame
@@ -977,9 +1131,22 @@ def main():
 
     set_joint_value_provider(lambda: joint_pos_deg_cache)
     set_playback_status_provider(_playback_status_for_ui)
-    set_playback_transport_callbacks(_ui_toggle_pause, _ui_seek_frame)
+    set_playback_transport_callbacks(_ui_toggle_pause, _ui_seek_frame, _ui_stop_playback)
     set_dance_play_callbacks(_dance_entries_for_ui, _on_dance_request_from_ui)
-    set_dance_z_edit_callbacks(_dance_has_z_editted, _on_z_edit_request_from_ui, _z_edit_busy_for_ui)
+    set_dance_z_edit_callbacks(
+        _dance_has_z_editted,
+        _on_z_edit_request_from_ui,
+        _z_edit_busy_for_ui,
+        _dance_z_edit_ui_status,
+        _on_delete_z_edit_from_ui,
+    )
+    set_dance_record_h5_callbacks(
+        _on_record_h5_request_from_ui,
+        _h5_record_busy_for_ui,
+        _dance_has_h5,
+        _on_delete_h5_from_ui,
+        _dance_h5_deletable,
+    )
     set_pd_drive_callbacks(_get_pd_drive_for_ui, _set_pd_drive_from_ui)
     set_z_offset_enable_callbacks(_get_z_offset_enable_for_ui, _set_z_offset_enable_from_ui)
     set_root_z_compress_callbacks(_get_root_z_compress_for_ui, _set_root_z_compress_from_ui)
@@ -989,7 +1156,8 @@ def main():
     set_foot_ik_callbacks(_get_foot_ik_for_ui, _set_foot_ik_from_ui)
     set_root_rot_bone_name_provider(lambda: str(ui_debug.root_rot_bone_name or ""))
     set_mapping_changed_callback(_on_mapping_ui_changed)
-    create_mapping_ui()
+    create_mmd_config_ui()
+    create_joint_rpy_mapping_ui()
     create_retarget_tune_ui()
 
     def _ensure_joint_info():
@@ -1084,13 +1252,10 @@ def main():
         try:
             root_state = getattr(env.unwrapped.scene["robot"].data, "root_state_w", None)
             if torch.is_tensor(root_state) and root_state.shape[1] >= 7:
-                row = root_state[0]
-                pos = (
-                    float(row[0].item()),
-                    float(row[1].item()),
-                    float(row[2].item()),
-                )
-                quat = root_quat_from_state_row(row)
+                # One GPU->CPU copy for pos+quat (avoids 7 scalar .item() syncs).
+                vals = root_state[0, :7].detach().cpu().tolist()
+                pos = (float(vals[0]), float(vals[1]), float(vals[2]))
+                quat = [float(vals[3]), float(vals[4]), float(vals[5]), float(vals[6])]
                 return pos, quat
         except Exception:
             return None, None
@@ -1249,6 +1414,140 @@ def main():
         if sync_ui_cache and default_joint_pos is not None and joint_names:
             _update_joint_pos_cache(default_joint_pos)
 
+    def _stop_playback_to_initial_pose() -> None:
+        nonlocal current_motion, current_motion_label, is_playing, last_printed_frame
+        nonlocal motion_track, playback_default_joint_pos
+        nonlocal last_csv_motion_frame, mapping_reapply_requested
+        nonlocal playback_paused, pause_hold_frame, pending_playback_toggle, pending_seek_frame
+        nonlocal pending_playback_stop, motion_has_wav, pd_hold_joint_pos_cmd
+        nonlocal last_frame_joint_pos_cmd, last_playback_target_root, last_playback_target_root_quat
+        nonlocal h5_record_busy, h5_record_active, h5_recorder, h5_record_frame_cursor
+        if h5_record_active or h5_recorder is not None:
+            _cancel_h5_recording(reason="stop")
+        pending_playback_stop = False
+        audio_util.stop_wav()
+        motion_has_wav = False
+        is_playing = False
+        current_motion = None
+        current_motion_label = ""
+        last_printed_frame = -1
+        motion_track = None
+        playback_default_joint_pos = None
+        last_csv_motion_frame = None
+        mapping_reapply_requested = False
+        playback_paused = False
+        pause_hold_frame = 0
+        pending_playback_toggle = False
+        pending_seek_frame = None
+        pd_hold_joint_pos_cmd = None
+        last_frame_joint_pos_cmd = None
+        last_playback_target_root = None
+        last_playback_target_root_quat = None
+        foot_ik_state.reset()
+        foot_ik_viz.clear()
+        if initial_root_snapshot_row is not None:
+            row = initial_root_snapshot_row
+            apply_root_pos_instant(
+                env,
+                (float(row[0]), float(row[1]), float(row[2])),
+                [float(row[3]), float(row[4]), float(row[5]), float(row[6])],
+            )
+        _reset_to_initial_pose(sync_ui_cache=True)
+        print("[INFO] Playback stopped; reset to initial pose")
+
+    def _cancel_h5_recording(*, reason: str) -> None:
+        nonlocal h5_record_busy, h5_record_active, h5_recorder, h5_record_frame_cursor
+        if not (h5_record_busy or h5_record_active or h5_recorder is not None):
+            return
+        h5_record_busy = False
+        h5_record_active = False
+        h5_recorder = None
+        h5_record_frame_cursor = 0
+        print(f"[INFO] H5 recording cancelled ({reason})")
+
+    def _finalize_h5_recording() -> None:
+        nonlocal h5_record_busy, h5_record_active, h5_recorder, h5_record_frame_cursor
+        nonlocal h5_record_dance_key
+        nonlocal is_playing, playback_paused, motion_has_wav, current_motion_label
+        nonlocal dance_hdf5_motion_by_key
+        recorder = h5_recorder
+        label = str(current_motion_label or "")
+        dkey = h5_record_dance_key
+        h5_recorder = None
+        h5_record_active = False
+        h5_record_frame_cursor = 0
+        h5_record_dance_key = None
+        is_playing = False
+        playback_paused = False
+        motion_has_wav = False
+        audio_util.stop_wav()
+        foot_ik_viz.clear()
+        try:
+            if recorder is None:
+                raise RuntimeError("recorder is missing")
+            out_path = recorder.write()
+            print(f"[INFO] H5 recording complete: {out_path} ({label})")
+            if dkey:
+                h5_bundle = load_motion(out_path)
+                if h5_bundle is not None and str(h5_bundle.get("kind", "")) == "hdf5":
+                    dance_hdf5_motion_by_key[str(dkey)] = (os.path.basename(out_path), h5_bundle)
+                    print(f"[INFO] Updated in-session H5 cache for dance [{dkey}]")
+        except Exception as exc:
+            print(f"[ERROR] H5 recording failed ({label}): {exc}")
+        finally:
+            h5_record_busy = False
+
+    def _begin_h5_recording_for_motion(csv_path: str, motion_bundle: MotionBundle) -> bool:
+        nonlocal h5_recorder, h5_record_active, h5_record_frame_cursor, h5_record_busy
+        _ensure_joint_info()
+        if playback_default_joint_pos is None or joint_names is None:
+            print("[ERROR] H5 recording failed: joint baseline unavailable")
+            h5_record_busy = False
+            return False
+        if initial_root_snapshot_row is None:
+            print("[ERROR] H5 recording failed: root anchor unavailable")
+            h5_record_busy = False
+            return False
+        frame_list = motion_bundle.get("frame_list") or []
+        if not frame_list:
+            print("[ERROR] H5 recording failed: motion has no frames")
+            h5_record_busy = False
+            return False
+        row = initial_root_snapshot_row
+        try:
+            h5_recorder = PlaybackH5Recorder.begin(
+                source_csv=csv_path,
+                runtime_joint_names=joint_names,
+                baseline_joint_pos=playback_default_joint_pos,
+                root_anchor_pos=(float(row[0]), float(row[1]), float(row[2])),
+                root_anchor_quat_wxyz=[
+                    float(row[3]),
+                    float(row[4]),
+                    float(row[5]),
+                    float(row[6]),
+                ],
+                max_frame=int(frame_list[-1]),
+                has_hand_data=bool(motion_bundle.get("has_hand_data", False)),
+                fps=float(VMD_FPS),
+                knee_hinge_projection=bool(args_cli.mmd_knee_hinge_projection),
+                root_quat_rpy_scale=tuple(root_quat_rpy_scale),
+                root_quat_rpy_axis_idx=tuple(root_quat_rpy_axis_idx),
+                mmd_center_to_root_offset_local_xyz=tuple(args_cli.mmd_center_to_root_offset_local_xyz),
+                groove_pos_to_world=float(args_cli.groove_pos_to_world),
+            )
+        except Exception as exc:
+            print(f"[ERROR] H5 recording failed to start: {exc}")
+            h5_recorder = None
+            h5_record_busy = False
+            return False
+        h5_record_active = True
+        h5_record_frame_cursor = 0
+        print(
+            f"[INFO] H5 recording started: {os.path.basename(csv_path)} "
+            f"({int(frame_list[-1]) + 1} frames, IK/ankle comp from playback pipeline)"
+        )
+        return True
+
     def _prepare_motion_switch() -> None:
         nonlocal motion_has_wav
         motion_has_wav = False
@@ -1327,7 +1626,11 @@ def main():
                 playback_paused = False
                 pause_hold_frame = 0
                 pending_playback_toggle = False
+                pending_playback_stop = False
                 pending_seek_frame = None
+                pending_record_h5_key = None
+                if h5_record_busy or h5_record_active:
+                    _cancel_h5_recording(reason="env reset")
                 pending_z_edit_key = None
                 ui_debug.reset()
                 initial_root_snapshot_row = robot_root_row_clone(env)
@@ -1375,6 +1678,9 @@ def main():
                     finally:
                         z_edit_busy = False
 
+            if pending_playback_stop:
+                _stop_playback_to_initial_pose()
+
             if pending_cycle_play:
                 pending_cycle_play = False
                 if not pose_motions:
@@ -1385,55 +1691,91 @@ def main():
                     name, _, data = pose_motions[current_pose_idx]
                     _switch_to_motion(data, f"pose[{current_pose_idx + 1}/{len(pose_motions)}] {name}")
 
-            if pending_dance_key is not None:
-                dkey = pending_dance_key
-                pending_dance_key = None
-                prefer_hdf5 = pending_dance_prefer_hdf5
-                pending_dance_prefer_hdf5 = False
-                prefer_hand = pending_dance_prefer_hand
-                pending_dance_prefer_hand = False
+            if pending_record_h5_key is not None and not h5_record_busy:
+                dkey = pending_record_h5_key
+                pending_record_h5_key = None
                 entry = dance_motion_by_key.get(dkey)
-                if prefer_hand:
-                    if prefer_hdf5:
-                        hand_h5_entry = dance_hand_hdf5_motion_by_key.get(dkey)
-                        if hand_h5_entry is not None:
-                            entry = hand_h5_entry
-                        else:
-                            print(f"[WARN] dance 键 [{dkey}] 未找到 _hand H5，已取消播放")
-                            entry = None
-                    else:
-                        hand_entry = dance_hand_motion_by_key.get(dkey)
-                        if hand_entry is not None:
-                            entry = hand_entry
-                        else:
-                            print(f"[WARN] dance 键 [{dkey}] 未找到 _hand CSV，已取消播放")
-                            entry = None
-                if prefer_hdf5:
-                    h5_entry = dance_hdf5_motion_by_key.get(dkey)
-                    if h5_entry is not None and not prefer_hand:
-                        entry = h5_entry
-                    elif entry is not None and not prefer_hand:
-                        print(f"[WARN] dance 键 [{dkey}] 未找到对应 H5，回退为默认 motion")
                 if entry is None:
                     print(f"[WARN] dance 键 [{dkey}] 未绑定文件")
                 else:
                     entry, _used_z_editted = resolve_playback_motion_entry(
                         entry,
-                        prefer_hdf5=prefer_hdf5,
+                        prefer_hdf5=False,
                         z_offset_enabled=z_offset_enabled_ui,
                     )
-                    _prepare_motion_switch()
                     name, data = entry
-                    mode = str(data.get("kind", "unknown")).upper()
-                    _switch_to_motion(data, f"dance[{dkey}] {name}")
-                    print(f"[INFO] 播放模式: {mode} ({name})")
-                    wav = dance_wav_by_key.get(dkey)
-                    if wav and str(wav).strip():
-                        if os.path.isfile(wav):
-                            motion_has_wav = True
-                            audio_util.play_wav_async(wav)
+                    if str(data.get("kind", "")) != "csv":
+                        print(
+                            f"[WARN] H5 recording requires CSV source for [{dkey}] "
+                            f"(got {str(data.get('kind', 'unknown')).upper()})"
+                        )
+                    else:
+                        csv_path = str(data.get("path", ""))
+                        if not csv_path or not os.path.isfile(csv_path):
+                            print(f"[WARN] CSV not found for dance [{dkey}]: {csv_path}")
                         else:
-                            print(f"[WARN] 音频文件不存在: {wav}")
+                            h5_record_busy = True
+                            h5_record_dance_key = str(dkey)
+                            _prepare_motion_switch()
+                            _switch_to_motion(data, f"dance[{dkey}] {name}")
+                            if not _begin_h5_recording_for_motion(csv_path, data):
+                                is_playing = False
+                                current_motion = None
+                                current_motion_label = ""
+
+            if pending_dance_key is not None:
+                if h5_record_busy:
+                    print("[WARN] Ignored dance play request during H5 recording")
+                    pending_dance_key = None
+                else:
+                    dkey = pending_dance_key
+                    pending_dance_key = None
+                    prefer_hdf5 = pending_dance_prefer_hdf5
+                    pending_dance_prefer_hdf5 = False
+                    prefer_hand = pending_dance_prefer_hand
+                    pending_dance_prefer_hand = False
+                    entry = dance_motion_by_key.get(dkey)
+                    if prefer_hand:
+                        if prefer_hdf5:
+                            hand_h5_entry = dance_hand_hdf5_motion_by_key.get(dkey)
+                            if hand_h5_entry is not None:
+                                entry = hand_h5_entry
+                            else:
+                                print(f"[WARN] dance 键 [{dkey}] 未找到 _hand H5，已取消播放")
+                                entry = None
+                        else:
+                            hand_entry = dance_hand_motion_by_key.get(dkey)
+                            if hand_entry is not None:
+                                entry = hand_entry
+                            else:
+                                print(f"[WARN] dance 键 [{dkey}] 未找到 _hand CSV，已取消播放")
+                                entry = None
+                    if prefer_hdf5:
+                        h5_entry = dance_hdf5_motion_by_key.get(dkey)
+                        if h5_entry is not None and not prefer_hand:
+                            entry = h5_entry
+                        elif entry is not None and not prefer_hand:
+                            print(f"[WARN] dance 键 [{dkey}] 未找到对应 H5，回退为默认 motion")
+                    if entry is None:
+                        print(f"[WARN] dance 键 [{dkey}] 未绑定文件")
+                    else:
+                        entry, _used_z_editted = resolve_playback_motion_entry(
+                            entry,
+                            prefer_hdf5=prefer_hdf5,
+                            z_offset_enabled=z_offset_enabled_ui,
+                        )
+                        _prepare_motion_switch()
+                        name, data = entry
+                        mode = str(data.get("kind", "unknown")).upper()
+                        _switch_to_motion(data, f"dance[{dkey}] {name}")
+                        print(f"[INFO] 播放模式: {mode} ({name})")
+                        wav = dance_wav_by_key.get(dkey)
+                        if wav and str(wav).strip():
+                            if os.path.isfile(wav):
+                                motion_has_wav = True
+                                audio_util.play_wav_async(wav)
+                            else:
+                                print(f"[WARN] 音频文件不存在: {wav}")
 
             if is_playing and current_motion:
                 frame_list = current_motion["frame_list"]
@@ -1444,38 +1786,42 @@ def main():
                 did_seek_audio = False
                 sf_applied = 0
 
-                if pending_seek_frame is not None:
-                    sf = max(0, min(int(pending_seek_frame), max_frame))
-                    pending_seek_frame = None
-                    if sf != pause_hold_frame:
-                        sf_applied = sf
-                        did_seek_audio = True
-                        pause_hold_frame = sf
-                        play_start_time = time.perf_counter() - sf / play_hz
-
-                if did_seek_audio and motion_has_wav:
-                    audio_util.sync_audio_to_motion_frame(sf_applied, play_hz, paused_before_seek)
-
-                if playback_paused:
-                    frame = min(pause_hold_frame, max_frame)
+                if h5_record_active:
+                    frame = max(0, min(int(h5_record_frame_cursor), max_frame))
+                    playback_paused = False
                 else:
-                    elapsed_sec = max(0.0, time.perf_counter() - play_start_time)
-                    frame = min(int(elapsed_sec * play_hz), max_frame)
-                    pause_hold_frame = frame
+                    if pending_seek_frame is not None:
+                        sf = max(0, min(int(pending_seek_frame), max_frame))
+                        pending_seek_frame = None
+                        if sf != pause_hold_frame:
+                            sf_applied = sf
+                            did_seek_audio = True
+                            pause_hold_frame = sf
+                            play_start_time = time.perf_counter() - sf / play_hz
 
-                did_toggle_audio = False
-                if pending_playback_toggle:
-                    pending_playback_toggle = False
-                    did_toggle_audio = True
+                    if did_seek_audio and motion_has_wav:
+                        audio_util.sync_audio_to_motion_frame(sf_applied, play_hz, paused_before_seek)
+
                     if playback_paused:
-                        playback_paused = False
-                        play_start_time = time.perf_counter() - frame / play_hz
+                        frame = min(pause_hold_frame, max_frame)
                     else:
-                        playback_paused = True
+                        elapsed_sec = max(0.0, time.perf_counter() - play_start_time)
+                        frame = min(int(elapsed_sec * play_hz), max_frame)
                         pause_hold_frame = frame
 
-                if did_toggle_audio and motion_has_wav:
-                    audio_util.set_audio_paused(playback_paused)
+                    did_toggle_audio = False
+                    if pending_playback_toggle:
+                        pending_playback_toggle = False
+                        did_toggle_audio = True
+                        if playback_paused:
+                            playback_paused = False
+                            play_start_time = time.perf_counter() - frame / play_hz
+                        else:
+                            playback_paused = True
+                            pause_hold_frame = frame
+
+                    if did_toggle_audio and motion_has_wav:
+                        audio_util.set_audio_paused(playback_paused)
 
                 last_csv_motion_frame = frame
 
@@ -1506,6 +1852,29 @@ def main():
                     target_root_quat_wxyz,
                     joint_default=default_joint_pos,
                 )
+
+                if h5_record_active and h5_recorder is not None and joint_pos_cmd is not None:
+                    rr, rp, ry = ui_debug.root_rpy_euler_scaled_deg
+                    root_rpy_deg = None
+                    if rr is not None and rp is not None and ry is not None:
+                        root_rpy_deg = (float(rr), float(rp), float(ry))
+                    h5_recorder.record_frame(
+                        frame,
+                        joint_pos_cmd,
+                        root_pos=target_root_pos,
+                        root_quat_wxyz=target_root_quat_wxyz,
+                        root_rot_bone=ui_debug.root_rot_bone_name,
+                        root_rpy_deg=root_rpy_deg,
+                    )
+                    h5_record_frame_cursor = frame + 1
+                    if h5_record_frame_cursor > max_frame:
+                        _finalize_h5_recording()
+                        foot_ik_viz.clear()
+                        current_motion = None
+                        current_motion_label = ""
+                        actions = zero_action
+                        env.step(actions)
+                        continue
 
                 if use_root_teleport and target_root_pos is not None and target_root_quat_wxyz is not None:
                     if csv_root_rotation_lookup is False and not csv_root_track_warned:
@@ -1569,7 +1938,7 @@ def main():
                         ).unsqueeze(0)
                 else:
                     actions = zero_action
-                if frame >= max_frame:
+                if frame >= max_frame and not h5_record_active:
                     if (not pd_drive_enabled_ui) and last_frame_joint_pos_cmd is not None:
                         _set_control_reference_pose(last_frame_joint_pos_cmd)
                     elif pd_drive_enabled_ui and joint_pos_cmd is not None:
@@ -1648,10 +2017,11 @@ def main():
                 )
             if (not pd_drive_enabled_ui) and last_frame_joint_pos_cmd is not None and joint_ids is not None:
                 apply_joint_state_instant(env, last_frame_joint_pos_cmd, joint_ids)
-            _update_ankle_link_debug_viz(
-                last_playback_target_root,
-                last_playback_target_root_quat,
-            )
+            if is_playing:
+                _update_ankle_link_debug_viz(
+                    last_playback_target_root,
+                    last_playback_target_root_quat,
+                )
 
     dance_listener.unsubscribe()
     env.close()

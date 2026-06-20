@@ -75,6 +75,11 @@ _DEFAULT_COMPILE_JOINT_NAMES: list[str] = [
 _SKIP_VMD_SUFFIXES = ("_z_editted", "_hand")
 
 
+def get_default_compile_joint_names() -> list[str]:
+    """Joint order used when writing ``g1_mmd_motion_v1`` HDF5 files."""
+    return list(_DEFAULT_COMPILE_JOINT_NAMES)
+
+
 def _motion_stem_from_rel(motion_rel: str) -> str:
     base = os.path.basename(str(motion_rel or "").replace("\\", "/"))
     stem, _ext = os.path.splitext(base)

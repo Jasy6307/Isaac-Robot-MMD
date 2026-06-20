@@ -171,10 +171,11 @@ class G1StandEnvCfg(ManagerBasedRLEnvCfg):
         super().__post_init__()
         # 单环境，位于原点
         self.scene.num_envs = 1
-        self.decimation = 4
+        # Align with G1DanceTrackC0EnvCfg: physics 60 Hz, control 30 Hz (decimation=2).
+        self.sim.dt = 1.0 / 60.0
+        self.decimation = 1
+        self.sim.render_interval = 1
         # 原 60s 会与 MDP time_out 一致，交互脚本里每 ~60s 仿真时间会自动 reset。
         # 长时间站姿/动作演示请用大值；需要按回合切场景时再改小。
         self.episode_length_s = 86400.0
-        self.sim.dt = 0.005
-        self.sim.render_interval = self.decimation
         self.sim.physics_material = self.scene.terrain.physics_material

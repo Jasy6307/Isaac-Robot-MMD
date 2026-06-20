@@ -50,6 +50,7 @@ from robot_mmd.train_workflow.utils.mmd_fk import (
     FootIkVizConfig,
     compute_mmd_foot_ik_viz_bundle,
     foot_ik_panel_to_isaac_world,
+    motion_side_has_valid_toe_ik_keyframes,
     resolve_mmd_root_translation_pos,
 )
 from robot_mmd.train_workflow.utils.trans_util import (
@@ -164,6 +165,9 @@ class FootIkState:
     last_left_ik_iters: int | None = None
     last_left_q_ik: tuple[float, float, float, float, float, float] | None = None
     last_right_q_ik: tuple[float, float, float, float, float, float] | None = None
+    toe_ik_viz_flags_ready: bool = False
+    left_toe_ik_viz_enabled: bool = False
+    right_toe_ik_viz_enabled: bool = False
 
     def reset(self) -> None:
         self.last_left_target_local = None
@@ -209,6 +213,21 @@ class FootIkState:
         self.last_right_ik_iters = None
         self.last_left_q_ik = None
         self.last_right_q_ik = None
+        self.toe_ik_viz_flags_ready = False
+        self.left_toe_ik_viz_enabled = False
+        self.right_toe_ik_viz_enabled = False
+
+
+def configure_foot_ik_toe_viz_flags(
+    foot_ik_state: FootIkState | None,
+    frames: dict[int, dict[str, dict]] | None,
+) -> None:
+    """Scan motion once; disable pink toe debug spheres when only frame-0 stubs exist."""
+    if foot_ik_state is None or foot_ik_state.toe_ik_viz_flags_ready:
+        return
+    foot_ik_state.left_toe_ik_viz_enabled = motion_side_has_valid_toe_ik_keyframes(frames, "left")
+    foot_ik_state.right_toe_ik_viz_enabled = motion_side_has_valid_toe_ik_keyframes(frames, "right")
+    foot_ik_state.toe_ik_viz_flags_ready = True
 
 
 MMD_FINGER_PREFIXES: tuple[str, ...] = (
@@ -1695,12 +1714,15 @@ def update_foot_ik_mmd_viz_world(
     center_mmd_pos: tuple[float, float, float] | None = None,
     root_trans_bone: str | None = None,
     foot_ik_cfg: FootIkConfig | None = None,
+    frames: dict[int, dict[str, dict]] | None = None,
 ) -> None:
     """Fill ``FootIkState`` red-sphere / IK target world positions for one frame."""
     del center_mmd_pos, root_trans_bone
     cfg = foot_ik_cfg if foot_ik_cfg is not None else FootIkConfig()
     if foot_ik_state is None:
         return
+    if frames is not None:
+        configure_foot_ik_toe_viz_flags(foot_ik_state, frames)
     foot_ik_state.last_left_foot_mmd_viz_world = None
     foot_ik_state.last_right_foot_mmd_viz_world = None
     foot_ik_state.last_left_toe_mmd_viz_world = None
@@ -1748,8 +1770,10 @@ def update_foot_ik_mmd_viz_world(
 
     _apply("left_foot", bundle["left"], "left")
     _apply("right_foot", bundle["right"], "right")
-    _apply("left_toe", bundle["left_toe"], "left")
-    _apply("right_toe", bundle["right_toe"], "right")
+    if foot_ik_state.left_toe_ik_viz_enabled:
+        _apply("left_toe", bundle["left_toe"], "left")
+    if foot_ik_state.right_toe_ik_viz_enabled:
+        _apply("right_toe", bundle["right_toe"], "right")
 
 
 def update_foot_ik_reach_clamp_flags(

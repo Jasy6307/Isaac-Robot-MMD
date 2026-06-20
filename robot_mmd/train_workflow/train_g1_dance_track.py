@@ -156,13 +156,13 @@ parser.add_argument("--checkpoint", type=str, default=None, help="Checkpoint fil
 parser.add_argument(
     "--video",
     action="store_true",
-    default=True,
+    default=False,
     help="Record videos during training (requires rendering; do not use --headless).",
 )
 parser.add_argument(
     "--video_length",
     type=int,
-    default=450,
+    default=300,
     help="Recorded clip length in env steps (300 ≈ 10s at 30Hz control).",
 )
 parser.add_argument(

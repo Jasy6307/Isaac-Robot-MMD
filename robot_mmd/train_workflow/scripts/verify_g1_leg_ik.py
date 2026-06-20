@@ -137,7 +137,7 @@ def _eval_frame(
     st = FootIkState()
     viz = default_foot_ik_viz_config()
     update_foot_ik_mmd_viz_world(
-        st, fd, groove, foot_ik_viz_cfg=viz, target_root_pos=rp, target_root_quat_wxyz=rq
+        st, fd, groove, foot_ik_viz_cfg=viz, target_root_pos=rp, target_root_quat_wxyz=rq, frames=frames
     )
     cfg = FootIkConfig(enable=bool(use_ik))
 

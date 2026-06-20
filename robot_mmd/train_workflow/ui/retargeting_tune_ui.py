@@ -1,11 +1,12 @@
 """
 G1 肩 / 腿 Retarget Tune 独立窗口（MMD→G1 基变换前的 Rz·Ry·Rx 微调）。
 
-与关节欧拉轴映射窗口分离；仍需同一 ``ui.mapping.set_joint_value_provider`` 提供 raw 调试字符串。
+与关节欧拉轴映射窗口分离；仍需同一 ``mmd_config_ui.set_joint_value_provider`` 提供 raw 调试字符串。
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Callable
 
 from robot_mmd.train_workflow.retarget_unitreeG1 import (
@@ -150,9 +151,13 @@ def build_retarget_tune_window(ui: Any, notify_mapping_changed: Callable[[], Non
                     )
                     ui.Spacer(width=4)
                     ui.Button("Rst", width=32, height=22, clicked_fn=lambda s=side: _reset_sho_tune(s))
-                with ui.HStack(height=18):
+                with ui.HStack(height=34):
                     ui.Spacer(width=80)
-                    raw_lbl = ui.Label("raw: —", width=380, style={"color": 0xFFCCCCCC, "font_size": 12})
+                    raw_lbl = ui.Label(
+                        "delta: —\nabs: —",
+                        width=380,
+                        style={"color": 0xFFCCCCCC, "font_size": 12},
+                    )
                     _sho_raw_labels[pfx] = raw_lbl
 
             for m in (m_rx, m_ry, m_rz):
@@ -241,3 +246,54 @@ def build_retarget_tune_window(ui: Any, notify_mapping_changed: Callable[[], Non
         "sho_raw_labels": _sho_raw_labels,
         "leg_raw_labels": _leg_raw_labels,
     }
+
+
+def create_retarget_tune_ui() -> bool | None:
+    """Register «G1 Retarget Tune» under Window menu; shares mmd_config_ui refresh loop."""
+    try:
+        import omni.ui as ui
+        from omni.kit.menu.utils import add_menu_items, MenuItemDescription
+    except ImportError:
+        print("[WARN] omni.ui unavailable; Retarget Tune UI skipped (headless mode?)")
+        return None
+
+    from robot_mmd.train_workflow.ui.mmd_config_ui import (
+        _notify_mapping_changed,
+        _schedule_property_tab_dock,
+        schedule_mapping_ui_refresh_loop,
+    )
+    import robot_mmd.train_workflow.ui.mmd_config_ui as mmd_config_ui
+
+    _tune_window_ref: list[Any] = []
+
+    def _create_tune_window():
+        window = ui.Window(
+            RETARGET_TUNE_WINDOW_TITLE,
+            width=460,
+            height=540,
+            dock_preference=ui.DockPreference.MAIN,
+        )
+        with window.frame:
+            mmd_config_ui._retarget_tune_refs = build_retarget_tune_window(
+                ui, _notify_mapping_changed
+            )
+        window.visible = True
+        _tune_window_ref.append(window)
+        _schedule_property_tab_dock(window, RETARGET_TUNE_WINDOW_TITLE)
+        return window
+
+    def _on_tune_menu_click():
+        if _tune_window_ref:
+            _tune_window_ref[0].visible = True
+        else:
+            _create_tune_window()
+
+    add_menu_items(
+        [MenuItemDescription(name=RETARGET_TUNE_WINDOW_TITLE, onclick_fn=_on_tune_menu_click)],
+        "Window",
+    )
+
+    schedule_mapping_ui_refresh_loop()
+
+    print("[INFO] G1 Retarget Tune: Window menu →", RETARGET_TUNE_WINDOW_TITLE)
+    return True

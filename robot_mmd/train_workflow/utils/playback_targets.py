@@ -229,6 +229,7 @@ def _update_foot_ik_mmd_viz_world(
         target_root_quat_wxyz=target_root_quat_wxyz,
         root_trans_bone=root_trans_bone,
         foot_ik_cfg=foot_ik_cfg,
+        frames=frames,
     )
 
 

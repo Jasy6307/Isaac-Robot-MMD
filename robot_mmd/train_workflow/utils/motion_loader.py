@@ -261,6 +261,79 @@ def has_z_editted_sibling(path: str) -> bool:
     return False
 
 
+def iter_z_editted_sibling_paths(path: str) -> list[str]:
+    """Existing ``*_z_editted.csv`` / ``*_z_editted.h5`` siblings for a motion path."""
+    if not path or not str(path).strip():
+        return []
+    abs_path = os.path.abspath(str(path))
+    stem, _ext = os.path.splitext(abs_path)
+    candidates: list[str] = []
+    if stem.endswith("_z_editted"):
+        candidates.append(abs_path)
+    else:
+        candidates.append(z_editted_sibling_path(abs_path))
+        z_stem = stem + "_z_editted"
+        for ext in (".h5", ".hdf5"):
+            candidates.append(z_stem + ext)
+    out: list[str] = []
+    seen: set[str] = set()
+    for cand in candidates:
+        norm = os.path.normpath(cand)
+        if norm in seen or not os.path.isfile(norm):
+            continue
+        seen.add(norm)
+        out.append(norm)
+    return out
+
+
+def delete_z_editted_siblings(path: str) -> list[str]:
+    """Delete z_editted siblings; return deleted file paths."""
+    deleted: list[str] = []
+    for file_path in iter_z_editted_sibling_paths(path):
+        try:
+            os.remove(file_path)
+            deleted.append(file_path)
+        except OSError as exc:
+            print(f"[WARN] Failed to delete z_editted file '{file_path}': {exc}")
+    return deleted
+
+
+def iter_h5_sibling_paths(path: str) -> list[str]:
+    """Sibling ``.h5`` / ``.hdf5`` next to a CSV motion (not ``*_z_editted`` variants)."""
+    if not path or not str(path).strip():
+        return []
+    abs_path = os.path.abspath(str(path))
+    _stem, ext = os.path.splitext(abs_path)
+    if ext.lower() != ".csv":
+        return []
+    stem = os.path.splitext(abs_path)[0]
+    if stem.endswith("_z_editted") or stem.endswith("_hand"):
+        return []
+    out: list[str] = []
+    for h5_ext in (".h5", ".hdf5"):
+        cand = stem + h5_ext
+        if os.path.isfile(cand):
+            out.append(cand)
+    return out
+
+
+def has_deletable_h5_sibling(path: str) -> bool:
+    """True when a CSV motion has a deletable sibling H5 (not the primary motion file)."""
+    return bool(iter_h5_sibling_paths(path))
+
+
+def delete_h5_siblings(path: str) -> list[str]:
+    """Delete CSV sibling H5 files; return deleted file paths."""
+    deleted: list[str] = []
+    for file_path in iter_h5_sibling_paths(path):
+        try:
+            os.remove(file_path)
+            deleted.append(file_path)
+        except OSError as exc:
+            print(f"[WARN] Failed to delete H5 file '{file_path}': {exc}")
+    return deleted
+
+
 def resolve_playback_motion_entry(
     entry: tuple[str, MotionBundle],
     *,

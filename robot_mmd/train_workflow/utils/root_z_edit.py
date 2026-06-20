@@ -133,6 +133,15 @@ def _resolve_body_indices(robot: Any, needed_names: list[str]) -> dict[str, int]
     return out
 
 
+def _body_pos_world_tensor(robot: Any) -> torch.Tensor | None:
+    data = robot.data
+    for pos_name in ("body_pos_w", "body_link_pos_w", "link_pos_w"):
+        v = getattr(data, pos_name, None)
+        if torch.is_tensor(v):
+            return v
+    return None
+
+
 def _extract_body_pose_wxyz(robot: Any, body_idx: int) -> tuple[tuple[float, float, float], list[float]]:
     data = robot.data
     state = None
@@ -197,6 +206,17 @@ def read_ankle_roll_link_world_positions(
     """Read ankle roll link origins in Isaac world frame (for debug viz)."""
     try:
         idx = body_indices or resolve_ankle_roll_link_body_indices(robot)
+        pos_t = _body_pos_world_tensor(robot)
+        if pos_t is not None:
+            rows = pos_t[0] if pos_t.ndim == 3 else pos_t
+            l_idx = int(idx[LEFT_FOOT_LINK])
+            r_idx = int(idx[RIGHT_FOOT_LINK])
+            # One GPU->CPU copy for both ankles (avoids many scalar .item() syncs).
+            lr = rows[[l_idx, r_idx], :3].detach().cpu().tolist()
+            return (
+                (float(lr[0][0]), float(lr[0][1]), float(lr[0][2])),
+                (float(lr[1][0]), float(lr[1][1]), float(lr[1][2])),
+            )
         left_pos, _ = _extract_body_pose_wxyz(robot, idx[LEFT_FOOT_LINK])
         right_pos, _ = _extract_body_pose_wxyz(robot, idx[RIGHT_FOOT_LINK])
         return left_pos, right_pos
