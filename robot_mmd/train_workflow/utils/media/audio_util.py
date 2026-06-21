@@ -21,7 +21,7 @@ _pygame_sync_hint_printed = False
 # 当前这段实际在用哪种方式播：只有 "pygame" 时才响应 pause/seek
 _playback_backend: str | None = None
 # pygame.mixer.music volume: 0.0–1.0 (default below is quieter than mixer default 1.0)
-DEFAULT_VOLUME: float = 0.3
+DEFAULT_VOLUME: float = 0.2
 _volume: float = DEFAULT_VOLUME
 
 

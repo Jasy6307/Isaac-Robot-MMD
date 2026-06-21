@@ -8,7 +8,7 @@
 
 本仓库在 **Isaac Lab** 中注册 **宇树 G1（29 DOF）** 的「站立」环境，并通过 **`train_workflow`** 将 **MMD 骨骼动作（CSV）** 回放为仿真中的关节与根位姿，可选 **WAV 伴音**（Windows）与 **关节映射调试 UI**。
 
-- **强化学习环境 ID**：`Isaac-G1-Stand-v0`（`robot_mmd/my_task/__init__.py`）
+- **强化学习环境 ID**：`Isaac-G1-Vmd-Replay-v0`（`robot_mmd/my_task/__init__.py`）
 - **交互演示入口**：`train_workflow/run_stand.py`（键盘触发动画、pose 循环、导出等）
 
 ---
@@ -54,7 +54,7 @@ flowchart LR
 
 ### 4.1 `run_stand.py`（主程序）
 
-- **职责**：`AppLauncher` 启仿真；创建 `Isaac-G1-Stand-v0`；`Se3Keyboard` 绑定按键；主循环内驱动动作与 `env.step`。
+- **职责**：`AppLauncher` 启仿真；创建 `Isaac-G1-Vmd-Replay-v0`；`Se3Keyboard` 绑定按键；主循环内驱动动作与 `env.step`。
 - **舞蹈**：从 `dances_config.yaml`（默认同目录下的 `dances_config.yaml`，常量 `DANCES_CONFIG_PATH`）读取；需 **`PyYAML`**，否则抛清晰 `ImportError`。
 - **Pose 循环**：`media/pose/` 下 CSV，`--pose_cycle_key`（默认 `P`）按文件名顺序切换。
 - **动作回放模式**：`--motion_playback`（默认开）：不固定根、关重力、增阻尼等（见脚本内逻辑）。
@@ -107,7 +107,7 @@ flowchart LR
 
 ### 4.11 `my_task/g1_replay_env_cfg.py`
 
-- **职责**：平地、G1（`G1_29DOF_CFG`）、**T-pose 风格初始关节**、最小观测/奖励/终止；`episode_length_s` 设为极大以便长时间演示；`sim.dt` 与 `decimation` 与 Lab 默认管线一致。
+- **职责**：`G1VmdReplayEnvCfg` — 平地 T-pose，供 MMD 回放（``Isaac-G1-Vmd-Replay-v0``）。
 
 ### 4.12 `my_task/agents/rsl_rl_ppo_cfg.py`
 

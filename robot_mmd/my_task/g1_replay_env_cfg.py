@@ -1,7 +1,7 @@
 # Copyright (c) 2022-2025, The Isaac Lab Project Developers.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""宇树 G1 站立任务 - 机器人在场景正中间以默认姿态站立，不执行任何动作。"""
+"""G1 VMD replay environment (``Isaac-G1-Vmd-Replay-v0``)."""
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
@@ -62,8 +62,8 @@ G1_TPOSE_INIT_STATE = ArticulationCfg.InitialStateCfg(
 
 
 @configclass
-class G1StandSceneCfg(InteractiveSceneCfg):
-    """G1 站立场景 - 平地，单机器人位于原点。"""
+class G1VmdReplaySceneCfg(InteractiveSceneCfg):
+    """G1 VMD replay scene — flat ground, single robot at origin."""
 
     # 平地
     terrain = TerrainImporterCfg(
@@ -153,10 +153,10 @@ class TerminationsCfg:
 
 
 @configclass
-class G1StandEnvCfg(ManagerBasedRLEnvCfg):
-    """宇树 G1 站立环境 - 场景正中，默认姿态，不执行动作。"""
+class G1VmdReplayEnvCfg(ManagerBasedRLEnvCfg):
+    """G1 VMD replay env — T-pose idle scene for MMD playback."""
 
-    scene: G1StandSceneCfg = G1StandSceneCfg(num_envs=1, env_spacing=2.5)
+    scene: G1VmdReplaySceneCfg = G1VmdReplaySceneCfg(num_envs=1, env_spacing=2.5)
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
     rewards: RewardsCfg = RewardsCfg()
@@ -171,7 +171,7 @@ class G1StandEnvCfg(ManagerBasedRLEnvCfg):
         super().__post_init__()
         # 单环境，位于原点
         self.scene.num_envs = 1
-        # Align with G1DanceTrackBaseEnvCfg: physics 60 Hz, control 30 Hz (decimation=2).
+        # Align with G1VmdTrainBaseEnvCfg: physics 60 Hz, control 30 Hz (decimation=2).
         self.sim.dt = 1.0 / 60.0
         self.decimation = 1
         self.sim.render_interval = 1

@@ -11,7 +11,7 @@ Example
 .. code-block:: powershell
 
     ./isaac_workspace/IsaacLab/isaaclab.bat -p robot_mmd/train_workflow/g1_vmd_1_train.py `
-      --task Isaac-G1-Dance-Track-C1-v0 `
+      --task Isaac-G1-Vmd-Train-C1-v0 `
       --num_envs 2048 `
       --dance IRIS_OUT `
       --window_frames 460 `
@@ -36,7 +36,6 @@ if _WORKSPACE_ROOT not in sys.path:
     sys.path.insert(0, _WORKSPACE_ROOT)
 
 from robot_mmd.train_workflow.utils.motion.resolve import (  # noqa: E402
-    infer_dance_name_from_motion_path,
     resolve_dance_h5_by_name,
     resolve_training_log_root,
 )
@@ -46,7 +45,7 @@ parser = argparse.ArgumentParser(description="Train G1 dance tracking PPO with R
 parser.add_argument(
     "--task",
     type=str,
-    default="Isaac-G1-Dance-Track-C1-v0",
+    default="Isaac-G1-Vmd-Train-C1-v0",
     help="Registered Isaac Lab task ID.",
 )
 parser.add_argument("--num_envs", type=int, default=512, help="Number of parallel envs.")
@@ -62,12 +61,6 @@ parser.add_argument(
         "Dance name under robot_mmd/media/dance/ (e.g. IRIS_OUT). "
         "Auto-resolves HDF5; prefers *_z_editted.h5 when present."
     ),
-)
-parser.add_argument(
-    "--motion_h5",
-    type=str,
-    default=None,
-    help="Legacy: explicit HDF5 path. Prefer --dance instead.",
 )
 parser.add_argument(
     "--window_frames",
@@ -203,13 +196,9 @@ AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
 DANCE_NAME: str | None = None
-if args_cli.dance and args_cli.motion_h5:
-    parser.error("Specify either --dance or --motion_h5, not both.")
+MOTION_H5_PATH: str | None = None
 if args_cli.dance:
-    args_cli.motion_h5, DANCE_NAME = resolve_dance_h5_by_name(args_cli.dance)
-elif args_cli.motion_h5:
-    args_cli.motion_h5 = os.path.abspath(args_cli.motion_h5)
-    DANCE_NAME = infer_dance_name_from_motion_path(args_cli.motion_h5)
+    MOTION_H5_PATH, DANCE_NAME = resolve_dance_h5_by_name(args_cli.dance)
 
 if args_cli.video:
     args_cli.enable_cameras = True
@@ -361,21 +350,10 @@ def _resolve_motion_window_seconds(env_cfg: ManagerBasedRLEnvCfg) -> float:
     return default_window_seconds_from_env_cfg(env_cfg)
 
 
-def _resolve_motion_h5_path(env_cfg: ManagerBasedRLEnvCfg) -> str:
-    if args_cli.motion_h5 is not None:
-        return os.path.abspath(args_cli.motion_h5)
-    reset_evt = getattr(env_cfg.events, "reset_robot_joints", None)
-    if reset_evt is not None and hasattr(reset_evt, "params"):
-        hp = reset_evt.params.get("h5_path")
-        if hp is not None:
-            return str(hp)
-    raise ValueError("无法解析 motion_h5，请传入 --dance 或 --motion_h5")
-
-
 def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
     """Patch env_cfg with reference-window/episode/random-start overrides."""
     if (
-        args_cli.motion_h5 is None
+        MOTION_H5_PATH is None
         and args_cli.window_frames is None
         and args_cli.episode_seconds is None
         and args_cli.random_motion_start is None
@@ -387,11 +365,7 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
     ):
         return
 
-    new_h5 = (
-        os.path.abspath(args_cli.motion_h5)
-        if args_cli.motion_h5 is not None
-        else None
-    )
+    new_h5 = MOTION_H5_PATH
     new_ws = resolve_motion_window_seconds(env_cfg, window_frames=args_cli.window_frames)
     if new_ws is not None and args_cli.window_frames is not None:
         log_window_frames_override(

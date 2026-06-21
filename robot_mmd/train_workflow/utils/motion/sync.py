@@ -140,13 +140,13 @@ def _list_vmd_files(dance_dir: str) -> list[str]:
     return sorted(out)
 
 
-def _compile_csv_to_h5(
+def compile_dance_csv_to_h5(
     csv_path: str,
     h5_path: str,
     *,
-    groove_pos_to_world: float,
-    mmd_center_to_root_offset_local_xyz: tuple[float, float, float],
-    knee_hinge_projection: bool,
+    groove_pos_to_world: float = 0.1,
+    mmd_center_to_root_offset_local_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    knee_hinge_projection: bool = True,
     foot_ik_cfg: FootIkConfig | None = None,
 ) -> None:
     motion = compile_csv_motion_to_hdf5_motion(
@@ -201,7 +201,7 @@ def sync_dance_assets_from_vmd(
         if os.path.isfile(csv_path) and not os.path.isfile(h5_path):
             try:
                 print(f"[INFO] CSV -> H5: {os.path.basename(csv_path)}")
-                _compile_csv_to_h5(
+                compile_dance_csv_to_h5(
                     csv_path,
                     h5_path,
                     groove_pos_to_world=groove_pos_to_world,

@@ -31,10 +31,33 @@ def infer_dance_name_from_motion_path(motion_path: str) -> str:
     return normalize_dance_stem(os.path.basename(str(motion_path)))
 
 
+def _find_dance_csv(canonical: str, root: str) -> str | None:
+    for fname in (
+        f"{canonical}{_Z_EDITTED_SUFFIX}.csv",
+        f"{canonical}.csv",
+    ):
+        path = os.path.join(root, fname)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _compile_csv_sibling_to_h5(csv_path: str) -> str:
+    root = os.path.dirname(csv_path)
+    stem = os.path.splitext(os.path.basename(csv_path))[0]
+    h5_path = os.path.join(root, stem + ".h5")
+    from robot_mmd.train_workflow.utils.motion.sync import compile_dance_csv_to_h5
+
+    print(f"[INFO] CSV -> H5: {os.path.basename(csv_path)}")
+    compile_dance_csv_to_h5(csv_path, h5_path)
+    return os.path.abspath(h5_path)
+
+
 def resolve_dance_h5_by_name(
     dance_name: str,
     *,
     dance_dir: str | None = None,
+    compile_from_csv: bool = True,
 ) -> tuple[str, str]:
     """Resolve ``dance_name`` to an absolute HDF5 path and canonical dance id.
 
@@ -72,9 +95,22 @@ def resolve_dance_h5_by_name(
             )
             return abs_path, canonical
 
+    if compile_from_csv:
+        csv_path = _find_dance_csv(canonical, root)
+        if csv_path is not None:
+            abs_path = _compile_csv_sibling_to_h5(csv_path)
+            print(f"[INFO] Resolved dance '{canonical}' -> {abs_path} (compiled from CSV)")
+            return abs_path, canonical
+
     tried = ", ".join(candidates)
+    csv_hint = ""
+    csv_path = _find_dance_csv(canonical, root)
+    if csv_path is None:
+        csv_hint = (
+            f" No CSV sibling under {root} either; run g1_vmd_0_replay.py to retarget VMD first."
+        )
     raise FileNotFoundError(
-        f"No HDF5 found for dance '{canonical}' under {root}. Tried: {tried}"
+        f"No HDF5 found for dance '{canonical}' under {root}. Tried: {tried}.{csv_hint}"
     )
 
 

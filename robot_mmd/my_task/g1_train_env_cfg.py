@@ -1,12 +1,12 @@
 # Copyright (c) 2022-2025, The Isaac Lab Project Developers.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""G1 dance tracking environment configs.
+"""G1 VMD train environment configs (``Isaac-G1-Vmd-Train-C1/C2-v0``).
 
-* ``G1DanceTrackBaseEnvCfg`` - shared sim/obs/reward defaults for dance tracking.
-* ``G1DanceTrackC1EnvCfg`` - C1 floating-root residual env (legs learn around
+* ``G1VmdTrainBaseEnvCfg`` - shared sim/obs/reward defaults for dance tracking.
+* ``G1VmdTrainC1EnvCfg`` - C1 floating-root residual env (legs learn around
   H5 reference; arms+waist frozen) with alive/fall terminations and root tracking.
-* ``G1DanceTrackC2EnvCfg`` - C2 full-window env with end-of-motion hold timeout
+* ``G1VmdTrainC2EnvCfg`` - C2 full-window env with end-of-motion hold timeout
   and stronger root tracking rewards.
 """
 
@@ -102,7 +102,7 @@ C2_END_HOLD_SECONDS = 2.0
 ##
 
 
-def _dance_track_terrain_cfg(*, ground_z_offset: float) -> LoweredGroundTerrainImporterCfg:
+def _vmd_train_terrain_cfg(*, ground_z_offset: float) -> LoweredGroundTerrainImporterCfg:
     return LoweredGroundTerrainImporterCfg(
         class_type=LoweredGroundTerrainImporter,
         prim_path="/World/ground",
@@ -125,7 +125,7 @@ def _dance_track_terrain_cfg(*, ground_z_offset: float) -> LoweredGroundTerrainI
     )
 
 
-def _g1_dance_track_robot_cfg() -> ArticulationCfg:
+def _g1_vmd_train_robot_cfg() -> ArticulationCfg:
     """G1 O6 (29DoF) with deploy PD profile for training."""
     return apply_robot_pd_profile(
         G1_29DOF_O6_CFG.replace(
@@ -138,12 +138,12 @@ def _g1_dance_track_robot_cfg() -> ArticulationCfg:
 
 
 @configclass
-class G1DanceTrackSceneCfg(InteractiveSceneCfg):
+class G1VmdTrainSceneCfg(InteractiveSceneCfg):
     """G1 dance scene: flat ground + single G1 with the T-pose init state."""
 
-    terrain = _dance_track_terrain_cfg(ground_z_offset=0.0)
+    terrain = _vmd_train_terrain_cfg(ground_z_offset=0.0)
 
-    robot: ArticulationCfg = _g1_dance_track_robot_cfg()
+    robot: ArticulationCfg = _g1_vmd_train_robot_cfg()
 
     sky_light = AssetBaseCfg(
         prim_path="/World/skyLight",
@@ -309,13 +309,13 @@ class C1EventCfg(EventCfg):
 
 
 @configclass
-class G1DanceTrackBaseEnvCfg(ManagerBasedRLEnvCfg):
+class G1VmdTrainBaseEnvCfg(ManagerBasedRLEnvCfg):
     """Shared dance-tracking env defaults (sim timing, obs layout, base rewards).
 
     C1/C2 inherit and override actions, events, terminations, and rewards.
     """
 
-    scene: G1DanceTrackSceneCfg = G1DanceTrackSceneCfg(num_envs=512, env_spacing=2.5)
+    scene: G1VmdTrainSceneCfg = G1VmdTrainSceneCfg(num_envs=512, env_spacing=2.5)
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
     rewards: RewardsCfg = RewardsCfg()
@@ -342,7 +342,7 @@ class G1DanceTrackBaseEnvCfg(ManagerBasedRLEnvCfg):
 
 
 @configclass
-class G1DanceTrackC1EnvCfg(G1DanceTrackBaseEnvCfg):
+class G1VmdTrainC1EnvCfg(G1VmdTrainBaseEnvCfg):
     """C1 (floating root) residual dance tracking env.
 
     Root link is freed; legs learn a residual around the H5 reference while
@@ -354,7 +354,7 @@ class G1DanceTrackC1EnvCfg(G1DanceTrackBaseEnvCfg):
     is disabled (see ``C1_*_NOISE_*`` in ``joint_groups``).
     """
 
-    scene: G1DanceTrackSceneCfg = G1DanceTrackSceneCfg(num_envs=512, env_spacing=2.5)
+    scene: G1VmdTrainSceneCfg = G1VmdTrainSceneCfg(num_envs=512, env_spacing=2.5)
     actions: C1ActionsCfg = C1ActionsCfg()
     events: C1EventCfg = C1EventCfg()
 
@@ -465,7 +465,7 @@ class G1DanceTrackC1EnvCfg(G1DanceTrackBaseEnvCfg):
 
 
 @configclass
-class G1DanceTrackC2EnvCfg(G1DanceTrackC1EnvCfg):
+class G1VmdTrainC2EnvCfg(G1VmdTrainC1EnvCfg):
     """C2 full-window dance tracking with stronger root tracking and end hold."""
 
     def __post_init__(self) -> None:

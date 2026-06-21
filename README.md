@@ -38,7 +38,7 @@
 | ---------------- | ------------- | --------------------------------------- |
 | MMD 回放与重定向 UI    | **较稳定**       | 主入口：`g1_vmd_0_replay.py`            |
 | VMD → CSV / H5 录制  | **较稳定**       | `vmd_2_csv.py`、playback **Record H5**、根 Z 编辑脚本 |
-| 站立环境             | **较稳定**       | `Isaac-G1-Stand-v0`，用于回放与冒烟测试           |
+| 站立环境             | **较稳定**       | `Isaac-G1-Vmd-Replay-v0`，用于回放与冒烟测试           |
 | 舞蹈跟踪 RL（C1）      | **活跃开发中**     | **当前主训练任务**：浮动根、腿部残差控制、倒地终止、课程学习 |
 | 舞蹈跟踪 RL（C2）      | **实验性**       | 全窗口跟踪、更强根位姿奖励                           |
 | 跨平台音频            | **仅 Windows** | WAV 通过 `winsound` 播放；其他平台为 no-op        |
@@ -53,9 +53,9 @@
 
 | 任务 ID                        | 用途                           |
 | ---------------------------- | ---------------------------- |
-| `Isaac-G1-Stand-v0`          | 平地 A-pose 初始；MMD 回放          |
-| `Isaac-G1-Dance-Track-C1-v0` | **主训练/播放任务**：浮动根，腿部在 H5 参考周围学习残差控制 |
-| `Isaac-G1-Dance-Track-C2-v0` | 实验：全窗口跟踪 + 动作结束保持               |
+| `Isaac-G1-Vmd-Replay-v0`          | 平地 A-pose 初始；MMD 回放          |
+| `Isaac-G1-Vmd-Train-C1-v0` | **主训练/播放任务**：浮动根，腿部在 H5 参考周围学习残差控制 |
+| `Isaac-G1-Vmd-Train-C2-v0` | 实验：全窗口跟踪 + 动作结束保持               |
 
 
 ---
@@ -127,8 +127,8 @@ pip install -e .
 
 # 4) 舞蹈跟踪 PPO 训练（示例）
 ./isaac_workspace/IsaacLab/isaaclab.sh -p robot_mmd/train_workflow/g1_vmd_1_train.py \
-  --task Isaac-G1-Dance-Track-C1-v0 --num_envs 2048 --headless \
-  --motion_h5 robot_mmd/media/dance/your_motion.h5
+  --task Isaac-G1-Vmd-Train-C1-v0 --num_envs 2048 --headless \
+  --dance IRIS_OUT
 ```
 
 Windows 上将 `isaaclab.sh` 替换为 `isaaclab.bat`。

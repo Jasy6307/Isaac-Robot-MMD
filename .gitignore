@@ -13,6 +13,7 @@ robot_mmd/media/dance/*
 robot_mmd/media/pose/*
 !robot_mmd/media/pose/.gitkeep
 robot_mmd/docs/
+policy/
 
 # 本地舞蹈登记（从 dances_config.example.yaml 复制后自行编辑）
 robot_mmd/train_workflow/dances_config.yaml

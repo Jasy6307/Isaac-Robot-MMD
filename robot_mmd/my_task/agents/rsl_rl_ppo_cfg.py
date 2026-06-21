@@ -1,7 +1,7 @@
 # Copyright (c) 2022-2025.
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""RSL-RL PPO configs for G1 tasks (stand placeholder + dance tracking)."""
+"""RSL-RL PPO configs for G1 VMD replay / train tasks."""
 
 from isaaclab.utils import configclass
 
@@ -9,8 +9,8 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 
 @configclass
-class G1StandPPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    """Placeholder config used by the zero-action stand env."""
+class G1VmdReplayPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+    """Placeholder PPO config for ``Isaac-G1-Vmd-Replay-v0``."""
 
     num_steps_per_env = 24
     max_iterations = 1
@@ -27,8 +27,8 @@ class G1StandPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 
 @configclass
-class G1DanceTrackPPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    """Shared PPO config for G1 dance tracking (C1/C2)."""
+class G1VmdTrainPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+    """Shared PPO config for G1 VMD train (C1/C2)."""
 
     num_steps_per_env = 80
     max_iterations = 3000
@@ -60,8 +60,8 @@ class G1DanceTrackPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 
 @configclass
-class G1DanceTrackC1PPORunnerCfg(G1DanceTrackPPORunnerCfg):
-    """PPO config for the C1 (floating-root residual) dance tracking env."""
+class G1VmdTrainC1PPORunnerCfg(G1VmdTrainPPORunnerCfg):
+    """PPO config for ``Isaac-G1-Vmd-Train-C1-v0``."""
 
     def __post_init__(self) -> None:
         self.experiment_name = "g1_dance_track_c1_residual"
@@ -70,8 +70,8 @@ class G1DanceTrackC1PPORunnerCfg(G1DanceTrackPPORunnerCfg):
 
 
 @configclass
-class G1DanceTrackC2PPORunnerCfg(G1DanceTrackC1PPORunnerCfg):
-    """PPO config for C2 full-window dance tracking."""
+class G1VmdTrainC2PPORunnerCfg(G1VmdTrainC1PPORunnerCfg):
+    """PPO config for ``Isaac-G1-Vmd-Train-C2-v0``."""
 
     def __post_init__(self) -> None:
         super().__post_init__()

@@ -36,14 +36,21 @@ _ENV_START_STEPS_ATTR = "_g1_dance_motion_start_steps"
 
 
 def _resolve_h5_path(h5_path: str) -> str:
-    if os.path.isabs(h5_path) and os.path.exists(h5_path):
-        return h5_path
+    if os.path.isfile(h5_path):
+        return os.path.abspath(h5_path)
     # try resolving relative to repo root (parent of robot_mmd)
     here = os.path.dirname(os.path.abspath(__file__))
     repo_root = os.path.abspath(os.path.join(here, "..", "..", ".."))
     cand = os.path.normpath(os.path.join(repo_root, h5_path))
-    if os.path.exists(cand):
+    if os.path.isfile(cand):
         return cand
+    try:
+        from robot_mmd.train_workflow.utils.motion.resolve import resolve_dance_h5_by_name
+
+        abs_path, _ = resolve_dance_h5_by_name(h5_path)
+        return abs_path
+    except (FileNotFoundError, ValueError):
+        pass
     raise FileNotFoundError(f"HDF5 motion file not found: {h5_path}")
 
 

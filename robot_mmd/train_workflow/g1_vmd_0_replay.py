@@ -170,7 +170,7 @@ from robot_mmd.train_workflow.utils.math.trans_util import (
     root_quat_from_state_row,
 )
 
-TASK_ID = "Isaac-G1-Stand-v0"
+TASK_ID = "Isaac-G1-Vmd-Replay-v0"
 VMD_FPS = 30
 
 

@@ -111,7 +111,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-TASK_ID = "Isaac-G1-Stand-v0"
+TASK_ID = "Isaac-G1-Vmd-Replay-v0"
 
 
 def main() -> None:
