@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING
 from isaaclab.app import AppLauncher
 
 if TYPE_CHECKING:
-    from robot_mmd.train_workflow.utils.csv_motion_loader import FootIkConfig
+    from robot_mmd.train_workflow.utils.format.csv_loader import FootIkConfig
 
-from robot_mmd.train_workflow.utils.g1_foot_ik_geometry import (
+from robot_mmd.train_workflow.utils.ik.geometry import (
     G1_FOOT_IK_HIP_OFFSET_Y_M,
     G1_FOOT_IK_HIP_OFFSET_Z_M,
     G1_FOOT_IK_SHIN_LENGTH_M,
@@ -56,7 +56,7 @@ def build_arg_parser(pose_dir: str) -> argparse.ArgumentParser:
     """Build command-line parser for interactive playback.
 
     Foot IK, sphere map, and ankle ground-comp tuning live in the Mapping UI;
-    batch tools (csv_2_hdf5, edit_csv_root_z) keep their own CLI via
+    batch tools (e.g. edit_csv_root_z) keep their own CLI via
     ``add_mmd_foot_ik_solver_cli_args`` / ``add_mmd_sphere_map_cli_args``.
     """
     parser = argparse.ArgumentParser(description="宇树 G1 站立 - 零动作运行。")
@@ -157,7 +157,7 @@ def parse_triplet_float(text: str) -> tuple[float, float, float]:
 
 def add_mmd_sphere_map_cli_args(parser: argparse.ArgumentParser) -> None:
     """Red-sphere / foot-target coordinate map (also drives leg IK target)."""
-    from robot_mmd.train_workflow.utils.mmd_fk import (
+    from robot_mmd.train_workflow.utils.ik.mmd_fk import (
         FOOT_IK_VIZ_AXIS_IDX,
         FOOT_IK_VIZ_AXIS_SIGN,
         FOOT_IK_VIZ_AXIS_SIGN_POSE,
@@ -302,7 +302,7 @@ def add_mmd_foot_ik_solver_cli_args(parser: argparse.ArgumentParser) -> None:
 
 def default_playback_foot_ik_config(*, groove_pos_to_world: float = 0.1) -> FootIkConfig:
     """Defaults for interactive playback; tune live in Mapping UI."""
-    from robot_mmd.train_workflow.utils.csv_motion_loader import FootIkConfig
+    from robot_mmd.train_workflow.utils.format.csv_loader import FootIkConfig
 
     return FootIkConfig(
         enable=True,
@@ -311,7 +311,7 @@ def default_playback_foot_ik_config(*, groove_pos_to_world: float = 0.1) -> Foot
 
 
 def foot_ik_viz_config_from_namespace(ns: argparse.Namespace):
-    from robot_mmd.train_workflow.utils.mmd_fk import FootIkVizConfig, default_foot_ik_viz_config, foot_ik_viz_triplet_cli
+    from robot_mmd.train_workflow.utils.ik.mmd_fk import FootIkVizConfig, default_foot_ik_viz_config, foot_ik_viz_triplet_cli
 
     defaults = default_foot_ik_viz_config()
     axis_idx = parse_triplet_int(
@@ -341,7 +341,7 @@ def foot_ik_viz_config_from_namespace(ns: argparse.Namespace):
 
 
 def foot_ik_config_from_namespace(ns: argparse.Namespace, *, groove_pos_to_world: float) -> FootIkConfig:
-    from robot_mmd.train_workflow.utils.csv_motion_loader import FootIkConfig
+    from robot_mmd.train_workflow.utils.format.csv_loader import FootIkConfig
 
     return FootIkConfig(
         enable=bool(getattr(ns, "mmd_foot_ik_enable", False)),
@@ -363,7 +363,7 @@ def foot_ik_config_from_namespace(ns: argparse.Namespace, *, groove_pos_to_world
 
 
 def foot_ankle_ground_comp_config_from_namespace(ns: argparse.Namespace):
-    from robot_mmd.train_workflow.utils.foot_ankle_ground_comp import (
+    from robot_mmd.train_workflow.utils.ik.ankle_ground import (
         foot_ankle_ground_comp_config_from_namespace as _from_ns,
     )
 

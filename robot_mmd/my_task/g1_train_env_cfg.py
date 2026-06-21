@@ -30,9 +30,9 @@ from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR, ISAAC_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 from robot_mmd.my_task import mdp
-from robot_mmd.my_task.g1_29dof_o6_cfg import G1_29DOF_O6_CFG
-from robot_mmd.my_task.g1_stand_env_cfg import G1_TPOSE_INIT_STATE
-from robot_mmd.train_workflow.g1_deploy_actuator_cfg import apply_robot_pd_profile
+from robot_mmd.my_task.robots.g1_29dof_o6_cfg import G1_29DOF_O6_CFG
+from robot_mmd.my_task.g1_replay_env_cfg import G1_TPOSE_INIT_STATE
+from robot_mmd.my_task.robots.actuator_pd import apply_robot_pd_profile
 from robot_mmd.my_task.mdp.actions import (
     ReferenceResidualJointPositionAction,
     ReferenceResidualJointPositionActionCfg,
@@ -64,7 +64,7 @@ C1_ACTION_RATE_L2_WEIGHT = -0.05 # -0.01
 C1_ACTION_L2_WEIGHT = -1.0e-4 # -1.0e-4
 C1_ALIVE_WEIGHT = 2.0
 C1_TERMINATED_PENALTY_WEIGHT = -1.0
-C1_ROOT_YAW_TRACK_WEIGHT = 30.0
+C1_ROOT_YAW_TRACK_WEIGHT = 20.0
 C1_ROOT_YAW_TRACK_SIGMA = 0.10
 C1_ROOT_XY_TRACK_WEIGHT = 15.0
 C1_ROOT_XY_TRACK_SIGMA = 0.10

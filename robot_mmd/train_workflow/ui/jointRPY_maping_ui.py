@@ -10,11 +10,11 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Callable
 
-from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
+from robot_mmd.train_workflow.utils.retarget.joint_axis_map import (
     MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
     MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
 )
-from robot_mmd.train_workflow.utils.csv_motion_loader import (
+from robot_mmd.train_workflow.utils.format.csv_loader import (
     G1_JOINT_TO_MMD,
     get_hinge_swing_absorb,
     get_waist_upper_pair_quat_conjugate,

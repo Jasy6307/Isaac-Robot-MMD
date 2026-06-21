@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-from robot_mmd.train_workflow.utils.trans_util import (
+from robot_mmd.train_workflow.utils.math.trans_util import (
     mmd_storage_delta_to_isaac_world_delta,
     mmd_world_pos_to_isaac,
     quat_mul,

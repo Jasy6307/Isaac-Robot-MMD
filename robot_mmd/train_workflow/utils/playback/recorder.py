@@ -8,13 +8,13 @@ from typing import Any
 
 import numpy as np
 
-from robot_mmd.train_workflow.utils.dance_asset_sync import get_default_compile_joint_names
-from robot_mmd.train_workflow.utils.hdf5_motion import (
+from robot_mmd.train_workflow.utils.motion.sync import get_default_compile_joint_names
+from robot_mmd.train_workflow.utils.format.hdf5 import (
     HDF5_DEFAULT_FPS,
     Hdf5Motion,
     write_hdf5_motion,
 )
-from robot_mmd.train_workflow.utils.trans_util import quat_inv, quat_mul, quat_normalize
+from robot_mmd.train_workflow.utils.math.trans_util import quat_inv, quat_mul, quat_normalize
 
 
 def h5_sibling_path_for_csv(csv_path: str) -> str:

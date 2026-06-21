@@ -8,8 +8,11 @@ Example
 -------
 .. code-block:: powershell
 
-    ./isaac_workspace/IsaacLab/isaaclab.bat -p robot_mmd/train_workflow/play_g1_dance_track.py `
-      --task Isaac-G1-Dance-Track-C1-v0 --num_envs 16
+    ./isaac_workspace/IsaacLab/isaaclab.bat -p robot_mmd/train_workflow/g1_vmd_2_eval.py `
+      --task Isaac-G1-Dance-Track-C1-v0 `
+      --dance IRIS_OUT `
+      --window_frames 460 `
+      --num_envs 16
 
 Press ``--start_key`` (default ``P``) to begin each policy rollout from a stable
 standing pose; when the window finishes, the robot returns to standing and waits
@@ -27,6 +30,11 @@ _WORKSPACE_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", ".."))
 if _WORKSPACE_ROOT not in sys.path:
     sys.path.insert(0, _WORKSPACE_ROOT)
 
+from robot_mmd.train_workflow.utils.motion.resolve import (  # noqa: E402
+    infer_dance_name_from_motion_path,
+    resolve_dance_h5_by_name,
+    resolve_training_log_root,
+)
 from isaaclab.app import AppLauncher  # noqa: E402
 
 parser = argparse.ArgumentParser(description="Play a G1 dance tracking checkpoint.")
@@ -58,10 +66,19 @@ parser.add_argument(
 )
 parser.add_argument("--load_run", type=str, default=None)
 parser.add_argument(
+    "--dance",
+    type=str,
+    default=None,
+    help=(
+        "Dance name under robot_mmd/media/dance/ (e.g. IRIS_OUT). "
+        "Resolves HDF5 and checkpoint log subfolder logs/rsl_rl/<exp>/<dance>/."
+    ),
+)
+parser.add_argument(
     "--motion_h5",
     type=str,
     default=None,
-    help="Override dance HDF5 path for evaluation.",
+    help="Legacy: explicit HDF5 path. Prefer --dance instead.",
 )
 parser.add_argument(
     "--window_frames",
@@ -151,6 +168,15 @@ parser.add_argument(
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
+DANCE_NAME: str | None = None
+if args_cli.dance and args_cli.motion_h5:
+    parser.error("Specify either --dance or --motion_h5, not both.")
+if args_cli.dance:
+    args_cli.motion_h5, DANCE_NAME = resolve_dance_h5_by_name(args_cli.dance)
+elif args_cli.motion_h5:
+    args_cli.motion_h5 = os.path.abspath(args_cli.motion_h5)
+    DANCE_NAME = infer_dance_name_from_motion_path(args_cli.motion_h5)
+
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
@@ -179,11 +205,11 @@ from robot_mmd.my_task.motion_reference import (  # noqa: E402
     get_or_create_motion_buffer,
     reset_motion_start_steps,
 )
-from robot_mmd.train_workflow.g1_deploy_actuator_cfg import (  # noqa: E402
+from robot_mmd.my_task.robots.actuator_pd import (  # noqa: E402
     apply_pd_profile_to_scene_robot,
     log_pd_profile_summary,
 )
-from robot_mmd.train_workflow.utils.motion_window import (  # noqa: E402
+from robot_mmd.train_workflow.utils.motion.window import (  # noqa: E402
     control_hz_from_env_cfg,
     log_window_frames_override,
     resolve_motion_window_seconds,
@@ -557,15 +583,27 @@ def main() -> None:
     _apply_motion_overrides(env_cfg)
     _apply_play_viewer(env_cfg)
 
-    log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
+    log_root_path = resolve_training_log_root(agent_cfg.experiment_name, DANCE_NAME)
     print(f"[INFO] Looking for checkpoints under: {log_root_path}")
+    if DANCE_NAME:
+        print(f"[INFO] Dance: {DANCE_NAME}")
     if args_cli.checkpoint:
         resume_path = os.path.abspath(args_cli.checkpoint)
     else:
         run_dir = args_cli.load_run if args_cli.load_run is not None else agent_cfg.load_run
-        resume_path = get_checkpoint_path(
-            log_root_path, run_dir, agent_cfg.load_checkpoint
-        )
+        try:
+            resume_path = get_checkpoint_path(
+                log_root_path, run_dir, agent_cfg.load_checkpoint
+            )
+        except ValueError as exc:
+            if DANCE_NAME is None:
+                hint = (
+                    f"{exc}\n"
+                    "[HINT] Training logs may be under logs/rsl_rl/"
+                    f"{agent_cfg.experiment_name}/<DANCE_NAME>/; pass --dance <DANCE_NAME>."
+                )
+                raise ValueError(hint) from exc
+            raise
     print(f"[INFO] Loading checkpoint: {resume_path}")
 
     env_cfg.log_dir = os.path.dirname(resume_path)

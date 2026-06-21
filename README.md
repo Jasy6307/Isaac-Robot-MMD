@@ -36,8 +36,8 @@
 
 | 模块               | 状态            | 说明                                      |
 | ---------------- | ------------- | --------------------------------------- |
-| MMD 回放与重定向 UI    | **较稳定**       | 主入口：`run_g1_mmd_playback.py`            |
-| VMD → CSV/H5 工具链 | **较稳定**       | `vmd_2_csv.py`、`csv_2_hdf5.py`、根 Z 编辑脚本 |
+| MMD 回放与重定向 UI    | **较稳定**       | 主入口：`g1_vmd_0_replay.py`            |
+| VMD → CSV / H5 录制  | **较稳定**       | `vmd_2_csv.py`、playback **Record H5**、根 Z 编辑脚本 |
 | 站立环境             | **较稳定**       | `Isaac-G1-Stand-v0`，用于回放与冒烟测试           |
 | 舞蹈跟踪 RL（C1）      | **活跃开发中**     | **当前主训练任务**：浮动根、腿部残差控制、倒地终止、课程学习 |
 | 舞蹈跟踪 RL（C2）      | **实验性**       | 全窗口跟踪、更强根位姿奖励                           |
@@ -67,15 +67,15 @@ flowchart LR
   subgraph offline [离线]
     VMD[VMD / VPD] --> vmd2csv[vmd_2_csv.py]
     vmd2csv --> CSV[骨骼 CSV]
-    CSV --> h5[csv_2_hdf5.py]
-    h5 --> H5[动作 H5]
   end
   subgraph runtime [运行时]
-    YAML[dances_config.yaml] --> playback[run_g1_mmd_playback.py]
+    YAML[dances_config.yaml] --> playback[g1_vmd_0_replay.py]
     CSV --> playback
+    playback --> record[Record H5]
+    record --> H5[动作 H5]
     H5 --> playback
     playback --> sim[Isaac Sim 中的 G1]
-    H5 --> train[train_g1_dance_track.py]
+    H5 --> train[g1_vmd_1_train.py]
     train --> policy[RL 策略]
   end
 ```
@@ -123,10 +123,10 @@ pip install -e .
 #    将 VMD/CSV/H5/WAV 放入 robot_mmd/media/（见 media/README.md）
 
 # 3) MMD 交互回放
-./isaac_workspace/IsaacLab/isaaclab.sh -p robot_mmd/train_workflow/run_g1_mmd_playback.py
+./isaac_workspace/IsaacLab/isaaclab.sh -p robot_mmd/train_workflow/g1_vmd_0_replay.py
 
 # 4) 舞蹈跟踪 PPO 训练（示例）
-./isaac_workspace/IsaacLab/isaaclab.sh -p robot_mmd/train_workflow/train_g1_dance_track.py \
+./isaac_workspace/IsaacLab/isaaclab.sh -p robot_mmd/train_workflow/g1_vmd_1_train.py \
   --task Isaac-G1-Dance-Track-C1-v0 --num_envs 2048 --headless \
   --motion_h5 robot_mmd/media/dance/your_motion.h5
 ```

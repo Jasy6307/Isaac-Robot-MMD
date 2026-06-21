@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Callable
 
-from robot_mmd.train_workflow.retarget_unitreeG1 import (
+from robot_mmd.train_workflow.utils.retarget.unitree_g1 import (
     get_leg_tune_axes_deg,
     get_tune_axes_deg as get_sho_tune_axes_deg,
     reset_leg_tune_axes,

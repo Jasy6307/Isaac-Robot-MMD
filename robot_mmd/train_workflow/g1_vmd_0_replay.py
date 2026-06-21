@@ -13,7 +13,7 @@ G1 MMD 动作回放主入口（Isaac Sim）。
 6) 映射 UI ``Z_offset_enable``：勾选时自动播放同目录 ``*_z_editted.*`` sibling（无则回退原版并 WARN）。
 7) 启动时扫描 ``media/dance/*.vmd``，自动生成缺失的 CSV/H5 并登记到 ``dances_config.yaml``（可无快捷键，UI 可选）。
 
-启动：``python robot_mmd/train_workflow/run_g1_mmd_playback.py``
+启动：``python robot_mmd/train_workflow/g1_vmd_0_replay.py``
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ if _WORKSPACE_ROOT not in sys.path:
 
 from isaaclab.app import AppLauncher
 
-from robot_mmd.train_workflow.utils.playback_cli import (
+from robot_mmd.train_workflow.utils.playback.cli import (
     apply_app_window_kit_flags,
     build_arg_parser,
     default_playback_foot_ik_config,
@@ -58,7 +58,7 @@ except Exception as exc:
         f"--mmd_center_to_root_offset_local 需为 x,y,z 三个浮点数（逗号分隔），例如 0,0,0.2: {exc}"
     ) from exc
 
-from robot_mmd.train_workflow.utils.dance_asset_sync import sync_dance_assets_from_vmd
+from robot_mmd.train_workflow.utils.motion.sync import sync_dance_assets_from_vmd
 
 sync_dance_assets_from_vmd(
     dance_dir=DANCE_DIR,
@@ -81,12 +81,12 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab.devices import Se3Keyboard, Se3KeyboardCfg
 from isaaclab_tasks.utils import parse_env_cfg
 
-from robot_mmd.my_task.g1_29dof_o6_cfg import G1_29DOF_O6_CFG
-from robot_mmd.train_workflow.g1_deploy_actuator_cfg import (
+from robot_mmd.my_task.robots.g1_29dof_o6_cfg import G1_29DOF_O6_CFG
+from robot_mmd.my_task.robots.actuator_pd import (
     apply_robot_pd_profile,
     log_pd_profile_summary,
 )
-from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
+from robot_mmd.train_workflow.utils.retarget.joint_axis_map import (
     MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
     MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
 )
@@ -110,8 +110,8 @@ from robot_mmd.train_workflow.ui.mmd_config_ui import (
     set_z_offset_enable_callbacks,
 )
 from robot_mmd.train_workflow.ui.retargeting_tune_ui import create_retarget_tune_ui
-from robot_mmd.train_workflow.utils import audio_util
-from robot_mmd.train_workflow.utils.csv_motion_loader import (
+from robot_mmd.train_workflow.utils.media import audio_util
+from robot_mmd.train_workflow.utils.format.csv_loader import (
     FootIkConfig,
     FootIkState,
     elbow_hinge_mapping_ui_extra,
@@ -119,7 +119,7 @@ from robot_mmd.train_workflow.utils.csv_motion_loader import (
     retarget_leg_debug_ui_extra,
     shoulder_retarget_debug_ui_extra,
 )
-from robot_mmd.train_workflow.utils.motion_loader import (
+from robot_mmd.train_workflow.utils.motion.loader import (
     MotionBundle,
     build_dance_hand_hdf5_motion_by_key,
     build_dance_hand_motion_by_key,
@@ -134,24 +134,23 @@ from robot_mmd.train_workflow.utils.motion_loader import (
     load_pose_motion_dir,
     resolve_playback_motion_entry,
 )
-from robot_mmd.train_workflow.utils.foot_ankle_ground_comp import (
+from robot_mmd.train_workflow.utils.ik.ankle_ground import (
     FootAnkleGroundCompConfig,
     FootAnkleGroundCompState,
     apply_ankle_ground_comp_to_joint_cmd,
 )
-from robot_mmd.train_workflow.utils.mmd_fk import (
+from robot_mmd.train_workflow.utils.ik.mmd_fk import (
     default_foot_ik_viz_config,
     motion_has_embedded_foot_ik,
 )
-from robot_mmd.train_workflow.utils.playback_h5_recorder import PlaybackH5Recorder
-from robot_mmd.train_workflow.utils.playback_keyboard import DanceKeyboardListener
-from robot_mmd.train_workflow.utils.root_z_edit import (
+from robot_mmd.train_workflow.utils.playback.recorder import PlaybackH5Recorder
+from robot_mmd.train_workflow.utils.playback.root_z import (
     RootZEditConfig,
     generate_z_editted_motion,
     read_ankle_roll_link_world_positions,
     resolve_ankle_roll_link_body_indices,
 )
-from robot_mmd.train_workflow.utils.playback_targets import (
+from robot_mmd.train_workflow.utils.playback.targets import (
     MotionRootTrackState,
     PlaybackUiDebugState,
     RootZCompressConfig,
@@ -159,12 +158,12 @@ from robot_mmd.train_workflow.utils.playback_targets import (
     compute_targets_for_hdf5_frame,
     compute_targets_for_motion_frame,
 )
-from robot_mmd.train_workflow.utils.sim_robot import (
+from robot_mmd.train_workflow.utils.playback.sim_robot import (
     apply_joint_state_instant,
     apply_root_pos_instant,
     robot_root_row_clone,
 )
-from robot_mmd.train_workflow.utils.trans_util import (
+from robot_mmd.train_workflow.utils.math.trans_util import (
     dist3,
     quat_angular_error_deg,
     quat_wxyz_to_euler_xyz_deg,
@@ -526,8 +525,6 @@ def main():
         for k, (_name, data) in dance_motion_by_key.items()
         if str(data.get("path", "")).strip()
     }
-    hotkey_dance_keys = {k for k in dance_motion_by_key.keys() if not str(k).startswith("ui:")}
-
     env_cfg = parse_env_cfg(
         TASK_ID,
         device=args_cli.device,
@@ -535,7 +532,7 @@ def main():
         use_fabric=not args_cli.disable_fabric,
     )
 
-    from robot_mmd.my_task.g1_stand_env_cfg import G1_TPOSE_INIT_STATE
+    from robot_mmd.my_task.g1_replay_env_cfg import G1_TPOSE_INIT_STATE
 
     env_cfg.scene.robot.init_state = G1_TPOSE_INIT_STATE
     env_cfg.scene.robot = G1_29DOF_O6_CFG.replace(
@@ -573,9 +570,7 @@ def main():
     env = gym.make(TASK_ID, cfg=env_cfg)
 
     print(f"[INFO] 观测: {env.observation_space}, 动作: {env.action_space}")
-    dance_hint = ", ".join(f"{k}=dance" for k in hotkey_dance_keys) or "无 dance 键"
-    h5_hint = ", ".join(f"Shift+{k}=H5" for k in dance_hdf5_motion_by_key.keys() if not str(k).startswith("ui:")) or "无 H5 快捷键"
-    print(f"[INFO] L=重置, {pose_cycle_key}=按序播放 pose, {dance_hint}, {h5_hint}")
+    print(f"[INFO] L=重置, {pose_cycle_key}=按序播放 pose；选舞请用 Mapping UI 下拉框")
     print(
         "[INFO] PD Drive / Z_offset_enable are controlled by Mapping UI checkboxes (top bar)."
     )
@@ -604,14 +599,6 @@ def main():
         if raw.startswith("ui:"):
             return raw
         return raw.upper()[:1]
-
-    def _request_dance_play(key: str, *, prefer_hdf5: bool = False):
-        nonlocal pending_dance_key, pending_dance_prefer_hdf5, pending_dance_prefer_hand
-        key_raw = str(key)
-        prefer_hand = key_raw.endswith("#HAND")
-        pending_dance_key = _dance_lookup_key(key_raw)
-        pending_dance_prefer_hdf5 = bool(prefer_hdf5)
-        pending_dance_prefer_hand = bool(prefer_hand)
 
     def _dance_combo_label(filename: str, key: str) -> str:
         name = str(filename)
@@ -739,13 +726,6 @@ def main():
 
     keyboard.add_callback("L", _on_reset)
     keyboard.add_callback(pose_cycle_key, _request_cycle_play)
-
-    dance_listener = DanceKeyboardListener(
-        dance_keys=hotkey_dance_keys,
-        pose_cycle_key=pose_cycle_key,
-        on_dance_request=lambda key, prefer_h5: _request_dance_play(key, prefer_hdf5=prefer_h5),
-    )
-    dance_listener.subscribe()
 
     initial_root_snapshot_row: Any = None
     env.reset()
@@ -2023,7 +2003,6 @@ def main():
                     last_playback_target_root_quat,
                 )
 
-    dance_listener.unsubscribe()
     env.close()
 
 

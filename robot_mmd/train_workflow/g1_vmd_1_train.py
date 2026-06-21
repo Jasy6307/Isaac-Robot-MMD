@@ -10,7 +10,7 @@ Example
 -------
 .. code-block:: powershell
 
-    ./isaac_workspace/IsaacLab/isaaclab.bat -p robot_mmd/train_workflow/train_g1_dance_track.py `
+    ./isaac_workspace/IsaacLab/isaaclab.bat -p robot_mmd/train_workflow/g1_vmd_1_train.py `
       --task Isaac-G1-Dance-Track-C1-v0 `
       --num_envs 2048 `
       --dance IRIS_OUT `
@@ -35,9 +35,10 @@ _WORKSPACE_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", ".."))
 if _WORKSPACE_ROOT not in sys.path:
     sys.path.insert(0, _WORKSPACE_ROOT)
 
-from robot_mmd.train_workflow.utils.dance_motion_resolve import (  # noqa: E402
+from robot_mmd.train_workflow.utils.motion.resolve import (  # noqa: E402
     infer_dance_name_from_motion_path,
     resolve_dance_h5_by_name,
+    resolve_training_log_root,
 )
 from isaaclab.app import AppLauncher  # noqa: E402
 
@@ -231,11 +232,11 @@ from isaaclab_tasks.utils import get_checkpoint_path  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry  # noqa: E402
 
 import robot_mmd.my_task  # noqa: F401, E402  -- register Isaac-G1-* tasks
-from robot_mmd.train_workflow.g1_deploy_actuator_cfg import (  # noqa: E402
+from robot_mmd.my_task.robots.actuator_pd import (  # noqa: E402
     apply_pd_profile_to_scene_robot,
     log_pd_profile_summary,
 )
-from robot_mmd.train_workflow.utils.motion_window import (  # noqa: E402
+from robot_mmd.train_workflow.utils.motion.window import (  # noqa: E402
     control_hz_from_env_cfg,
     default_window_seconds_from_env_cfg,
     log_window_frames_override,
@@ -511,9 +512,7 @@ def main() -> None:
     if args_cli.experiment_suffix:
         exp_name = f"{exp_name}_{args_cli.experiment_suffix}"
         agent_cfg.experiment_name = exp_name
-    log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", exp_name))
-    if DANCE_NAME:
-        log_root_path = os.path.join(log_root_path, DANCE_NAME)
+    log_root_path = resolve_training_log_root(exp_name, DANCE_NAME)
     os.makedirs(log_root_path, exist_ok=True)
     run_stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     if agent_cfg.run_name:

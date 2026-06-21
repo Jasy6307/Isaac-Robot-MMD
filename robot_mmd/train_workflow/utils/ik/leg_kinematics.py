@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 
-from robot_mmd.train_workflow.utils.g1_foot_ik_geometry import (
+from robot_mmd.train_workflow.utils.ik.geometry import (
     FOOT_IK_REACH_CLAMP_VIZ_MARGIN_M,
     G1_FOOT_IK_SHIN_LENGTH_M,
     G1_FOOT_IK_THIGH_LENGTH_M,

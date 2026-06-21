@@ -17,8 +17,9 @@
 
 | 路径 | 作用 |
 |------|------|
-| `robot_mmd/my_task/` | Gym 注册、`G1StandEnvCfg` 场景与 MDP、`RSL-RL` 占位配置 |
-| `robot_mmd/train_workflow/` | MMD→仿真流水线脚本与库 |
+| `robot_mmd/my_task/` | Gym 注册、env 配置、MDP、`RSL-RL` 占位配置 |
+| `robot_mmd/my_task/robots/` | G1 机器人配置：O6 USD spawn、执行器 PD |
+| `robot_mmd/train_workflow/` | MMD→仿真流水线：入口 `g1_vmd_*`、`utils/`（含 retarget）、`ui/` |
 | `robot_mmd/media/` | 资源根目录：`dance/`、`pose/` 等；YAML 中路径相对此目录 |
 | `robot_mmd/train_workflow/dances_config.yaml` | 舞蹈登记：按键、CSV、可选音频 |
 
@@ -64,46 +65,51 @@ flowchart LR
 
 - **职责**：读 CSV（欧拉或 **xyzw 四元数** 列）；缺帧插值；`build_joint_positions_from_frame` 将骨骼字典转为 G1 关节向量。
 - **约定**：文件列 `quat_x…w` 为 **xyzw**；内存骨字典用 **`quat_wxyz`**，与 Isaac `root_state` 一致。
-- **映射表**：由 `g1_joint_axis_map_raw.G1_JOINT_AXIS_MAP_RAW` 展开；支持运行时覆盖（供 UI）。
+- **映射表**：由 `utils/retarget/joint_axis_map.G1_JOINT_AXIS_MAP_RAW` 展开；支持运行时覆盖（供 UI）。
 - **膝/肘**：可选将 MMD 非铰链分量吸收到父骨（`--mmd_knee_hinge_projection` / `BooleanOptionalAction`），便于单轴膝关节表现。
 
-### 4.3 `g1_joint_axis_map_raw.py`
+### 4.3 `utils/retarget/`
 
-- **职责**：紧凑表：**G1 关节名 → (MMD 骨骼名或 [肩,腕] 列表, 轴索引 0/1/2, 缩放)**。
-- 肩/腰等链式骨骼在 loader 中组合四元数后再抽轴角。
+- **joint_axis_map**：G1↔MMD 关节映射表。
+- **unitree_g1**：链式骨骼 MMD→G1 反解与 tune。
 
-### 4.4 `trans_util.py`
+### 4.4 `my_task/robots/`
+
+- **g1_29dof_o6_cfg**：O6 手部 USD 的 `ArticulationCfg`（spawn）。
+- **actuator_pd**：执行器 PD profile（`deploy` / `isaaclab`），供 replay、train、eval 及 `g1_train_env_cfg` 选用。
+
+### 4.5 `trans_util.py`
 
 - **职责**：**wxyz** 四元数运算、归一化、乘积；`mmd_root_offset_quat_to_world` 等与根朝向复合相关的工具（与 CSV/仿真根对齐）。
 - **注意**：任何与 `root_state_w` 列 3–6 交互的代码须使用 **wxyz**（见仓库内 skill `isaac-root-state-quaternion-wxyz`）。
 
-### 4.5 `ui_mapping.py` / `ui_retargeting_tune.py`
+### 4.6 `ui_mapping.py` / `ui_retargeting_tune.py`
 
 - **职责**：在 Isaac Sim **Window** 菜单注册 **「G1 Joint Mapping」**（欧拉主轴索引与缩放、播放 scrub、Root R/P/Y）；另注册 **「G1 Retarget Tune」**（肩/腿 basis 的 Rz·Ry·Rx），面板构建见 ``ui_retargeting_tune.py``。
 - 显示当前关节角（度）；膝/肘可显示 hinge 分解附加行。
 - 映射变更通过回调触发主循环在「暂停态」下按最后一帧重算姿态。
 
-### 4.6 `vmd_2_csv.py`
+### 4.7 `vmd_2_csv.py`
 
 - **职责**：解析 VMD 骨骼关键帧、VPD 单帧；导出 `frame,bone,pos_*,quat_*`（**文件内 quat 仍为 xyzw 列名与顺序**）。
 
-### 4.7 `audio_util.py`
+### 4.8 `audio_util.py`
 
 - **职责**：**Windows** 下 `winsound` 异步播放/停止 WAV；非 Windows 为 no-op 并打印警告。
 
-### 4.8 `reduce_wav_gain.py`
+### 4.9 `reduce_wav_gain.py`
 
 - **职责**：16-bit PCM WAV 整体乘增益另存，便于降低伴音响度；默认输入可在脚本内指向 `media/dance/` 下某文件。
 
-### 4.9 `generate_csv_for_joint_map_.py`
+### 4.10 `generate_csv_for_joint_map_.py`
 
 - **职责**：生成按时间块单骨骼 0°→90° 的测试 CSV，用于快速肉眼验证上半身映射。
 
-### 4.10 `my_task/g1_stand_env_cfg.py`
+### 4.11 `my_task/g1_replay_env_cfg.py`
 
 - **职责**：平地、G1（`G1_29DOF_CFG`）、**T-pose 风格初始关节**、最小观测/奖励/终止；`episode_length_s` 设为极大以便长时间演示；`sim.dt` 与 `decimation` 与 Lab 默认管线一致。
 
-### 4.11 `my_task/agents/rsl_rl_ppo_cfg.py`
+### 4.12 `my_task/agents/rsl_rl_ppo_cfg.py`
 
 - **职责**：占位 PPO 配置，满足 `gym.register` 对 `rsl_rl_cfg_entry_point` 的要求；零动作演示不依赖训练。
 

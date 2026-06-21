@@ -12,8 +12,8 @@ from typing import Any
 
 import numpy as np
 
-from robot_mmd.train_workflow.utils.mmd_fk import FootIkVizConfig
-from robot_mmd.train_workflow.utils.csv_motion_loader import (
+from robot_mmd.train_workflow.utils.ik.mmd_fk import FootIkVizConfig
+from robot_mmd.train_workflow.utils.format.csv_loader import (
     FootIkConfig,
     FootIkState,
     build_joint_positions_from_frame,
@@ -25,7 +25,7 @@ from robot_mmd.train_workflow.utils.csv_motion_loader import (
     load_csv_motion,
     update_foot_ik_mmd_viz_world,
 )
-from robot_mmd.train_workflow.utils.trans_util import (
+from robot_mmd.train_workflow.utils.math.trans_util import (
     mmd_root_offset_quat_to_world,
     quat_from_waist_extrinsic_xyz,
     quat_mul,
@@ -33,7 +33,7 @@ from robot_mmd.train_workflow.utils.trans_util import (
     remap_root_csv_euler_xyz,
     rotate_vec_by_quat_wxyz,
 )
-from robot_mmd.train_workflow.retarget_unitreeG1 import euler_xyz_rad_waist_extrinsic
+from robot_mmd.train_workflow.utils.retarget.unitree_g1 import euler_xyz_rad_waist_extrinsic
 
 HDF5_SCHEMA_VERSION = "g1_mmd_motion_v1"
 HDF5_DEFAULT_FPS = 30.0

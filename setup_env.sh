@@ -103,5 +103,5 @@ echo "  ./isaac_workspace/IsaacLab/isaaclab.sh -p ./isaac_workspace/IsaacLab/scr
 echo ""
 echo "运行 robot_mmd 回放:"
 echo "  conda activate ${ENV_NAME}"
-echo "  ./isaac_workspace/IsaacLab/isaaclab.sh -p ${REPO_ROOT}/robot_mmd/train_workflow/run_g1_mmd_playback.py"
+echo "  ./isaac_workspace/IsaacLab/isaaclab.sh -p ${REPO_ROOT}/robot_mmd/train_workflow/g1_vmd_0_replay.py"
 echo ""

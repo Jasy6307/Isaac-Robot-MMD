@@ -6,14 +6,14 @@
 import gymnasium as gym
 
 from . import agents
-from .g1_stand_env_cfg import G1StandEnvCfg
+from .g1_replay_env_cfg import G1StandEnvCfg
 
 gym.register(
     id="Isaac-G1-Stand-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.g1_stand_env_cfg:G1StandEnvCfg",
+        "env_cfg_entry_point": f"{__name__}.g1_replay_env_cfg:G1StandEnvCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1StandPPORunnerCfg",
     },
 )
@@ -23,7 +23,7 @@ gym.register(
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.g1_dance_track_env_cfg:G1DanceTrackC1EnvCfg",
+        "env_cfg_entry_point": f"{__name__}.g1_train_env_cfg:G1DanceTrackC1EnvCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1DanceTrackC1PPORunnerCfg",
     },
 )
@@ -33,7 +33,7 @@ gym.register(
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.g1_dance_track_env_cfg:G1DanceTrackC2EnvCfg",
+        "env_cfg_entry_point": f"{__name__}.g1_train_env_cfg:G1DanceTrackC2EnvCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1DanceTrackC2PPORunnerCfg",
     },
 )

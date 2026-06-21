@@ -8,7 +8,7 @@ import torch
 
 import isaaclab.utils.math as math_utils
 
-from robot_mmd.train_workflow.utils.trans_util import coerce_quat, quat_normalize
+from robot_mmd.train_workflow.utils.math.trans_util import coerce_quat, quat_normalize
 
 if TYPE_CHECKING:
     from isaaclab.assets import Articulation

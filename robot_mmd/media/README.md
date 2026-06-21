@@ -15,9 +15,9 @@ media/
 
 | 文件类型 | 说明 |
 | -------- | ---- |
-| `*.vmd` | MMD 骨骼动作源文件；启动 `run_g1_mmd_playback.py` 时可自动转为 CSV/H5 |
+| `*.vmd` | MMD 骨骼动作源文件；启动 `g1_vmd_0_replay.py` 时可自动转为 CSV/H5 |
 | `*.csv` | 骨骼四元数 CSV（由 `vmd_2_csv.py` 生成或自行准备） |
-| `*.h5` / `*.hdf5` | 编译后的 G1 关节轨迹（由 `csv_2_hdf5.py` 生成，**RL 训练常用**） |
+| `*.h5` / `*.hdf5` | G1 关节轨迹（在 `g1_vmd_0_replay.py` 里 **Record H5** 生成，**RL 训练常用**） |
 | `*.wav` | 可选伴音（Windows 回放；路径在 `dances_config.yaml` 中配置） |
 
 路径均**相对于本目录** `robot_mmd/media/`。  
@@ -43,19 +43,16 @@ media/
 
 `dances_config.yaml` 已被 `.gitignore` 忽略，仅保留在本机。
 
-## 离线准备流程（简要）
+## 准备流程（简要）
 
 ```bash
-# VMD → CSV
+# VMD → CSV（也可在 g1_vmd_0_replay 启动时自动转换）
 python robot_mmd/train_workflow/scripts/vmd_2_csv.py \
   --input robot_mmd/media/dance/your_motion.vmd \
   --output robot_mmd/media/dance/your_motion.csv
-
-# CSV → H5（训练 / 高精度回放）
-python robot_mmd/train_workflow/scripts/csv_2_hdf5.py \
-  robot_mmd/media/dance/your_motion.csv \
-  robot_mmd/media/dance/your_motion.h5
 ```
+
+在 Isaac Sim 中运行 `g1_vmd_0_replay.py`，调好 mapping / IK 后，在 Mapping UI 点击 **Record H5**，会在 CSV 同目录生成 `your_motion.h5`（供 `g1_vmd_1_train.py --dance your_motion` 使用）。
 
 ## 版权提示
 

@@ -6,18 +6,18 @@ import os
 import re
 from typing import Any
 
-from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
+from robot_mmd.train_workflow.utils.retarget.joint_axis_map import (
     MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
     MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
 )
 from robot_mmd.train_workflow.scripts.vmd_2_csv import read_motion_and_export
-from robot_mmd.train_workflow.utils.csv_motion_loader import FootIkConfig
-from robot_mmd.train_workflow.utils.hdf5_motion import (
+from robot_mmd.train_workflow.utils.format.csv_loader import FootIkConfig
+from robot_mmd.train_workflow.utils.format.hdf5 import (
     compile_csv_motion_to_hdf5_motion,
     write_hdf5_motion,
 )
 
-# Same default joint order as csv_2_hdf5.py (G1 29DoF + O6 hands).
+# Default compile joint order (G1 29DoF + O6 hands).
 _DEFAULT_COMPILE_JOINT_NAMES: list[str] = [
     "left_shoulder_pitch_joint",
     "left_shoulder_roll_joint",

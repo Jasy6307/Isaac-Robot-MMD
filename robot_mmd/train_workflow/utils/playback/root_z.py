@@ -11,18 +11,18 @@ from typing import Any
 import numpy as np
 import torch
 
-from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
+from robot_mmd.train_workflow.utils.retarget.joint_axis_map import (
     MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
     MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
 )
-from robot_mmd.train_workflow.utils.csv_motion_loader import FootIkConfig, FootIkState
-from robot_mmd.train_workflow.utils.g1_foot_ik_geometry import (
+from robot_mmd.train_workflow.utils.format.csv_loader import FootIkConfig, FootIkState
+from robot_mmd.train_workflow.utils.ik.geometry import (
     G1_FOOT_IK_HIP_OFFSET_Y_M,
     G1_FOOT_IK_HIP_OFFSET_Z_M,
     G1_FOOT_IK_SHIN_LENGTH_M,
     G1_FOOT_IK_THIGH_LENGTH_M,
 )
-from robot_mmd.train_workflow.utils.mmd_fk import (
+from robot_mmd.train_workflow.utils.ik.mmd_fk import (
     FOOT_IK_VIZ_AXIS_IDX,
     FOOT_IK_VIZ_AXIS_SIGN,
     FOOT_IK_VIZ_AXIS_SIGN_POSE,
@@ -31,21 +31,21 @@ from robot_mmd.train_workflow.utils.mmd_fk import (
     FOOT_IK_VIZ_RIGHT_REF_ORIGIN_M,
     FootIkVizConfig,
 )
-from robot_mmd.train_workflow.utils.hdf5_motion import Hdf5Motion, write_hdf5_motion
-from robot_mmd.train_workflow.utils.motion_loader import load_motion, z_editted_sibling_path
-from robot_mmd.train_workflow.utils.playback_targets import (
+from robot_mmd.train_workflow.utils.format.hdf5 import Hdf5Motion, write_hdf5_motion
+from robot_mmd.train_workflow.utils.motion.loader import load_motion, z_editted_sibling_path
+from robot_mmd.train_workflow.utils.playback.targets import (
     MotionRootTrackState,
     PlaybackUiDebugState,
     compute_targets_for_hdf5_frame,
     compute_targets_for_motion_frame,
     motion_is_static_pose,
 )
-from robot_mmd.train_workflow.utils.sim_robot import (
+from robot_mmd.train_workflow.utils.playback.sim_robot import (
     apply_joint_state_instant,
     apply_root_pos_instant,
     robot_root_row_clone,
 )
-from robot_mmd.train_workflow.utils.trans_util import rotate_vec_by_quat_wxyz
+from robot_mmd.train_workflow.utils.math.trans_util import rotate_vec_by_quat_wxyz
 
 VMD_FPS = 30
 LEFT_FOOT_LINK = "left_ankle_roll_link"

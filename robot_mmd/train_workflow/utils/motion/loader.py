@@ -7,13 +7,13 @@ import re
 from dataclasses import replace
 from typing import Any
 
-from robot_mmd.train_workflow.utils.csv_motion_loader import (
+from robot_mmd.train_workflow.utils.format.csv_loader import (
     frames_have_hand_data,
     get_bone_frame_lists,
     get_frame_indices,
     load_csv_motion,
 )
-from robot_mmd.train_workflow.utils.hdf5_motion import infer_hdf5_has_hand_data, load_hdf5_motion
+from robot_mmd.train_workflow.utils.format.hdf5 import infer_hdf5_has_hand_data, load_hdf5_motion
 
 MotionBundle = dict[str, Any]
 MOTION_EXTENSIONS = (".csv", ".h5", ".hdf5")
@@ -168,7 +168,7 @@ def load_dances_from_yaml(
             continue
 
         if raw_key is None or str(raw_key).strip() == "":
-            from robot_mmd.train_workflow.utils.dance_asset_sync import ui_only_dance_key
+            from robot_mmd.train_workflow.utils.motion.sync import ui_only_dance_key
 
             label = ent.get("id") or ent.get("label")
             key = ui_only_dance_key(str(label or ""), str(motion_rel).strip())

@@ -2,7 +2,7 @@
 #
 #   cp dances_config.example.yaml dances_config.yaml
 #
-# 由 run_g1_mmd_playback.py 读取（默认路径：同目录 dances_config.yaml）。
+# 由 g1_vmd_0_replay.py 读取（默认路径：同目录 dances_config.yaml）。
 # motion / audio 路径均相对于 robot_mmd/media/。
 # motion 支持 .csv / .h5 / .hdf5
 #

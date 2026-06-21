@@ -9,12 +9,12 @@ from typing import Any
 import numpy as np
 import torch
 
-from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
+from robot_mmd.train_workflow.utils.retarget.joint_axis_map import (
     MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
     MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
 )
-from robot_mmd.train_workflow.retarget_unitreeG1 import euler_xyz_rad_waist_extrinsic
-from robot_mmd.train_workflow.utils.csv_motion_loader import (
+from robot_mmd.train_workflow.utils.retarget.unitree_g1 import euler_xyz_rad_waist_extrinsic
+from robot_mmd.train_workflow.utils.format.csv_loader import (
     FootIkConfig,
     FootIkState,
     build_joint_positions_from_frame,
@@ -23,9 +23,9 @@ from robot_mmd.train_workflow.utils.csv_motion_loader import (
     update_foot_ik_mmd_viz_world,
     update_foot_ik_reach_clamp_flags,
 )
-from robot_mmd.train_workflow.utils.hdf5_motion import Hdf5Motion, sample_hdf5_frame
-from robot_mmd.train_workflow.utils.mmd_fk import FootIkVizConfig
-from robot_mmd.train_workflow.utils.trans_util import (
+from robot_mmd.train_workflow.utils.format.hdf5 import Hdf5Motion, sample_hdf5_frame
+from robot_mmd.train_workflow.utils.ik.mmd_fk import FootIkVizConfig
+from robot_mmd.train_workflow.utils.math.trans_util import (
     mmd_root_offset_quat_to_world,
     quat_from_waist_extrinsic_xyz,
     quat_mul,

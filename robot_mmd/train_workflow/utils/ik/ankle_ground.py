@@ -8,16 +8,16 @@ from typing import Any
 
 import numpy as np
 
-from robot_mmd.train_workflow.utils.g1_leg_kinematics import (
+from robot_mmd.train_workflow.utils.ik.leg_kinematics import (
     g1_leg_fk_compose_ankle_from_knee,
     g1_leg_fk_transform_upto_joint,
     g1_leg_joint_limits,
 )
-from robot_mmd.train_workflow.utils.root_z_edit import (
+from robot_mmd.train_workflow.utils.playback.root_z import (
     FOOT_COLLISION_SPHERE_RADIUS,
     FOOT_COLLISION_SPHERES_LOCAL,
 )
-from robot_mmd.train_workflow.utils.trans_util import quat_to_rotmat
+from robot_mmd.train_workflow.utils.math.trans_util import quat_to_rotmat
 
 _LEG_JOINTS = ("hip_pitch", "hip_roll", "hip_yaw", "knee", "ankle_pitch", "ankle_roll")
 _SPHERES_LOCAL_NP = np.asarray(FOOT_COLLISION_SPHERES_LOCAL, dtype=np.float64)

@@ -252,6 +252,6 @@ echo   %WORKSPACE%\IsaacLab\isaaclab.bat -p %WORKSPACE%\IsaacLab\scripts\tutoria
 echo.
 echo 运行 robot_mmd 回放:
 echo   conda activate %ENV_NAME%
-echo   %WORKSPACE%\IsaacLab\isaaclab.bat -p %REPO_ROOT%\robot_mmd\train_workflow\run_g1_mmd_playback.py
+echo   %WORKSPACE%\IsaacLab\isaaclab.bat -p %REPO_ROOT%\robot_mmd\train_workflow\g1_vmd_0_replay.py
 echo.
 pause

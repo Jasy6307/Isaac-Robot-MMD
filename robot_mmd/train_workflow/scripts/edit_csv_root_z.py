@@ -15,12 +15,12 @@ if _WORKSPACE_ROOT not in sys.path:
 
 from isaaclab.app import AppLauncher
 
-from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
+from robot_mmd.train_workflow.utils.retarget.joint_axis_map import (
     MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
     MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
 )
-from robot_mmd.train_workflow.utils.playback_cli import parse_center_to_root_offset
-from robot_mmd.train_workflow.utils.root_z_edit import RootZEditConfig, generate_z_editted_motion
+from robot_mmd.train_workflow.utils.playback.cli import parse_center_to_root_offset
+from robot_mmd.train_workflow.utils.playback.root_z import RootZEditConfig, generate_z_editted_motion
 
 
 def _parse_triplet_float(text: str, name: str) -> tuple[float, float, float]:
@@ -98,7 +98,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=True,
         help="关节重定向时是否启用膝铰链投影（默认开启）",
     )
-    from robot_mmd.train_workflow.utils.playback_cli import (
+    from robot_mmd.train_workflow.utils.playback.cli import (
         add_mmd_foot_ik_solver_cli_args,
         add_mmd_sphere_map_cli_args,
     )
@@ -133,7 +133,7 @@ def main() -> None:
     if not os.path.isfile(input_motion_path):
         raise SystemExit(f"输入 motion 不存在: {input_motion_path}")
 
-    from robot_mmd.train_workflow.utils.playback_cli import foot_ik_viz_config_from_namespace
+    from robot_mmd.train_workflow.utils.playback.cli import foot_ik_viz_config_from_namespace
 
     center_off = parse_center_to_root_offset(args.mmd_center_to_root_offset_local)
     root_rpy_scale = _parse_triplet_float(args.root_rpy_scale, "--root-rpy-scale")
@@ -181,7 +181,7 @@ def main() -> None:
         num_envs=args.num_envs,
         use_fabric=not args.disable_fabric,
     )
-    from robot_mmd.my_task.g1_stand_env_cfg import G1_TPOSE_INIT_STATE
+    from robot_mmd.my_task.g1_replay_env_cfg import G1_TPOSE_INIT_STATE
 
     env_cfg.scene.robot.init_state = G1_TPOSE_INIT_STATE
     env_cfg.scene.robot.spawn.articulation_props.fix_root_link = False

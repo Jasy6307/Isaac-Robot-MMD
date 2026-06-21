@@ -19,7 +19,7 @@ from robot_mmd.train_workflow.ui.jointRPY_maping_ui import (
     mmd_bone_to_romaji,
     wrap_long_hinge_text,
 )
-from robot_mmd.train_workflow.utils.audio_util import DEFAULT_VOLUME
+from robot_mmd.train_workflow.utils.media.audio_util import DEFAULT_VOLUME
 
 WINDOW_TITLE = "G1 MMD config"
 _AUTO_OPEN = True
@@ -34,7 +34,7 @@ _joint_value_provider: Callable[[], dict[str, Any]] | None = None
 #   ``frame`` (int|None) / ``max_frame`` (int|None) —— 仅在 dance 时使用帧数
 _playback_status_provider: Callable[[], dict[str, Any]] | None = None
 
-# Transport: pause/resume/stop, seek to frame index (only while clip loaded in g1_mmd_playback)
+# Transport: pause/resume/stop, seek to frame index (only while clip loaded in g1_vmd_0_replay)
 _playback_toggle_cb: Callable[[], None] | None = None
 _playback_seek_cb: Callable[[int], None] | None = None
 _playback_stop_cb: Callable[[], None] | None = None

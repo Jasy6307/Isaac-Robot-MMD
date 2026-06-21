@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 
-from robot_mmd.train_workflow.utils.hdf5_motion import Hdf5Motion, load_hdf5_motion
+from robot_mmd.train_workflow.utils.format.hdf5 import Hdf5Motion, load_hdf5_motion
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv

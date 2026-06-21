@@ -12,7 +12,7 @@ CSV 动作加载与 G1 关节重定向核心模块。
 2) 四元数 CSV: frame,bone,pos_x,pos_y,pos_z,quat_x,quat_y,quat_z,quat_w
 
 内部统一保存为弧度欧拉角 + 归一化四元数（bone dict 仅保留 `quat_wxyz`）。
-- 肩/腿/腰链走 ``retarget_unitreeG1`` 专用反解；腰可选在合成前对上半身/上半身2各自取四元数共轭（见 ``get_waist_upper_pair_quat_conjugate``）。
+- 肩/腿/腰链走 ``retarget.unitree_g1`` 专用反解；腰可选在合成前对上半身/上半身2各自取四元数共轭（见 ``get_waist_upper_pair_quat_conjugate``）。
 - 其它单骨骼关节走 Swing-Twist 单轴提取。
 
 注意：CSV 列 `quat_x/quat_y/quat_z/quat_w` 仍表示 x,y,z,w；仅在读入内存后转换为
@@ -26,19 +26,19 @@ from typing import Iterator
 
 import numpy as np
 
-from robot_mmd.train_workflow.g1_joint_axis_map_raw import (
+from robot_mmd.train_workflow.utils.retarget.joint_axis_map import (
     AxisMapRawEntry,
     G1_JOINT_AXIS_MAP_RAW,
     MMD_WAIST_UPPER_PAIR_QUAT_CONJUGATE,
 )
-from robot_mmd.train_workflow.utils.g1_foot_ik_geometry import (
+from robot_mmd.train_workflow.utils.ik.geometry import (
     FOOT_IK_REACH_CLAMP_VIZ_MARGIN_M,
     G1_FOOT_IK_HIP_OFFSET_Y_M,
     G1_FOOT_IK_HIP_OFFSET_Z_M,
     G1_FOOT_IK_SHIN_LENGTH_M,
     G1_FOOT_IK_THIGH_LENGTH_M,
 )
-from robot_mmd.train_workflow.utils.g1_leg_kinematics import (
+from robot_mmd.train_workflow.utils.ik.leg_kinematics import (
     LegIkResult,
     g1_leg_clamp_target_to_reach,
     g1_leg_fk_pos,
@@ -46,18 +46,18 @@ from robot_mmd.train_workflow.utils.g1_leg_kinematics import (
     g1_leg_remap_foot_ik_target,
     solve_g1_leg_ik_dls,
 )
-from robot_mmd.train_workflow.utils.mmd_fk import (
+from robot_mmd.train_workflow.utils.ik.mmd_fk import (
     FootIkVizConfig,
     compute_mmd_foot_ik_viz_bundle,
     foot_ik_panel_to_isaac_world,
     motion_side_has_valid_toe_ik_keyframes,
     resolve_mmd_root_translation_pos,
 )
-from robot_mmd.train_workflow.utils.trans_util import (
+from robot_mmd.train_workflow.utils.math.trans_util import (
     isaac_world_to_root_local,
     root_local_to_isaac_world,
 )
-from robot_mmd.train_workflow.retarget_unitreeG1 import (
+from robot_mmd.train_workflow.utils.retarget.unitree_g1 import (
     ANKLE_JOINT_TO_AXIS_INDEX,
     ANKLE_JOINT_TO_SIDE_BONE,
     HIP_JOINT_TO_AXIS_INDEX,
@@ -1481,12 +1481,12 @@ def get_g1_angle_from_frame(joint_name: str, frame_data: dict[str, dict]) -> flo
     从帧数据中获取指定 G1 关节的目标角度偏移（弧度）。
     - 单骨骼（1 DOF：肘/腕/腿等）：对骨骼四元数做 Swing-Twist 单轴提取
     - 多骨骼组合（肩 = [肩, 腕]，腰 = [上半身, 上半身2]）：
-        肩：专用链式反解；腰：``retarget_unitreeG1.compute_waist_angles`` 得 (pitch, roll, yaw)，
+        肩：专用链式反解；腰：``unitree_g1.compute_waist_angles`` 得 (pitch, roll, yaw)，
         再按映射里 axis_idx 的 0/1/2 取分量；scale 仅作符号或小幅增益。
     - 使用 get_mapping()，支持 UI 编辑后的映射
 
     肩链与 G1 URDF 一致：pitch(Y) → roll(X) → yaw(Z)，对应 R≈Rz·Rx·Ry，用 ``syxz``。
-    腰链：yaw(Z) → roll(X) → pitch(Y)，对应 R≈Ry·Rx·Rz，用 ``szxy``（语义重排见 ``retarget_unitreeG1``）。
+    腰链：yaw(Z) → roll(X) → pitch(Y)，对应 R≈Ry·Rx·Rz，用 ``szxy``（语义重排见 ``unitree_g1``）。
     """
     mapping = get_mapping()
     if joint_name not in mapping:

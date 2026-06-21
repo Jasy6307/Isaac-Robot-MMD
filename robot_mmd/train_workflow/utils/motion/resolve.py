@@ -9,7 +9,7 @@ _Z_EDITTED_SUFFIX = "_z_editted"
 
 def _repo_root() -> str:
     here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.abspath(os.path.join(here, "..", "..", ".."))
+    return os.path.abspath(os.path.join(here, "..", "..", "..", ".."))
 
 
 def default_dance_dir() -> str:
@@ -76,3 +76,13 @@ def resolve_dance_h5_by_name(
     raise FileNotFoundError(
         f"No HDF5 found for dance '{canonical}' under {root}. Tried: {tried}"
     )
+
+
+def resolve_training_log_root(experiment_name: str, dance_name: str | None = None) -> str:
+    """Checkpoint search root: ``logs/rsl_rl/<experiment>[/<dance>]``."""
+    root = os.path.abspath(os.path.join(_repo_root(), "logs", "rsl_rl", str(experiment_name)))
+    if dance_name:
+        canonical = normalize_dance_stem(dance_name)
+        if canonical:
+            return os.path.join(root, canonical)
+    return root
