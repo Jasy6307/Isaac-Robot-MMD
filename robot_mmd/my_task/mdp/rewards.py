@@ -10,6 +10,7 @@ from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
 import isaaclab.utils.math as math_utils
 
+from robot_mmd.my_task.mdp.root_reference import root_yaw_error_rad
 from robot_mmd.my_task.motion_reference import get_or_create_motion_buffer, motion_steps
 
 if TYPE_CHECKING:
@@ -117,17 +118,14 @@ def root_yaw_tracking_exp(
     if sigma <= 0.0:
         raise ValueError(f"sigma must be > 0, got {sigma}")
 
-    buf = get_or_create_motion_buffer(env, h5_path, window_seconds, asset_name=asset_cfg.name)
     asset: Articulation = env.scene[asset_cfg.name]
-
-    q_cur_wxyz = math_utils.quat_unique(asset.data.root_quat_w)
-    q_anchor_wxyz = math_utils.quat_unique(asset.data.default_root_state[:, 3:7])
-    q_delta_wxyz = math_utils.quat_unique(buf.root_quat_wxyz(motion_steps(env)))
-    q_ref_wxyz = math_utils.quat_unique(math_utils.quat_mul(q_delta_wxyz, q_anchor_wxyz))
-
-    _, _, yaw_cur = math_utils.euler_xyz_from_quat(q_cur_wxyz)
-    _, _, yaw_ref = math_utils.euler_xyz_from_quat(q_ref_wxyz)
-    yaw_err = torch.atan2(torch.sin(yaw_cur - yaw_ref), torch.cos(yaw_cur - yaw_ref))
+    yaw_err = root_yaw_error_rad(
+        env,
+        asset,
+        h5_path=h5_path,
+        window_seconds=window_seconds,
+        asset_name=asset_cfg.name,
+    )
     return torch.exp(-torch.square(yaw_err) / (float(sigma) ** 2))
 
 

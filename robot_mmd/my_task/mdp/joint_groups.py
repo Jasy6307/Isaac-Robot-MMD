@@ -43,7 +43,7 @@ G1_POLICY_BODY_JOINT_EXPR: list[str] = (
     G1_LEG_JOINT_EXPR + G1_WAIST_JOINT_EXPR + G1_ARM_ONLY_JOINT_EXPR
 )
 
-# Multiplier on C0 base reset noise (0.05 rad) and obs noise in C1.
+# Multiplier on base reset noise (0.05 rad) and obs noise in C1.
 C1_RESET_NOISE_SCALE_BY_EXPR: dict[str, float] = {
     **{expr: 0.0 for expr in G1_ARM_JOINT_EXPR},
     **{expr: 0.0 for expr in G1_WAIST_JOINT_EXPR},

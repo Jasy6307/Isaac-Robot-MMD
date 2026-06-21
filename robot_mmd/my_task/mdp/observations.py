@@ -11,6 +11,7 @@ from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
 
 from robot_mmd.my_task.mdp.joint_groups import get_cached_joint_scales
+from robot_mmd.my_task.mdp.root_reference import root_yaw_error_rad
 from robot_mmd.my_task.motion_reference import get_or_create_motion_buffer, motion_steps
 
 if TYPE_CHECKING:
@@ -112,6 +113,24 @@ def motion_phase(
     """Normalized motion phase in [0, 1], shape ``[num_envs, 1]``."""
     buf = get_or_create_motion_buffer(env, h5_path, window_seconds, asset_name=asset_cfg.name)
     return buf.motion_phase(motion_steps(env))
+
+
+def root_yaw_error_sin_cos(
+    env: "ManagerBasedRLEnv",
+    h5_path: str,
+    window_seconds: float = 10.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Root yaw tracking error as ``[sin(err), cos(err)]``, shape ``[num_envs, 2]``."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    yaw_err = root_yaw_error_rad(
+        env,
+        asset,
+        h5_path=h5_path,
+        window_seconds=window_seconds,
+        asset_name=asset_cfg.name,
+    )
+    return torch.stack((torch.sin(yaw_err), torch.cos(yaw_err)), dim=-1)
 
 
 def joint_pos_tracking_error(

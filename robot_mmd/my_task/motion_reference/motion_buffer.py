@@ -160,7 +160,7 @@ class DanceMotionReferenceBuffer:
         # q_ref_rel[t, j] = delta[t, j]
         q_ref_rel_np = delta
 
-        # Root-pose reference (kept for C1/future use, not used by C0 rewards).
+        # Root-pose reference (used by C1/C2 root tracking rewards).
         # Apply the same temporal interpolation.
         root_pos_delta_np = (
             motion.root_pos_delta[f0]

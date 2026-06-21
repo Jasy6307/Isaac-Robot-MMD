@@ -149,7 +149,7 @@ python robot_mmd/train_workflow/run_stand.py
 
 ## 8. 相关根目录文件
 
-- 仓库根 `README.md` 当前仅为短标题；详细 workflow 以本文与各模块文件头 docstring 为准。
+- 仓库根 [README.md](../README.md) 提供项目介绍、快速开始、许可证与免责声明；本文档侧重模块级细节。
 
 ---
 

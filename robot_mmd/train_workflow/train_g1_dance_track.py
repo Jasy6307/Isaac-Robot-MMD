@@ -3,7 +3,7 @@
 
 """G1 dance tracking PPO trainer (Isaac Lab + RSL-RL).
 
-Defaults to the C0 fixed-root smoke task, training on the first 10 seconds of
+Defaults to the C1 floating-root residual task on
 ``robot_mmd/media/dance/you_are_important.h5``.
 
 Example
@@ -11,7 +11,16 @@ Example
 .. code-block:: powershell
 
     ./isaac_workspace/IsaacLab/isaaclab.bat -p robot_mmd/train_workflow/train_g1_dance_track.py `
-      --task Isaac-G1-Dance-Track-C0-v0 --num_envs 512 --headless
+      --task Isaac-G1-Dance-Track-C1-v0 `
+      --num_envs 2048 `
+      --dance IRIS_OUT `
+      --window_frames 460 `
+      --max_iterations 15000 `
+      --random_motion_start `
+      --random_episode_length `
+      --episode_length_curriculum `
+      --episode_length_curriculum_spec "0:3,10000:6" `
+      --headless
 """
 
 from __future__ import annotations
@@ -26,13 +35,17 @@ _WORKSPACE_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", ".."))
 if _WORKSPACE_ROOT not in sys.path:
     sys.path.insert(0, _WORKSPACE_ROOT)
 
+from robot_mmd.train_workflow.utils.dance_motion_resolve import (  # noqa: E402
+    infer_dance_name_from_motion_path,
+    resolve_dance_h5_by_name,
+)
 from isaaclab.app import AppLauncher  # noqa: E402
 
 parser = argparse.ArgumentParser(description="Train G1 dance tracking PPO with RSL-RL.")
 parser.add_argument(
     "--task",
     type=str,
-    default="Isaac-G1-Dance-Track-C0-v0",
+    default="Isaac-G1-Dance-Track-C1-v0",
     help="Registered Isaac Lab task ID.",
 )
 parser.add_argument("--num_envs", type=int, default=512, help="Number of parallel envs.")
@@ -41,10 +54,19 @@ parser.add_argument(
 )
 parser.add_argument("--seed", type=int, default=42, help="RNG seed.")
 parser.add_argument(
+    "--dance",
+    type=str,
+    default=None,
+    help=(
+        "Dance name under robot_mmd/media/dance/ (e.g. IRIS_OUT). "
+        "Auto-resolves HDF5; prefers *_z_editted.h5 when present."
+    ),
+)
+parser.add_argument(
     "--motion_h5",
     type=str,
     default=None,
-    help="Override the dance HDF5 path. Defaults to env cfg's value.",
+    help="Legacy: explicit HDF5 path. Prefer --dance instead.",
 )
 parser.add_argument(
     "--window_frames",
@@ -178,6 +200,15 @@ parser.add_argument(
 )
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+
+DANCE_NAME: str | None = None
+if args_cli.dance and args_cli.motion_h5:
+    parser.error("Specify either --dance or --motion_h5, not both.")
+if args_cli.dance:
+    args_cli.motion_h5, DANCE_NAME = resolve_dance_h5_by_name(args_cli.dance)
+elif args_cli.motion_h5:
+    args_cli.motion_h5 = os.path.abspath(args_cli.motion_h5)
+    DANCE_NAME = infer_dance_name_from_motion_path(args_cli.motion_h5)
 
 if args_cli.video:
     args_cli.enable_cameras = True
@@ -337,7 +368,7 @@ def _resolve_motion_h5_path(env_cfg: ManagerBasedRLEnvCfg) -> str:
         hp = reset_evt.params.get("h5_path")
         if hp is not None:
             return str(hp)
-    raise ValueError("无法解析 motion_h5，请显式传入 --motion_h5")
+    raise ValueError("无法解析 motion_h5，请传入 --dance 或 --motion_h5")
 
 
 def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
@@ -481,12 +512,16 @@ def main() -> None:
         exp_name = f"{exp_name}_{args_cli.experiment_suffix}"
         agent_cfg.experiment_name = exp_name
     log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", exp_name))
+    if DANCE_NAME:
+        log_root_path = os.path.join(log_root_path, DANCE_NAME)
     os.makedirs(log_root_path, exist_ok=True)
-    log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     if agent_cfg.run_name:
-        log_dir += f"_{agent_cfg.run_name}"
-    log_dir = os.path.join(log_root_path, log_dir)
+        run_stamp += f"_{agent_cfg.run_name}"
+    log_dir = os.path.join(log_root_path, run_stamp)
     print(f"[INFO] Logging experiment in directory: {log_root_path}")
+    if DANCE_NAME:
+        print(f"[INFO] Dance: {DANCE_NAME}")
     print(f"[INFO] Run directory: {log_dir}")
 
     env_cfg.log_dir = log_dir

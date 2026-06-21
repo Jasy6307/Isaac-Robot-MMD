@@ -27,13 +27,13 @@ class G1StandPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 
 @configclass
-class G1DanceTrackC0PPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    """PPO config for the C0 (fixed-root) dance tracking smoke env."""
+class G1DanceTrackPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+    """Shared PPO config for G1 dance tracking (C1/C2)."""
 
     num_steps_per_env = 80
     max_iterations = 3000
     save_interval = 200
-    experiment_name = "g1_dance_track_c0"
+    experiment_name = "g1_dance_track"
     empirical_normalization = False
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
@@ -60,7 +60,7 @@ class G1DanceTrackC0PPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 
 @configclass
-class G1DanceTrackC1PPORunnerCfg(G1DanceTrackC0PPORunnerCfg):
+class G1DanceTrackC1PPORunnerCfg(G1DanceTrackPPORunnerCfg):
     """PPO config for the C1 (floating-root residual) dance tracking env."""
 
     def __post_init__(self) -> None:

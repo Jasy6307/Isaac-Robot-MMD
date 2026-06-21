@@ -133,8 +133,7 @@ def apply_pd_profile_to_scene_robot(
 ) -> ArticulationCfg:
     """Apply PD profile while preserving scene-specific robot settings."""
     # Important: do not rebuild from G1_29DOF_CFG here.
-    # C0/C1 env configs may already customize spawn.articulation_props
-    # (e.g. C0 fix_root_link=True). We only want to swap actuator gains.
+    # Dance-track env configs may already customize spawn.articulation_props.
     return apply_robot_pd_profile(robot_cfg, profile, o6_hands=o6_hands)
 
 

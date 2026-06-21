@@ -5,7 +5,7 @@
 G1 MMD 动作回放主入口（Isaac Sim）。
 
 功能概览：
-1) 舞蹈由 dances_config.yaml 登记：键、motion(.csv/.h5/.hdf5)、可选音频；pose 目录 P 键循环；
+1) 舞蹈由 dances_config.yaml 登记（请从 dances_config.example.yaml 复制）；键、motion(.csv/.h5/.hdf5)、可选音频；pose 目录 P 键循环；
 2) 支持关节映射 UI，实时显示当前关节角度；
 3) 有 audio 的 dance 播 WAV，与动作同一「逻辑帧时间轴」；
 4) 在重置和切换动作时维护控制参考姿态，避免姿态回弹。

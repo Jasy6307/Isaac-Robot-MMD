@@ -1,0 +1,78 @@
+"""Resolve dance names / motion paths under ``robot_mmd/media/dance/``."""
+
+from __future__ import annotations
+
+import os
+
+_Z_EDITTED_SUFFIX = "_z_editted"
+
+
+def _repo_root() -> str:
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.abspath(os.path.join(here, "..", "..", ".."))
+
+
+def default_dance_dir() -> str:
+    """Absolute path to ``robot_mmd/media/dance``."""
+    return os.path.join(_repo_root(), "robot_mmd", "media", "dance")
+
+
+def normalize_dance_stem(name: str) -> str:
+    """Normalize a dance id / filename stem (strip ext and ``*_z_editted``)."""
+    stem = os.path.splitext(str(name or "").strip().replace("\\", "/"))[0]
+    base = os.path.basename(stem)
+    if base.casefold().endswith(_Z_EDITTED_SUFFIX):
+        base = base[: -len(_Z_EDITTED_SUFFIX)]
+    return base.strip() or base
+
+
+def infer_dance_name_from_motion_path(motion_path: str) -> str:
+    """Infer canonical dance folder name from an H5/CSV motion path."""
+    return normalize_dance_stem(os.path.basename(str(motion_path)))
+
+
+def resolve_dance_h5_by_name(
+    dance_name: str,
+    *,
+    dance_dir: str | None = None,
+) -> tuple[str, str]:
+    """Resolve ``dance_name`` to an absolute HDF5 path and canonical dance id.
+
+    Search order under ``media/dance/`` (first existing file wins):
+
+    1. ``{name}_z_editted.h5``
+    2. ``{name}_z_editted.hdf5``
+    3. ``{name}.h5``
+    4. ``{name}.hdf5``
+
+    Returns ``(abs_h5_path, canonical_dance_name)`` where ``canonical_dance_name``
+    never includes the ``_z_editted`` suffix (e.g. ``IRIS_OUT``).
+    """
+    canonical = normalize_dance_stem(dance_name)
+    if not canonical:
+        raise ValueError("dance name must be non-empty")
+
+    root = os.path.abspath(dance_dir or default_dance_dir())
+    if not os.path.isdir(root):
+        raise FileNotFoundError(f"Dance media directory not found: {root}")
+
+    candidates = [
+        f"{canonical}{_Z_EDITTED_SUFFIX}.h5",
+        f"{canonical}{_Z_EDITTED_SUFFIX}.hdf5",
+        f"{canonical}.h5",
+        f"{canonical}.hdf5",
+    ]
+    for fname in candidates:
+        path = os.path.join(root, fname)
+        if os.path.isfile(path):
+            abs_path = os.path.abspath(path)
+            variant = "z_editted" if _Z_EDITTED_SUFFIX in fname else "base"
+            print(
+                f"[INFO] Resolved dance '{canonical}' -> {abs_path} ({variant})"
+            )
+            return abs_path, canonical
+
+    tried = ", ".join(candidates)
+    raise FileNotFoundError(
+        f"No HDF5 found for dance '{canonical}' under {root}. Tried: {tried}"
+    )

@@ -171,7 +171,7 @@ class G1StandEnvCfg(ManagerBasedRLEnvCfg):
         super().__post_init__()
         # 单环境，位于原点
         self.scene.num_envs = 1
-        # Align with G1DanceTrackC0EnvCfg: physics 60 Hz, control 30 Hz (decimation=2).
+        # Align with G1DanceTrackBaseEnvCfg: physics 60 Hz, control 30 Hz (decimation=2).
         self.sim.dt = 1.0 / 60.0
         self.decimation = 1
         self.sim.render_interval = 1

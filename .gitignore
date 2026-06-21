@@ -3,9 +3,19 @@ isaac_workspace/
 isaac_workspace/isaacLab
 isaac_workspace/IsaacSim
 
-# ============ MMD 媒体文件 ============
-robot_mmd/media/
+# ============ MMD 媒体文件（本地数据，不上传） ============
+robot_mmd/media/*
+!robot_mmd/media/README.md
+!robot_mmd/media/dance/
+!robot_mmd/media/pose/
+robot_mmd/media/dance/*
+!robot_mmd/media/dance/.gitkeep
+robot_mmd/media/pose/*
+!robot_mmd/media/pose/.gitkeep
 robot_mmd/docs/
+
+# 本地舞蹈登记（从 dances_config.example.yaml 复制后自行编辑）
+robot_mmd/train_workflow/dances_config.yaml
 
 # ============ cursor 相关 ============
 .cursor/

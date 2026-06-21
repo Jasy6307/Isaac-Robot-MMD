@@ -3,9 +3,7 @@
 
 """G1 dance tracking environment configs.
 
-* ``G1DanceTrackC0EnvCfg`` - C0 fixed-root smoke env to validate the H5
-  reference + observation + reward + PPO pipeline on the first 10 seconds of
-  ``you_are_important.h5``.
+* ``G1DanceTrackBaseEnvCfg`` - shared sim/obs/reward defaults for dance tracking.
 * ``G1DanceTrackC1EnvCfg`` - C1 floating-root residual env (legs learn around
   H5 reference; arms+waist frozen) with alive/fall terminations and root tracking.
 * ``G1DanceTrackC2EnvCfg`` - C2 full-window env with end-of-motion hold timeout
@@ -60,24 +58,23 @@ DEFAULT_DANCE_H5 = os.path.join(
 )
 DEFAULT_WINDOW_SECONDS = 10.0
 
-# C0: lower ground so leg swings do not collide with the plane (fixed root only).
-C0_GROUND_Z_OFFSET = -0.5
-
 # C1-only tuning (floating root): smaller action scale + stronger smoothness penalties.
 C1_ACTION_SCALE = 0.5 # 0.5
 C1_ACTION_RATE_L2_WEIGHT = -0.05 # -0.01
 C1_ACTION_L2_WEIGHT = -1.0e-4 # -1.0e-4
 C1_ALIVE_WEIGHT = 2.0
 C1_TERMINATED_PENALTY_WEIGHT = -1.0
-C1_ROOT_YAW_TRACK_WEIGHT = 18.0
-C1_ROOT_YAW_TRACK_SIGMA = 0.15
-C1_ROOT_XY_TRACK_WEIGHT = 10.0
-C1_ROOT_XY_TRACK_SIGMA = 0.15
+C1_ROOT_YAW_TRACK_WEIGHT = 30.0
+C1_ROOT_YAW_TRACK_SIGMA = 0.10
+C1_ROOT_XY_TRACK_WEIGHT = 15.0
+C1_ROOT_XY_TRACK_SIGMA = 0.10
 C1_ROOT_Z_TRACK_WEIGHT = 1.0
 C1_ROOT_Z_TRACK_SIGMA = 0.10
 # C1 joint tracking group weights (lower body): ankles are down-weighted.
 C1_TRACKING_LOWER_BODY_WEIGHT = 2.5
 C1_TRACKING_ANKLE_WEIGHT = 0.5
+# Hip yaw: lower than pitch/roll so policy can deviate to correct root heading.
+C1_TRACKING_HIP_YAW_WEIGHT = 1.0
 # C1 terminations: relaxed for dance (squat / lean / low CoM).
 C1_FALL_MINIMUM_HEIGHT = 0.3
 C1_BAD_ORIENTATION_LIMIT_ANGLE = 1.5
@@ -158,18 +155,6 @@ class G1DanceTrackSceneCfg(InteractiveSceneCfg):
 
 
 @configclass
-class G1DanceTrackC0SceneCfg(G1DanceTrackSceneCfg):
-    """C0 scene: ground lowered so fixed-root leg tracking is not blocked by contact."""
-
-    terrain = _dance_track_terrain_cfg(ground_z_offset=C0_GROUND_Z_OFFSET)
-
-
-##
-# MDP settings
-##
-
-
-@configclass
 class ActionsCfg:
     """Joint position control. Absolute action = default + scale * raw_action."""
 
@@ -189,7 +174,7 @@ class ObservationsCfg:
         joint_pos_rel, joint_vel_rel, projected_gravity, last_action,
         ref_joint_pos_rel (current step),
         ref_joint_pos_rel_next (current step + 1),
-        motion_phase.
+        motion_phase, root_yaw_error_sin_cos.
     """
 
     @configclass
@@ -216,6 +201,10 @@ class ObservationsCfg:
             func=mdp.motion_phase,
             params={"h5_path": DEFAULT_DANCE_H5, "window_seconds": DEFAULT_WINDOW_SECONDS},
         )
+        root_yaw_error = ObsTerm(
+            func=mdp.root_yaw_error_sin_cos,
+            params={"h5_path": DEFAULT_DANCE_H5, "window_seconds": DEFAULT_WINDOW_SECONDS},
+        )
 
         def __post_init__(self):
             self.enable_corruption = True
@@ -226,7 +215,7 @@ class ObservationsCfg:
 
 @configclass
 class RewardsCfg:
-    """C0 reward set: joint tracking + small action regularizers."""
+    """Shared reward set: joint tracking + small action regularizers."""
 
     joint_pos_tracking = RewTerm(
         func=mdp.joint_pos_tracking_exp,
@@ -243,7 +232,7 @@ class RewardsCfg:
 
 @configclass
 class TerminationsCfg:
-    """C0 terminations: only timeout."""
+    """Base terminations: only timeout."""
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
 
@@ -320,14 +309,13 @@ class C1EventCfg(EventCfg):
 
 
 @configclass
-class G1DanceTrackC0EnvCfg(ManagerBasedRLEnvCfg):
-    """C0 (fixed root) dance tracking env.
+class G1DanceTrackBaseEnvCfg(ManagerBasedRLEnvCfg):
+    """Shared dance-tracking env defaults (sim timing, obs layout, base rewards).
 
-    The root link is welded to the world so the policy only has to learn the
-    joint-space imitation problem. Episode = 10 seconds at 50Hz control.
+    C1/C2 inherit and override actions, events, terminations, and rewards.
     """
 
-    scene: G1DanceTrackC0SceneCfg = G1DanceTrackC0SceneCfg(num_envs=512, env_spacing=2.5)
+    scene: G1DanceTrackSceneCfg = G1DanceTrackSceneCfg(num_envs=512, env_spacing=2.5)
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
     rewards: RewardsCfg = RewardsCfg()
@@ -349,25 +337,21 @@ class G1DanceTrackC0EnvCfg(ManagerBasedRLEnvCfg):
         self.sim.physics_material = self.scene.terrain.physics_material
         # Window length must match the reference buffer window seconds.
         self.episode_length_s = DEFAULT_WINDOW_SECONDS
-        # NOTE: O6 USD currently cannot be spawned with fix_root_link=True in Isaac Lab
-        # (root_joint path has no RigidBodyAPI for auto fixed-joint creation).
-        # Keep C0 floating-root for O6 compatibility.
         if self.scene.robot.spawn is not None and self.scene.robot.spawn.articulation_props is not None:
             self.scene.robot.spawn.articulation_props.fix_root_link = False
 
 
 @configclass
-class G1DanceTrackC1EnvCfg(G1DanceTrackC0EnvCfg):
+class G1DanceTrackC1EnvCfg(G1DanceTrackBaseEnvCfg):
     """C1 (floating root) residual dance tracking env.
 
     Root link is freed; legs learn a residual around the H5 reference while
     arms+waist follow the reference open-loop. Adds ``alive`` reward, fall-height
     and bad-orientation terminations so the policy learns balance while tracking.
 
-    C1 overrides C0 action scale and smoothness reward weights (see module
+    C1 overrides base action scale and smoothness reward weights (see module
     constants ``C1_ACTION_*``). Legs keep full reset/obs noise; arms/waist noise
     is disabled (see ``C1_*_NOISE_*`` in ``joint_groups``).
-    Ground is at the default height (z=0), not the lowered C0 plane.
     """
 
     scene: G1DanceTrackSceneCfg = G1DanceTrackSceneCfg(num_envs=512, env_spacing=2.5)
@@ -474,6 +458,7 @@ class G1DanceTrackC1EnvCfg(G1DanceTrackC0EnvCfg):
         self.rewards.joint_pos_tracking.params["joint_weight_by_expr"] = {
             "waist_.*_joint": C1_TRACKING_LOWER_BODY_WEIGHT,
             ".*_hip_.*_joint": C1_TRACKING_LOWER_BODY_WEIGHT,
+            ".*_hip_yaw_joint": C1_TRACKING_HIP_YAW_WEIGHT,
             ".*_knee_joint": C1_TRACKING_LOWER_BODY_WEIGHT,
             ".*_ankle_.*_joint": C1_TRACKING_ANKLE_WEIGHT,
         }

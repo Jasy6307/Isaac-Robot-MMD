@@ -54,6 +54,30 @@ def root_reference_pose_w(
     return target_pos, target_quat
 
 
+def root_yaw_error_rad(
+    env: "ManagerBasedRLEnv",
+    asset: Articulation,
+    *,
+    h5_path: str,
+    window_seconds: float,
+    asset_name: str = "robot",
+    steps: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Signed root yaw error (current - reference) in ``[-pi, pi]``, shape ``[num_envs]``."""
+    _, q_ref_wxyz = root_reference_pose_w(
+        asset,
+        env,
+        h5_path=h5_path,
+        window_seconds=window_seconds,
+        asset_name=asset_name,
+        steps=steps,
+    )
+    q_cur_wxyz = math_utils.quat_unique(asset.data.root_quat_w)
+    _, _, yaw_cur = math_utils.euler_xyz_from_quat(q_cur_wxyz)
+    _, _, yaw_ref = math_utils.euler_xyz_from_quat(q_ref_wxyz)
+    return torch.atan2(torch.sin(yaw_cur - yaw_ref), torch.cos(yaw_cur - yaw_ref))
+
+
 def write_root_reference_from_motion(
     env: "ManagerBasedRLEnv",
     asset: Articulation,

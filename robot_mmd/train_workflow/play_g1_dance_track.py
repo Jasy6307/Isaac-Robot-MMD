@@ -9,7 +9,11 @@ Example
 .. code-block:: powershell
 
     ./isaac_workspace/IsaacLab/isaaclab.bat -p robot_mmd/train_workflow/play_g1_dance_track.py `
-      --task Isaac-G1-Dance-Track-C0-v0 --num_envs 16
+      --task Isaac-G1-Dance-Track-C1-v0 --num_envs 16
+
+Press ``--start_key`` (default ``P``) to begin each policy rollout from a stable
+standing pose; when the window finishes, the robot returns to standing and waits
+again. Use ``--auto_start`` to run immediately without a key press.
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ if _WORKSPACE_ROOT not in sys.path:
 from isaaclab.app import AppLauncher  # noqa: E402
 
 parser = argparse.ArgumentParser(description="Play a G1 dance tracking checkpoint.")
-parser.add_argument("--task", type=str, default="Isaac-G1-Dance-Track-C0-v0")
+parser.add_argument("--task", type=str, default="Isaac-G1-Dance-Track-C1-v0")
 parser.add_argument("--num_envs", type=int, default=16)
 parser.add_argument(
     "--benchmark_inference",
@@ -123,6 +127,18 @@ parser.add_argument(
     ),
 )
 parser.add_argument(
+    "--start_key",
+    type=str,
+    default="P",
+    help="Keyboard key to start each policy rollout from standing (default: P).",
+)
+parser.add_argument(
+    "--auto_start",
+    action="store_true",
+    default=False,
+    help="Start policy playback immediately (skip standing wait for start key).",
+)
+parser.add_argument(
     "--pd_profile",
     type=str,
     choices=("deploy", "isaaclab"),
@@ -140,6 +156,7 @@ simulation_app = app_launcher.app
 
 import time  # noqa: E402
 
+import carb  # noqa: E402
 import gymnasium as gym  # noqa: E402
 import torch  # noqa: E402
 
@@ -152,8 +169,16 @@ from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry  # noqa: E402
 
 import robot_mmd.my_task  # noqa: F401, E402
 
+# Play-only default viewport (overrides task env_cfg.viewer).
+_PLAY_VIEWER_EYE = (0.0, 4.0, 1.0)
+_PLAY_VIEWER_LOOKAT = (0.0, -4.0, 0.0)
+
+from robot_mmd.my_task.mdp.events import reset_root_to_spawn  # noqa: E402
 from robot_mmd.my_task.mdp.observations import joint_pos_tracking_error  # noqa: E402
-from robot_mmd.my_task.motion_reference import get_or_create_motion_buffer  # noqa: E402
+from robot_mmd.my_task.motion_reference import (  # noqa: E402
+    get_or_create_motion_buffer,
+    reset_motion_start_steps,
+)
 from robot_mmd.train_workflow.g1_deploy_actuator_cfg import (  # noqa: E402
     apply_pd_profile_to_scene_robot,
     log_pd_profile_summary,
@@ -212,6 +237,88 @@ class _PlayPerfTracker:
             f"control_hz={self.control_hz:.1f}  realtime_ratio={ratio:.2f}x  "
             f"avg_step_ms={1000.0 * elapsed / steps:.1f}"
         )
+
+
+class _StartKeyListener:
+    """Fire once per key press to gate policy rollout start."""
+
+    def __init__(self, key_char: str) -> None:
+        ch = str(key_char or "P").strip().upper()[:1]
+        if len(ch) != 1 or not ("A" <= ch <= "Z"):
+            raise ValueError(f"start_key must be a single A-Z letter, got {key_char!r}")
+        self._key_char = ch
+        self._key_input = getattr(carb.input.KeyboardInput, ch)
+        self._pending = False
+        self._input_iface = carb.input.acquire_input_interface()
+        self._kb_dev: object | None = None
+        self._kb_sub: object | None = None
+
+    @property
+    def key_char(self) -> str:
+        return self._key_char
+
+    def subscribe(self) -> bool:
+        import omni
+
+        app_window = omni.appwindow.get_default_app_window()
+        self._kb_dev = app_window.get_keyboard() if app_window is not None else None
+        if self._kb_dev is None:
+            print("[WARN] Keyboard device unavailable; use --auto_start for headless play.")
+            return False
+        self._kb_sub = self._input_iface.subscribe_to_keyboard_events(self._kb_dev, self._on_event)
+        return True
+
+    def unsubscribe(self) -> None:
+        if self._kb_sub is not None and self._kb_dev is not None:
+            self._input_iface.unsubscribe_to_keyboard_events(self._kb_dev, self._kb_sub)
+        self._kb_sub = None
+        self._kb_dev = None
+
+    def consume(self) -> bool:
+        if not self._pending:
+            return False
+        self._pending = False
+        return True
+
+    def _on_event(self, event, *args):  # type: ignore[no-untyped-def]
+        if getattr(event, "type", None) != carb.input.KeyboardEventType.KEY_PRESS:
+            return True
+        if getattr(event, "input", None) == self._key_input:
+            self._pending = True
+        return True
+
+
+def _reset_to_standing_pose(env_unwrapped) -> None:
+    """Teleport to spawn and hold default (T-pose) joint targets."""
+    with torch.no_grad():
+        env_ids = torch.arange(env_unwrapped.num_envs, device=env_unwrapped.device)
+        reset_root_to_spawn(env_unwrapped, env_ids)
+        asset = env_unwrapped.scene["robot"]
+        q = asset.data.default_joint_pos[env_ids].clone()
+        qd = torch.zeros_like(q)
+        asset.write_joint_state_to_sim(q, qd, env_ids=env_ids)
+        asset.set_joint_position_target(q, env_ids=env_ids)
+        asset.write_root_velocity_to_sim(
+            torch.zeros((env_ids.numel(), 6), device=env_unwrapped.device, dtype=torch.float32),
+            env_ids=env_ids,
+        )
+        env_unwrapped.episode_length_buf[:] = 0
+        reset_motion_start_steps(env_unwrapped, env_ids)
+
+
+def _idle_hold_step(env_unwrapped, wrapped, zero_actions: torch.Tensor):
+    """Advance sim one step while kinematically holding the default standing pose."""
+    _reset_to_standing_pose(env_unwrapped)
+    result = wrapped.step(zero_actions)
+    # Residual / reference action terms may pull joints during the step; re-anchor after physics.
+    _reset_to_standing_pose(env_unwrapped)
+    return result
+
+
+def _env_reset(wrapped):
+    """Env reset must run outside ``torch.inference_mode`` (Isaac articulation buffers)."""
+    with torch.no_grad():
+        return wrapped.reset()
 
 
 def _find_h5_window(env_cfg: ManagerBasedRLEnvCfg) -> tuple[str, float]:
@@ -426,6 +533,12 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
         env_cfg.episode_length_s = float(new_ws)
 
 
+def _apply_play_viewer(env_cfg: ManagerBasedRLEnvCfg) -> None:
+    """Override Isaac Lab viewer camera for policy playback."""
+    env_cfg.viewer.eye = _PLAY_VIEWER_EYE
+    env_cfg.viewer.lookat = _PLAY_VIEWER_LOOKAT
+
+
 def main() -> None:
     env_cfg: ManagerBasedRLEnvCfg = load_cfg_from_registry(  # type: ignore[assignment]
         args_cli.task, "env_cfg_entry_point"
@@ -442,6 +555,7 @@ def main() -> None:
     )
     log_pd_profile_summary(args_cli.pd_profile, o6_hands=True)
     _apply_motion_overrides(env_cfg)
+    _apply_play_viewer(env_cfg)
 
     log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
     print(f"[INFO] Looking for checkpoints under: {log_root_path}")
@@ -499,44 +613,103 @@ def main() -> None:
     if smooth_alpha < 1.0:
         print(f"[INFO] Action EMA smoothing enabled: alpha={smooth_alpha:.3f}")
 
-    episode = 0
-    while simulation_app.is_running() and (
-        int(args_cli.num_episodes) <= 0 or episode < int(args_cli.num_episodes)
-    ):
-        # All envs have just been reset by gym.make / previous done; episode_length_buf == 0.
-        err_accum = torch.zeros(env_unwrapped.num_envs, device=env_unwrapped.device)
-        max_per_step = torch.zeros(env_unwrapped.num_envs, device=env_unwrapped.device)
-        steps_done = 0
-        smoothed_actions: torch.Tensor | None = None
-        for _ in range(T):
-            start_time = time.time()
-            with torch.inference_mode():
-                actions = policy(obs_adapter(obs))
-                if smooth_alpha < 1.0:
-                    if smoothed_actions is None:
-                        smoothed_actions = actions.clone()
-                    else:
-                        smoothed_actions = smooth_alpha * actions + (1.0 - smooth_alpha) * smoothed_actions
-                    actions = smoothed_actions
-                obs, _, _, _ = wrapped.step(actions)
-            err = joint_pos_tracking_error(env_unwrapped, h5_path, window_s)
-            rms = torch.sqrt(torch.mean(err.pow(2), dim=1))
-            err_accum += rms
-            max_per_step = torch.maximum(max_per_step, rms)
-            steps_done += 1
-            perf.on_step()
-            sleep_time = dt - (time.time() - start_time)
-            if args_cli.real_time and sleep_time > 0:
-                time.sleep(sleep_time)
+    action_dim = int(env_unwrapped.action_manager.total_action_dim)
+    zero_actions = torch.zeros(env_unwrapped.num_envs, action_dim, device=env_unwrapped.device)
 
-        mean_rms = (err_accum / max(steps_done, 1)).mean().item()
-        max_rms = max_per_step.mean().item()
+    start_listener: _StartKeyListener | None = None
+    wait_for_key = not bool(args_cli.auto_start)
+    if wait_for_key:
+        start_listener = _StartKeyListener(args_cli.start_key)
+        if not start_listener.subscribe():
+            print("[WARN] Keyboard unavailable; falling back to --auto_start.")
+            wait_for_key = False
+
+    _reset_to_standing_pose(env_unwrapped)
+    # Prime one idle step so the first rendered frame is already re-anchored.
+    obs_raw, _, _, _ = _idle_hold_step(env_unwrapped, wrapped, zero_actions)
+    playing = not wait_for_key
+    if wait_for_key:
+        assert start_listener is not None
         print(
-            f"[EVAL] episode={episode} steps={steps_done} "
-            f"mean_joint_rms={mean_rms:.4f} rad   peak_joint_rms={max_rms:.4f} rad"
+            f"[INFO] Standing idle. Press [{start_listener.key_char}] to start policy "
+            f"({T} steps); repeats after each rollout."
         )
-        perf.on_episode_end(episode)
-        episode += 1
+    else:
+        print(f"[INFO] Auto-start: policy begins on motion reset ({T} steps).")
+        obs_raw, _ = _env_reset(wrapped)
+
+    episode = 0
+    try:
+        while simulation_app.is_running() and (
+            int(args_cli.num_episodes) <= 0 or episode < int(args_cli.num_episodes)
+        ):
+            if not playing:
+                if start_listener is not None and start_listener.consume():
+                    playing = True
+                    obs_raw, _ = _env_reset(wrapped)
+                    print(f"[INFO] Policy rollout started (episode={episode}, steps={T}).")
+                else:
+                    start_time = time.time()
+                    obs_raw, _, _, _ = _idle_hold_step(env_unwrapped, wrapped, zero_actions)
+                    sleep_time = dt - (time.time() - start_time)
+                    if args_cli.real_time and sleep_time > 0:
+                        time.sleep(sleep_time)
+                    continue
+
+            err_accum = torch.zeros(env_unwrapped.num_envs, device=env_unwrapped.device)
+            max_per_step = torch.zeros(env_unwrapped.num_envs, device=env_unwrapped.device)
+            steps_done = 0
+            smoothed_actions = None
+            for _ in range(T):
+                start_time = time.time()
+                with torch.inference_mode():
+                    actions = policy(obs_adapter(obs_raw))
+                    if smooth_alpha < 1.0:
+                        if smoothed_actions is None:
+                            smoothed_actions = actions.clone()
+                        else:
+                            smoothed_actions = (
+                                smooth_alpha * actions + (1.0 - smooth_alpha) * smoothed_actions
+                            )
+                        actions = smoothed_actions
+                obs_raw, _, _, _ = wrapped.step(actions)
+                with torch.no_grad():
+                    err = joint_pos_tracking_error(env_unwrapped, h5_path, window_s)
+                rms = torch.sqrt(torch.mean(err.pow(2), dim=1))
+                err_accum += rms
+                max_per_step = torch.maximum(max_per_step, rms)
+                steps_done += 1
+                perf.on_step()
+                sleep_time = dt - (time.time() - start_time)
+                if args_cli.real_time and sleep_time > 0:
+                    time.sleep(sleep_time)
+
+            mean_rms = (err_accum / max(steps_done, 1)).mean().item()
+            max_rms = max_per_step.mean().item()
+            print(
+                f"[EVAL] episode={episode} steps={steps_done} "
+                f"mean_joint_rms={mean_rms:.4f} rad   peak_joint_rms={max_rms:.4f} rad"
+            )
+            perf.on_episode_end(episode)
+            episode += 1
+
+            if int(args_cli.num_episodes) > 0 and episode >= int(args_cli.num_episodes):
+                break
+
+            _reset_to_standing_pose(env_unwrapped)
+            obs_raw = wrapped.get_observations()
+            if wait_for_key:
+                playing = False
+                assert start_listener is not None
+                print(
+                    f"[INFO] Rollout finished. Standing idle — press [{start_listener.key_char}] "
+                    "to play again."
+                )
+            else:
+                obs_raw, _ = _env_reset(wrapped)
+    finally:
+        if start_listener is not None:
+            start_listener.unsubscribe()
 
     wrapped.close()
 
