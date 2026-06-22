@@ -1,4 +1,4 @@
-# Isaac-MMD
+# Isaac-Robot-MMD
 
 在 **NVIDIA Isaac Sim / Isaac Lab** 中，将 **MMD/VMD 骨骼动作** 重定向到 **宇树 G1（29 DOF + O6 手）**，并完成回放调试、H5 录制与 PPO 舞蹈跟踪训练。
 
@@ -45,7 +45,6 @@ VMD / CSV  ──►  g1_vmd_0_replay  ──►  H5  ──►  g1_vmd_1_train 
                       ▲                                              │
                       └────────────  g1_vmd_2_eval  ◄────────────────┘
 ```
-
 
 ---
 

@@ -163,7 +163,7 @@ class G1VmdReplayEnvCfg(ManagerBasedRLEnvCfg):
     terminations: TerminationsCfg = TerminationsCfg()
     # 初始默认视角：从斜上方看向机器人站立位置
     viewer: ViewerCfg = ViewerCfg(
-        eye=(0.0, 3.0, 1.0),
+        eye=(0.0, 4.0, 1.0),
         lookat=(0.0, 0.0, 1.0),
     )
 
