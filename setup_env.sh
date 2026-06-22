@@ -83,13 +83,13 @@ fi
 ln -s ${WORKSPACE} isaac_workspace
 echo "✅ ${WORKSPACE} 已软链接到 ${REPO_ROOT}/isaac_workspace"
 
-# === 安装 robot_mmd 包到 Isaac Lab 环境 ===
-echo "[额外步骤2/2] 将 robot_mmd 安装到 Isaac Lab 环境..."
+# === 安装 source 包到 Isaac Lab 环境 ===
+echo "[额外步骤2/2] 将 source 安装到 Isaac Lab 环境..."
 eval "$(conda shell.bash hook)"
 conda activate ${ENV_NAME}
 cd ${REPO_ROOT}
 python3 -m pip install -e .
-echo "✅ robot_mmd 已安装到 ${ENV_NAME} 环境"
+echo "✅ source 已安装到 ${ENV_NAME} 环境"
 
 
 echo ""
@@ -101,7 +101,7 @@ echo "验证安装:"
 echo "  conda activate ${ENV_NAME}"
 echo "  ./isaac_workspace/IsaacLab/isaaclab.sh -p ./isaac_workspace/IsaacLab/scripts/tutorials/00_sim/create_empty.py"
 echo ""
-echo "运行 robot_mmd 回放:"
+echo "运行 source 回放:"
 echo "  conda activate ${ENV_NAME}"
-echo "  ./isaac_workspace/IsaacLab/isaaclab.sh -p ${REPO_ROOT}/robot_mmd/train_workflow/g1_vmd_0_replay.py"
+echo "  ./isaac_workspace/IsaacLab/isaaclab.sh -p ${REPO_ROOT}/source/train_workflow/g1_vmd_0_replay.py"
 echo ""

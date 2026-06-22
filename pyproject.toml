@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "robot_mmd"
+name = "source"
 version = "0.1.0"
 description = "Unitree G1 MMD retargeting and dance tracking on Isaac Lab"
 readme = "README.md"
@@ -13,4 +13,4 @@ authors = [{ name = "jasy" }]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["robot_mmd*"]
+include = ["source*"]

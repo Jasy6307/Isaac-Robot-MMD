@@ -1,0 +1,30 @@
+# 舞蹈登记范例（复制为 dances_config.yaml 后按本地 media/ 内容修改）
+#
+#   cp dances_config.example.yaml dances_config.yaml
+#
+# 由 g1_vmd_0_replay.py 读取（默认路径：同目录 dances_config.yaml）。
+# motion / audio 路径均相对于仓库根目录 media/。
+# motion 支持 .csv / .h5 / .hdf5
+#
+# 字段说明：
+# - id:    选填，日志用标识
+# - key:   选填，单字符快捷键；省略则仅出现在 Mapping UI 下拉（无热键）
+# - motion: 必填，例如 dance/example_motion.h5
+# - audio:  选填，例如 dance/example_motion.wav；省略则不伴音
+#
+# 启动 playback 时会扫描 media/dance/*.vmd，自动生成缺失的 CSV/H5，
+# 并追加无 key 的登记项到 dances_config.yaml（本地文件，不进 Git）。
+
+version: 1
+dances:
+
+  - id: example_dance
+    key: "1"
+    motion: dance/example_motion.h5
+    audio: dance/example_motion.wav
+
+  - id: example_dance_csv
+    motion: dance/example_motion.csv
+
+  - id: example_no_hotkey
+    motion: dance/another_motion.h5

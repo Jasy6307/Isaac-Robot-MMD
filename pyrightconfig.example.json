@@ -9,7 +9,7 @@
   "venvPath": "REPLACE_WITH_YOUR_CONDA_ENVS_DIR",
   "venv": "env_isaaclab_mmd",
   "extraPaths": [
-    "robot_mmd",
+    "source",
     "isaac_workspace/IsaacLab/source/isaaclab",
     "isaac_workspace/IsaacLab/source/isaaclab_assets",
     "isaac_workspace/IsaacLab/source/isaaclab_tasks",

@@ -48,18 +48,18 @@ other NVIDIA Omniverse software.
 **MMD/VMD motion captures, derived CSV/H5 trajectories, and accompanying audio
 are not distributed with this repository.**
 
-The directory `robot_mmd/media/` is ignored by Git. Example paths in
-`robot_mmd/train_workflow/dances_config.yaml` are placeholders for your local
+The directory `media/` is ignored by Git. Example paths in
+`source/train_workflow/dances_config.yaml` are placeholders for your local
 layout only.
 
 To use the MMD pipeline you must:
 
 1. Obtain motion and audio from lawful sources (e.g. your own recordings or
    content you are permitted to use).
-2. Place files under `robot_mmd/media/` following the layout described in
-   [robot_mmd/OVERVIEW.md](robot_mmd/OVERVIEW.md).
+2. Place files under `media/` following the layout described in
+   [source/OVERVIEW.md](source/OVERVIEW.md).
 3. Convert VMD to CSV/H5 with the provided scripts (e.g.
-   `robot_mmd/train_workflow/scripts/vmd_2_csv.py`) where applicable.
+   `source/train_workflow/scripts/vmd_2_csv.py`) where applicable.
 
 Respect the copyright and license terms of MMD models, motions, and music.
 This project’s license covers **code only**, not third-party dance or audio
