@@ -9,6 +9,8 @@
   <img src="assets/demo/jile_10-30s.gif" alt="G1 回放《极乐净土》片段" width="640">
 </p>
 
+（借物表：动作 by Yurie， 参考模型 by Bushiroad Games/BungleScrungle/海新_/小麦弥望）
+
 ---
 
 ## 项目简介
@@ -17,8 +19,9 @@
 
 1. **VMD → 仿真骨骼 CSV**：自动或手动转换 MMD 动作；
 2. **重定向与回放**：在 Isaac Sim 中映射到 G1 关节，支持 UI 微调、足部 IK、伴音同步；
-3. **Record H5**：将调试好的轨迹编译为 RL 参考动作；
-4. **PPO 训练与验证**：基于 H5 参考学习残差控制策略，在仿真中跟踪舞蹈。
+3. **Record H5**：将调试好的轨迹编译为 RL 参考动作数据集；
+4. **PPO 训练与验证**：在 Isaac Lab ManagerBased 环境中读取 H5 参考轨迹，用 PPO（RSL-RL） 训练腿部残差跟踪策略checkpoint；
+5. **策略2Sim验证**：通过 eval 脚本在仿真中加载 checkpoint，对比 H5 关节跟踪误差。
 
 整条链路围绕三个入口脚本组织（见下节），其余模块（环境注册、重定向算法、UI 等）为它们提供支撑。
 
