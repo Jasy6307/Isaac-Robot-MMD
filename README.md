@@ -2,11 +2,18 @@
 
 在 **NVIDIA Isaac Sim / Isaac Lab** 中，将 **MMD/VMD 骨骼动作** 重定向到 **宇树 G1（29 DOF + O6 手）**，并完成回放调试、H5 录制与 PPO 舞蹈跟踪训练。
 
+## 演示
+
+G1 在 Isaac Sim 中回放 MMD 舞蹈《极乐净土》片段（原视频 10–30 秒）：
+
+G1 回放《极乐净土》片段  
+
+
 ---
 
 ## 项目简介
 
-机器人全身动作的主流来源是遥操作或开源动作库，但 **MMD 社区** 已沉淀近 20 年的 VMD 舞蹈资源，数量大、种类多。本项目提供一条可复现的流水线：
+机器人全身动作的主流来源是WBC遥操、开源动作库或者视频数据逆解析，但 **MMD 社区** 已沉淀近二十年的 VMD 舞蹈资源，数量大、种类多、骨骼关节信息准确。因此，本项目提供一条解析VMD格式源文件（MMD动作数据），导入到IsaacSim进行回放，训练的整条流水线：
 
 1. **VMD → 仿真骨骼 CSV**：自动或手动转换 MMD 动作；
 2. **重定向与回放**：在 Isaac Sim 中映射到 G1 关节，支持 UI 微调、足部 IK、伴音同步；
@@ -83,7 +90,7 @@ flowchart LR
 | `[source/my_task/](source/my_task/)`                              | Gym 环境注册、MDP、机器人与训练配置                              |
 | `[media/](media/)`                                                | **仅本地**（gitignore）：`dance/`、`pose/`、VMD/CSV/H5/WAV |
 | `[docs/](docs/)`                                                  | 项目文档（本地，gitignore）                                 |
-| `[assets/](assets/)`                                              | G1 29-DOF O6 手 USD 资产                              |
+| `[assets/](assets/)`                                              | G1 29-DOF O6 手 USD 资产；`demo/` 存放 README 演示 GIF     |
 | `[setup_env.sh](setup_env.sh)` / `[setup_env.bat](setup_env.bat)` | Isaac Sim **5.1.0** + Isaac Lab **2.3.0** 安装       |
 
 
@@ -141,11 +148,12 @@ cp pyrightconfig.example.json pyrightconfig.json
 - [ ] **手部重定向优化**：更准确的重定向一致性
 - [ ] **C1 训练稳定性**：提升 `g1_vmd_1_train` 长序列VMD动作数据的跟踪质量和训练效率
 - [ ] **C2 实验任务**：完善课程C2的训练链路
-- [ ] VMD镜头数据：镜头数据兼容
-- [ ] VMD更多参数调整：toe IK，表情，motion scale，部分关节锁定的动作执行等
-- [ ] 策略验证的链路优化：更好的eval效率，更好的画质（RTX ON!)，更好的物理解算
-- [ ] PMX暴力导入isaacsim尝试：真的可以吗？
-- [ ] **Sim2Real**：策略导出与真机部署验证（但是……我没有实机捏）
+- [ ] **VMD镜头数据**：镜头数据兼容
+- [ ] **VMD更多参数调整**：toe IK，表情，motion scale，部分关节锁定的动作执行等
+- [ ] **PMX暴力导入isaacsim**：PMX转URDF？……真的可以吗？尝试下
+- [ ] **Sim2Sim**：更好的policy eval效率，完善sim2im部署UI界面
+- [ ] **Sim2Real**：策略导出与真机部署验证（暂无实机喵）
+- [ ] **RTX ON**：测试更高的画质（RTX ON），更好的物理解算，堂堂取代Blender（误
 
 ---
 
