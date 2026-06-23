@@ -1,6 +1,6 @@
 # Isaac-Robot-MMD
 
-在 **NVIDIA Isaac Sim / Isaac Lab** 中，将 **MMD/VMD 骨骼动作** 重定向到 **宇树 G1（29 DOF + O6 手）**，并完成回放调试、H5 录制与 PPO 舞蹈跟踪训练。
+在 **NVIDIA Isaac Sim / Isaac Lab** 中，将 **MMD/VMD 骨骼动作** 重定向到 **宇树 G1（29 DOF + O6 手）**，并完成回放调试、参考数据集录制与 RL 跟踪训练。
 
 ## 演示
 
@@ -20,7 +20,7 @@
 1. **VMD → 仿真骨骼 CSV**：自动或手动转换 MMD 动作；
 2. **重定向与回放**：在 Isaac Sim 中映射到 G1 关节，支持 UI 微调、足部 IK、伴音同步；
 3. **Record H5**：将调试好的轨迹编译为 RL 参考动作数据集；
-4. **PPO 训练与验证**：在 Isaac Lab ManagerBased 环境中读取 H5 参考轨迹，用 PPO（RSL-RL） 训练腿部残差跟踪策略checkpoint；
+4. **PPO 训练与验证**：以H5数据集为参考轨迹，用 PPO（RSL-RL） 训练腿部策略checkpoint；
 5. **策略2Sim验证**：通过 eval 脚本在仿真中加载 checkpoint，对比 H5 关节跟踪误差。
 
 整条链路围绕三个入口脚本组织（见下节），其余模块（环境注册、重定向算法、UI 等）为它们提供支撑。
@@ -153,10 +153,10 @@ cp pyrightconfig.example.json pyrightconfig.json
 - [ ] **C2 实验任务**：完善课程C2的训练链路
 - [ ] **VMD镜头数据**：镜头数据兼容
 - [ ] **VMD更多参数调整**：toe IK，表情，motion scale，部分关节锁定的动作执行等
-- [ ] **PMX暴力导入isaacsim**：PMX转URDF？……真的可以吗？尝试下
 - [ ] **Sim2Sim**：更好的policy eval效率，完善sim2im部署UI界面
 - [ ] **Sim2Real**：策略导出与真机部署验证（暂无实机喵）
-- [ ] **RTX ON**：测试更高的画质（RTX ON），更好的物理解算，堂堂取代Blender（误
+- [ ] **PMX暴力导入isaacsim**：PMX转URDF？……真的可以吗？至少尝试下吧
+- [ ] **RTX ON**：测试更高的画质，更好的物理解算，堂堂取代Blender（误
 
 ---
 

@@ -328,10 +328,10 @@ class G1VmdTrainBaseEnvCfg(ManagerBasedRLEnvCfg):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        # Control loop: dt=1/60  physics, decimation=2 -> 30Hz control.
+        # Control loop: dt=1/60 physics, decimation=2 -> 30Hz control.
         self.sim.dt = 1.0 / 60.0   # 物理 60 Hz
-        self.decimation = 2         # 控制 6/2 = 30 Hz
-        self.sim.render_interval = self.decimation
+        self.decimation = 2         # 控制 30 Hz
+        self.sim.render_interval = self.decimation 
         self.sim.physics_material = self.scene.terrain.physics_material
         # Window length must match the reference buffer window seconds.
         self.episode_length_s = DEFAULT_WINDOW_SECONDS

@@ -14,9 +14,10 @@ Example
       --window_frames 460 `
       --num_envs 16
 
-Press ``--start_key`` (default ``P``) to begin each policy rollout from a stable
-standing pose; when the window finishes, the robot returns to standing and waits
-again. Use ``--auto_start`` to run immediately without a key press.
+Press ``--start_key`` (default ``P``) or the **G1 Policy Eval** UI Play button to begin
+each policy rollout from a stable standing pose; Stop ends rollout and audio early.
+When ``--dance`` has a companion WAV, audio starts with Play. Use ``--auto_start`` to
+run immediately without waiting for Play.
 """
 
 from __future__ import annotations
@@ -158,6 +159,15 @@ parser.add_argument(
         "isaaclab=legacy G1_29DOF defaults for old checkpoints."
     ),
 )
+parser.add_argument(
+    "--play",
+    action="store_true",
+    default=False,
+    help=(
+        "Play mode: skip reward compute (zero weights) and disable obs corruption. "
+        "Does not change render rate; use for slightly lower MDP overhead only."
+    ),
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -198,11 +208,15 @@ from source.my_task.robots.actuator_pd import (  # noqa: E402
     apply_pd_profile_to_scene_robot,
     log_pd_profile_summary,
 )
+from source.paths import DANCE_DIR, MEDIA_DIR  # noqa: E402
 from source.train_workflow.utils.motion.window import (  # noqa: E402
     control_hz_from_env_cfg,
     log_window_frames_override,
     resolve_motion_window_seconds,
 )
+from source.train_workflow.utils.media import audio_util  # noqa: E402
+
+_DANCES_CONFIG_PATH = os.path.join(_SCRIPT_DIR, "dances_config.yaml")
 
 
 class _PlayPerfTracker:
@@ -334,6 +348,58 @@ def _env_reset(wrapped):
     """Env reset must run outside ``torch.inference_mode`` (Isaac articulation buffers)."""
     with torch.no_grad():
         return wrapped.reset()
+
+
+def _resolve_dance_wav_path(dance_name: str | None) -> str | None:
+    """Resolve companion WAV for ``--dance`` from dances_config.yaml or media/dance/."""
+    if not dance_name:
+        return None
+    from source.train_workflow.utils.motion.loader import load_dances_from_yaml
+    from source.train_workflow.utils.motion.resolve import normalize_dance_stem
+
+    stem = normalize_dance_stem(dance_name)
+    _, wav_by_key = load_dances_from_yaml(
+        _DANCES_CONFIG_PATH,
+        media_dir=MEDIA_DIR,
+        script_dir=_SCRIPT_DIR,
+    )
+    for key, path in wav_by_key.items():
+        if normalize_dance_stem(key) == stem and os.path.isfile(path):
+            return path
+    direct = os.path.join(DANCE_DIR, f"{stem}.wav")
+    if os.path.isfile(direct):
+        return direct
+    return None
+
+
+class _PolicyPlaybackGate:
+    """Shared play/stop state for keyboard, UI, and the eval main loop."""
+
+    def __init__(self) -> None:
+        self.playing = False
+        self.play_requested = False
+        self.stop_requested = False
+        self.policy_step = 0
+        self.policy_total = 0
+        self.wav_path: str | None = None
+        self.audio_enabled = False
+        self.dance_title = "Policy eval"
+
+    def request_play(self) -> None:
+        self.play_requested = True
+
+    def request_stop(self) -> None:
+        self.stop_requested = True
+
+    def ui_status(self) -> dict[str, object]:
+        return {
+            "dance_title": self.dance_title,
+            "playing": self.playing,
+            "policy_step": self.policy_step,
+            "policy_total": self.policy_total,
+            "has_audio": bool(self.wav_path),
+            "audio_enabled": self.audio_enabled,
+        }
 
 
 def _find_h5_window(env_cfg: ManagerBasedRLEnvCfg) -> tuple[str, float]:
@@ -554,6 +620,25 @@ def _apply_play_viewer(env_cfg: ManagerBasedRLEnvCfg) -> None:
     env_cfg.viewer.lookat = _PLAY_VIEWER_LOOKAT
 
 
+def _apply_play_mode(env_cfg: ManagerBasedRLEnvCfg) -> None:
+    """Zero reward weights and disable obs corruption for interactive playback."""
+    zeroed = 0
+    for term_name in vars(env_cfg.rewards):
+        term = getattr(env_cfg.rewards, term_name, None)
+        if term is not None and hasattr(term, "weight"):
+            term.weight = 0.0
+            zeroed += 1
+
+    policy_obs = getattr(env_cfg.observations, "policy", None)
+    if policy_obs is not None and hasattr(policy_obs, "enable_corruption"):
+        policy_obs.enable_corruption = False
+
+    print(
+        f"[INFO] Play mode: rewards zeroed ({zeroed} terms), obs corruption off. "
+        "Render interval unchanged."
+    )
+
+
 def main() -> None:
     env_cfg: ManagerBasedRLEnvCfg = load_cfg_from_registry(  # type: ignore[assignment]
         args_cli.task, "env_cfg_entry_point"
@@ -571,6 +656,8 @@ def main() -> None:
     log_pd_profile_summary(args_cli.pd_profile, o6_hands=True)
     _apply_motion_overrides(env_cfg)
     _apply_play_viewer(env_cfg)
+    if args_cli.play:
+        _apply_play_mode(env_cfg)
 
     log_root_path = resolve_training_log_root(agent_cfg.experiment_name, DANCE_NAME)
     print(f"[INFO] Looking for checkpoints under: {log_root_path}")
@@ -643,6 +730,29 @@ def main() -> None:
     action_dim = int(env_unwrapped.action_manager.total_action_dim)
     zero_actions = torch.zeros(env_unwrapped.num_envs, action_dim, device=env_unwrapped.device)
 
+    playback = _PolicyPlaybackGate()
+    playback.policy_total = T
+    playback.dance_title = DANCE_NAME or os.path.splitext(os.path.basename(h5_path))[0]
+    playback.wav_path = _resolve_dance_wav_path(DANCE_NAME)
+    playback.audio_enabled = bool(playback.wav_path)
+    if playback.wav_path:
+        audio_util.warn_if_no_pygame_sync()
+        print(f"[INFO] Dance audio: {playback.wav_path}")
+    else:
+        print("[INFO] No dance WAV configured for this eval run.")
+
+    if not getattr(args_cli, "headless", False):
+        from source.train_workflow.ui import eval_play_ui
+
+        eval_play_ui.set_play_callback(playback.request_play)
+        eval_play_ui.set_stop_callback(playback.request_stop)
+        eval_play_ui.set_status_provider(playback.ui_status)
+        eval_play_ui.set_audio_enabled_provider(lambda: playback.audio_enabled)
+        eval_play_ui.set_audio_enabled_setter(
+            lambda enabled: setattr(playback, "audio_enabled", bool(enabled))
+        )
+        eval_play_ui.create_eval_play_ui()
+
     start_listener: _StartKeyListener | None = None
     wait_for_key = not bool(args_cli.auto_start)
     if wait_for_key:
@@ -651,43 +761,69 @@ def main() -> None:
             print("[WARN] Keyboard unavailable; falling back to --auto_start.")
             wait_for_key = False
 
+    def _begin_rollout(*, episode_idx: int) -> None:
+        nonlocal obs_raw
+        audio_util.stop_wav()
+        obs_raw, _ = _env_reset(wrapped)
+        if playback.wav_path and playback.audio_enabled:
+            audio_util.play_wav_async(playback.wav_path)
+        playback.playing = True
+        playback.stop_requested = False
+        playback.policy_step = 0
+        print(f"[INFO] Policy rollout started (episode={episode_idx}, steps={T}).")
+
+    def _abort_rollout() -> None:
+        nonlocal obs_raw
+        audio_util.stop_wav()
+        playback.playing = False
+        playback.stop_requested = False
+        playback.policy_step = 0
+        _reset_to_standing_pose(env_unwrapped)
+        obs_raw = wrapped.get_observations()
+        print("[INFO] Policy rollout stopped.")
+
     _reset_to_standing_pose(env_unwrapped)
     # Prime one idle step so the first rendered frame is already re-anchored.
     obs_raw, _, _, _ = _idle_hold_step(env_unwrapped, wrapped, zero_actions)
-    playing = not wait_for_key
     if wait_for_key:
         assert start_listener is not None
         print(
-            f"[INFO] Standing idle. Press [{start_listener.key_char}] to start policy "
+            f"[INFO] Standing idle. Press [{start_listener.key_char}] or UI Play to start policy "
             f"({T} steps); repeats after each rollout."
         )
     else:
         print(f"[INFO] Auto-start: policy begins on motion reset ({T} steps).")
-        obs_raw, _ = _env_reset(wrapped)
+        _begin_rollout(episode_idx=0)
 
     episode = 0
     try:
         while simulation_app.is_running() and (
             int(args_cli.num_episodes) <= 0 or episode < int(args_cli.num_episodes)
         ):
-            if not playing:
+            if playback.play_requested and not playback.playing:
+                playback.play_requested = False
+                _begin_rollout(episode_idx=episode)
+
+            if not playback.playing:
                 if start_listener is not None and start_listener.consume():
-                    playing = True
-                    obs_raw, _ = _env_reset(wrapped)
-                    print(f"[INFO] Policy rollout started (episode={episode}, steps={T}).")
+                    _begin_rollout(episode_idx=episode)
                 else:
                     start_time = time.time()
                     obs_raw, _, _, _ = _idle_hold_step(env_unwrapped, wrapped, zero_actions)
                     sleep_time = dt - (time.time() - start_time)
                     if args_cli.real_time and sleep_time > 0:
                         time.sleep(sleep_time)
-                    continue
+                continue
 
             err_accum = torch.zeros(env_unwrapped.num_envs, device=env_unwrapped.device)
             max_per_step = torch.zeros(env_unwrapped.num_envs, device=env_unwrapped.device)
             steps_done = 0
             smoothed_actions = None
+            rollout_aborted = False
             for _ in range(T):
+                if playback.stop_requested:
+                    rollout_aborted = True
+                    break
                 start_time = time.time()
                 with torch.inference_mode():
                     actions = policy(obs_adapter(obs_raw))
@@ -706,11 +842,18 @@ def main() -> None:
                 err_accum += rms
                 max_per_step = torch.maximum(max_per_step, rms)
                 steps_done += 1
+                playback.policy_step = steps_done
                 perf.on_step()
                 sleep_time = dt - (time.time() - start_time)
                 if args_cli.real_time and sleep_time > 0:
                     time.sleep(sleep_time)
 
+            if rollout_aborted:
+                playback.stop_requested = False
+                _abort_rollout()
+                continue
+
+            audio_util.stop_wav()
             mean_rms = (err_accum / max(steps_done, 1)).mean().item()
             max_rms = max_per_step.mean().item()
             print(
@@ -719,22 +862,24 @@ def main() -> None:
             )
             perf.on_episode_end(episode)
             episode += 1
+            playback.playing = False
+            playback.policy_step = 0
 
             if int(args_cli.num_episodes) > 0 and episode >= int(args_cli.num_episodes):
                 break
 
             _reset_to_standing_pose(env_unwrapped)
-            obs_raw = wrapped.get_observations()
             if wait_for_key:
-                playing = False
                 assert start_listener is not None
                 print(
                     f"[INFO] Rollout finished. Standing idle — press [{start_listener.key_char}] "
-                    "to play again."
+                    "or UI Play to run again."
                 )
+                obs_raw = wrapped.get_observations()
             else:
-                obs_raw, _ = _env_reset(wrapped)
+                _begin_rollout(episode_idx=episode)
     finally:
+        audio_util.stop_wav()
         if start_listener is not None:
             start_listener.unsubscribe()
 

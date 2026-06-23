@@ -1227,6 +1227,13 @@ async def _mapping_ui_refresh_loop() -> None:
                         mx_lbl.text = f"/ {int(mx)}"
                     else:
                         mx_lbl.text = "/ -"
+                pb_model = jr.get("playback_progress_bar_model")
+                if pb_model is not None:
+                    if playing and fr is not None and mx is not None and int(mx) > 0:
+                        ratio = max(0.0, min(1.0, float(int(fr)) / float(int(mx))))
+                    else:
+                        ratio = 0.0
+                    pb_model.set_value(ratio)
             if _root_quat_rpy_provider is not None:
                 try:
                     (sr, sp, sy), (ir, ip, iy) = _root_quat_rpy_provider()

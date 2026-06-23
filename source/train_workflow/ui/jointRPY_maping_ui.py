@@ -177,6 +177,31 @@ def mmd_bone_to_romaji(name: str) -> str:
     return MMD_BONE_TO_ROMAJI.get(str(name or ""), str(name or ""))
 
 
+def _make_playback_progress_bar_model(ui: Any) -> Any:
+    class PlaybackProgressBarModel(ui.AbstractValueModel):
+        def __init__(self) -> None:
+            super().__init__()
+            self._value = 0.0
+
+        def set_value(self, value: float) -> None:
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                value = 0.0
+            value = max(0.0, min(1.0, value))
+            if value != self._value:
+                self._value = value
+                self._value_changed()
+
+        def get_value_as_float(self) -> float:
+            return self._value
+
+        def get_value_as_string(self) -> str:
+            return f"{self._value * 100.0:.2f}%"
+
+    return PlaybackProgressBarModel()
+
+
 def wrap_long_hinge_text(mmd_line: str) -> str:
     s = mmd_line.strip()
     if len(s) <= 44:
@@ -328,6 +353,8 @@ def build_joint_rpy_mapping_window(
             now_playing_frame_label = ui.Label("0", width=36, height=22)
             now_playing_max_label = ui.Label("/ -", width=48, height=22)
             ui.Spacer()
+        playback_progress_bar_model = _make_playback_progress_bar_model(ui)
+        ui.ProgressBar(model=playback_progress_bar_model, height=8)
         ui.Spacer(height=4)
         with ui.ScrollingFrame():
             with ui.VStack(spacing=2):
@@ -498,6 +525,7 @@ def build_joint_rpy_mapping_window(
         "now_playing_label": now_playing_label,
         "now_playing_frame_label": now_playing_frame_label,
         "now_playing_max_label": now_playing_max_label,
+        "playback_progress_bar_model": playback_progress_bar_model,
         "root_roll_euler_model": root_roll_euler_model,
         "root_pitch_euler_model": root_pitch_euler_model,
         "root_yaw_euler_model": root_yaw_euler_model,

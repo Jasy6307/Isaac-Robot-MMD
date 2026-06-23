@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import os
+import time
+import wave
 from typing import Any
 
 try:
@@ -20,6 +22,8 @@ _current_wav_path: str | None = None
 _pygame_sync_hint_printed = False
 # 当前这段实际在用哪种方式播：只有 "pygame" 时才响应 pause/seek
 _playback_backend: str | None = None
+_play_started_wall: float | None = None
+_wav_duration_cache: dict[str, float] = {}
 # pygame.mixer.music volume: 0.0–1.0 (default below is quieter than mixer default 1.0)
 DEFAULT_VOLUME: float = 0.2
 _volume: float = DEFAULT_VOLUME
@@ -85,9 +89,58 @@ def _ensure_pygame() -> bool:
     return _use_pygame
 
 
+def get_wav_duration_sec(filepath: str) -> float | None:
+    """Return WAV duration in seconds, or None if unreadable."""
+    path = os.path.abspath(filepath)
+    cached = _wav_duration_cache.get(path)
+    if cached is not None:
+        return cached
+    if not os.path.isfile(path):
+        return None
+    try:
+        with wave.open(path, "rb") as wf:
+            rate = float(wf.getframerate())
+            if rate <= 0.0:
+                return None
+            duration = float(wf.getnframes()) / rate
+    except Exception:
+        return None
+    _wav_duration_cache[path] = duration
+    return duration
+
+
+def get_current_wav_path() -> str | None:
+    return _current_wav_path
+
+
+def is_audio_playing() -> bool:
+    if _playback_backend == "pygame" and _pygame is not None:
+        try:
+            return bool(_pygame.mixer.music.get_busy())
+        except Exception:
+            return _current_wav_path is not None
+    return _playback_backend == "winsound" and _current_wav_path is not None
+
+
+def get_playback_position_sec() -> float | None:
+    """Best-effort playback position in seconds for the active clip."""
+    if _current_wav_path is None:
+        return None
+    if _playback_backend == "pygame" and _pygame is not None:
+        try:
+            pos_ms = _pygame.mixer.music.get_pos()
+            if pos_ms >= 0:
+                return float(pos_ms) / 1000.0
+        except Exception:
+            pass
+    if _play_started_wall is not None:
+        return max(0.0, time.time() - _play_started_wall)
+    return None
+
+
 def play_wav_async(filepath: str, start_sec: float = 0.0) -> None:
     """播放 WAV。若已启用 pygame，可从 start_sec（秒）起播，用于与帧同步。"""
-    global _current_wav_path, _playback_backend
+    global _current_wav_path, _playback_backend, _play_started_wall
     path = os.path.abspath(filepath)
     if not os.path.isfile(path):
         print(f"[WARN] 音频文件不存在: {path}")
@@ -108,6 +161,7 @@ def play_wav_async(filepath: str, start_sec: float = 0.0) -> None:
                     _pygame.mixer.music.set_pos(start_sec)
             _apply_volume()
             _playback_backend = "pygame"
+            _play_started_wall = time.time() - max(0.0, float(start_sec))
             print(f"[INFO] 开始播放音频(pygame): {path} @ {start_sec:.3f}s vol={_volume:.2f}")
             return
         except Exception as exc:
@@ -120,6 +174,7 @@ def play_wav_async(filepath: str, start_sec: float = 0.0) -> None:
     try:
         winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
         _playback_backend = "winsound"
+        _play_started_wall = time.time() - max(0.0, float(start_sec))
         print(f"[INFO] 开始播放音频(winsound，无暂停/帧同步): {path}")
     except Exception as exc:
         print(f"[WARN] 音频播放失败: {exc}")
@@ -129,10 +184,11 @@ def play_wav_async(filepath: str, start_sec: float = 0.0) -> None:
 
 def stop_wav() -> None:
     """停止伴音并清空当前曲目状态。"""
-    global _current_wav_path, _playback_backend
+    global _current_wav_path, _playback_backend, _play_started_wall
     b = _playback_backend
     _current_wav_path = None
     _playback_backend = None
+    _play_started_wall = None
     if b == "pygame" and _pygame is not None:
         try:
             _pygame.mixer.music.stop()
