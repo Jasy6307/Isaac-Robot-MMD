@@ -4,7 +4,6 @@
 
 ## 演示
 
-G1 在 Isaac Sim 中回放 MMD 舞蹈《极乐净土》片段（原视频 10–30 秒）：
 
 <p align="center">
   <img src="assets/demo/jile_10-30s.gif" alt="G1 回放《极乐净土》片段" width="640">
