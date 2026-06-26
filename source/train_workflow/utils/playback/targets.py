@@ -428,9 +428,13 @@ def compute_targets_for_hdf5_frame(
     robot: Any,
     ui_debug: PlaybackUiDebugState,
     root_snapshot_row: Any | None = None,
-    root_z_compress_cfg: RootZCompressConfig | None = None,
 ) -> tuple[Any, tuple[float, float, float] | None, list[float] | None, Any, str | None, bool | None]:
-    """Compute joint/root targets for one precompiled HDF5 frame."""
+    """Compute joint/root targets for one precompiled HDF5 frame.
+
+    ``root_pos_delta`` in HDF5 is recorded from the live CSV playback pipeline
+    (already includes root-Z compress). Do not apply ``_apply_root_z_compress``
+    again here or squat frames will float above the floor.
+    """
     ui_debug.last_interp_frame_data = None
     ui_debug.root_rpy_euler_scaled_deg = (None, None, None)
     ui_debug.root_rot_bone_name = None
@@ -450,12 +454,6 @@ def compute_targets_for_hdf5_frame(
         ui_debug.root_rpy_euler_scaled_deg = (float(rr[0]), float(rr[1]), float(rr[2]))
     rb = str(debug.get("root_rot_bone") or "")
     ui_debug.root_rot_bone_name = rb if rb else None
-
-    target_root_pos = _apply_root_z_compress(
-        target_root_pos,
-        state,
-        root_z_compress_cfg or RootZCompressConfig(),
-    )
 
     result = (joint_pos_cmd - np.asarray(default_joint_pos, dtype=np.float32)) / float(action_scale)
     csv_root_rotation_lookup: bool | None = bool(debug.get("root_valid"))

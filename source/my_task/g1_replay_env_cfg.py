@@ -174,7 +174,7 @@ class G1VmdReplayEnvCfg(ManagerBasedRLEnvCfg):
         # Align with G1VmdTrainBaseEnvCfg: physics 60 Hz, control 30 Hz (decimation=2).
         self.sim.dt = 1.0 / 60.0
         self.decimation = 1
-        self.sim.render_interval = 1
+        self.sim.render_interval = 0.5
         # 原 60s 会与 MDP time_out 一致，交互脚本里每 ~60s 仿真时间会自动 reset。
         # 长时间站姿/动作演示请用大值；需要按回合切场景时再改小。
         self.episode_length_s = 86400.0

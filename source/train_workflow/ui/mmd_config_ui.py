@@ -53,6 +53,8 @@ _dance_h5_exists_provider: Callable[[str], bool] | None = None
 _dance_h5_deletable_provider: Callable[[str], bool] | None = None
 _pd_drive_provider: Callable[[], bool] | None = None
 _pd_drive_setter: Callable[[bool], None] | None = None
+_need_record_avi_provider: Callable[[], bool] | None = None
+_need_record_avi_setter: Callable[[bool], None] | None = None
 _z_offset_enable_provider: Callable[[], bool] | None = None
 _z_offset_enable_setter: Callable[[bool], None] | None = None
 _root_z_compress_provider: Callable[[], tuple[float, float]] | None = None
@@ -75,6 +77,7 @@ _audio_volume_setter: Callable[[float], None] | None = None
 _scrub_sync_suppress_seek: bool = False
 _root_quat_sync_suppress_set: bool = False
 _pd_drive_sync_suppress_set: bool = False
+_need_record_avi_sync_suppress_set: bool = False
 _z_offset_sync_suppress_set: bool = False
 _root_z_compress_sync_suppress_set: bool = False
 _foot_ik_sync_suppress_set: bool = False
@@ -165,6 +168,16 @@ def set_pd_drive_callbacks(
     global _pd_drive_provider, _pd_drive_setter
     _pd_drive_provider = provider
     _pd_drive_setter = setter
+
+
+def set_need_record_avi_callbacks(
+    provider: Callable[[], bool] | None,
+    setter: Callable[[bool], None] | None,
+) -> None:
+    """Set viewport AVI recording enable callbacks for the mapping UI checkbox."""
+    global _need_record_avi_provider, _need_record_avi_setter
+    _need_record_avi_provider = provider
+    _need_record_avi_setter = setter
 
 
 def set_z_offset_enable_callbacks(
@@ -508,6 +521,7 @@ def _build_mapping_window(ui):
                     pass
 
         pd_drive_model = ui.SimpleBoolModel(False)
+        need_record_avi_model = ui.SimpleBoolModel(False)
         z_offset_enable_model = ui.SimpleBoolModel(False)
         root_z_baseline_offset_model = ui.SimpleFloatModel(0.76)
         root_z_outlier_scale_model = ui.SimpleFloatModel(0.6)
@@ -629,6 +643,16 @@ def _build_mapping_window(ui):
             except Exception:
                 pass
 
+        def _on_need_record_avi_changed(m: Any) -> None:
+            if _need_record_avi_sync_suppress_set:
+                return
+            if _need_record_avi_setter is None:
+                return
+            try:
+                _need_record_avi_setter(bool(m.get_value_as_bool()))
+            except Exception:
+                pass
+
         def _on_z_offset_enable_changed(m: Any) -> None:
             if _z_offset_sync_suppress_set:
                 return
@@ -697,6 +721,7 @@ def _build_mapping_window(ui):
                 pass
 
         pd_drive_model.add_value_changed_fn(_on_pd_drive_changed)
+        need_record_avi_model.add_value_changed_fn(_on_need_record_avi_changed)
         z_offset_enable_model.add_value_changed_fn(_on_z_offset_enable_changed)
         root_z_baseline_offset_model.add_value_changed_fn(lambda _m: _push_root_z_compress())
         root_z_outlier_scale_model.add_value_changed_fn(lambda _m: _push_root_z_compress())
@@ -804,6 +829,12 @@ def _build_mapping_window(ui):
                     "Robot Leg IK",
                     foot_ik_enable_model,
                 )
+                with ui.HStack(height=_DANCE_OPT_ROW_H, spacing=_DANCE_OPT_COL_GAP):
+                    with ui.HStack(width=_DANCE_OPT_COL_W):
+                        ui.Label("Need record AVI", width=_DANCE_OPT_LABEL_W)
+                        ui.CheckBox(model=need_record_avi_model, width=24, height=22)
+                        ui.Spacer()
+                    ui.Spacer(width=_DANCE_OPT_COL_W)
                 _dance_option_float_slider_pair(
                     ui,
                     "Root Z baseline",
@@ -875,6 +906,7 @@ def _build_mapping_window(ui):
     transport_refs = {
         "scrub_model": scrub_model,
         "pd_drive_model": pd_drive_model,
+        "need_record_avi_model": need_record_avi_model,
         "audio_volume_model": audio_volume_model,
         "z_offset_enable_model": z_offset_enable_model,
         "root_z_baseline_offset_model": root_z_baseline_offset_model,
@@ -920,6 +952,7 @@ async def _mapping_ui_refresh_loop() -> None:
     import omni.kit.app
 
     global _scrub_sync_suppress_seek, _root_quat_sync_suppress_set, _pd_drive_sync_suppress_set
+    global _need_record_avi_sync_suppress_set
     global _z_offset_sync_suppress_set, _root_z_compress_sync_suppress_set, _foot_ik_sync_suppress_set
     global _foot_ground_comp_sync_suppress_set
     global _audio_volume_sync_suppress_set
@@ -967,6 +1000,19 @@ async def _mapping_ui_refresh_loop() -> None:
                     pass
                 finally:
                     _pd_drive_sync_suppress_set = False
+            if _need_record_avi_provider is not None:
+                try:
+                    avi_on = bool(_need_record_avi_provider())
+                except Exception:
+                    avi_on = False
+                _need_record_avi_sync_suppress_set = True
+                try:
+                    if bool(tr["need_record_avi_model"].get_value_as_bool()) != avi_on:
+                        tr["need_record_avi_model"].set_value(avi_on)
+                except Exception:
+                    pass
+                finally:
+                    _need_record_avi_sync_suppress_set = False
             if _z_offset_enable_provider is not None:
                 try:
                     z_on = bool(_z_offset_enable_provider())

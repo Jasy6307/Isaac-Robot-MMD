@@ -157,6 +157,7 @@ class PlaybackH5Recorder:
 
         if root_pos is not None and root_quat_wxyz is not None:
             ax, ay, az = self.root_anchor_pos
+            # root_pos is the post-compress playback target (see compute_targets_for_motion_frame).
             self._root_pos_delta[f, :] = np.asarray(
                 [
                     float(root_pos[0]) - ax,

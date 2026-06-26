@@ -17,7 +17,8 @@ Example
 Press ``--start_key`` (default ``P``) or the **G1 Policy Eval** UI Play button to begin
 each policy rollout from a stable standing pose; Stop ends rollout and audio early.
 When ``--dance`` has a companion WAV, audio starts with Play. Use ``--auto_start`` to
-run immediately without waiting for Play.
+run immediately without waiting for Play. Enable **Record AVI** to log poses during rollout
+and export a 30 fps viewport AVI afterward (with dance WAV muxed when available).
 """
 
 from __future__ import annotations
@@ -118,7 +119,15 @@ parser.add_argument(
     default=0,
     help="Number of episodes to play. Use <= 0 for infinite loop playback.",
 )
-parser.add_argument("--real_time", action="store_true", default=False)
+parser.add_argument(
+    "--real_time",
+    action="store_true",
+    default=False,
+    help=(
+        "Pace policy steps on a wall-clock grid at control_hz (audio stays 1x). "
+        "Uses cumulative perf_counter deadlines instead of per-step sleep deltas."
+    ),
+)
 parser.add_argument(
     "--action_smooth_alpha",
     type=float,
@@ -168,6 +177,16 @@ parser.add_argument(
         "Does not change render rate; use for slightly lower MDP overhead only."
     ),
 )
+parser.add_argument(
+    "--record_avi",
+    action="store_true",
+    default=False,
+    help=(
+        "Record viewport AVI at 30 fps after each policy rollout. "
+        "Poses are logged during rollout (no live capture); AVI is exported offline. "
+        "Muxes the dance WAV when available (ffmpeg or imageio-ffmpeg)."
+    ),
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -215,8 +234,28 @@ from source.train_workflow.utils.motion.window import (  # noqa: E402
     resolve_motion_window_seconds,
 )
 from source.train_workflow.utils.media import audio_util  # noqa: E402
+from source.train_workflow.utils.media.avi_audio_mux import mux_wav_into_avi  # noqa: E402
+from source.train_workflow.utils.media.policy_rollout_avi import (  # noqa: E402
+    PolicyRolloutPoseLog,
+    export_pose_log_to_avi,
+)
+from source.train_workflow.utils.media.viewport_avi_recorder import (  # noqa: E402
+    ViewportAviRecorder,
+    default_playback_avi_path,
+)
+
+_RECORD_AVI_FPS = 30.0
 
 _DANCES_CONFIG_PATH = os.path.join(_SCRIPT_DIR, "dances_config.yaml")
+
+
+def _wait_until_wall_deadline(deadline: float) -> None:
+    """Block until perf_counter() >= deadline; retries sleep to absorb Windows overshoot."""
+    while True:
+        remaining = float(deadline) - time.perf_counter()
+        if remaining <= 0.0:
+            return
+        time.sleep(min(remaining, 0.004))
 
 
 class _PlayPerfTracker:
@@ -383,6 +422,7 @@ class _PolicyPlaybackGate:
         self.policy_total = 0
         self.wav_path: str | None = None
         self.audio_enabled = False
+        self.record_avi_enabled = False
         self.dance_title = "Policy eval"
 
     def request_play(self) -> None:
@@ -399,6 +439,7 @@ class _PolicyPlaybackGate:
             "policy_total": self.policy_total,
             "has_audio": bool(self.wav_path),
             "audio_enabled": self.audio_enabled,
+            "record_avi_enabled": self.record_avi_enabled,
         }
 
 
@@ -634,8 +675,8 @@ def _apply_play_mode(env_cfg: ManagerBasedRLEnvCfg) -> None:
         policy_obs.enable_corruption = False
 
     print(
-        f"[INFO] Play mode: rewards zeroed ({zeroed} terms), obs corruption off. "
-        "Render interval unchanged."
+        f"[INFO] Play mode: rewards zeroed ({zeroed} terms), obs corruption off, "
+        "per-step joint_pos_tracking_error skipped during rollout."
     )
 
 
@@ -715,6 +756,11 @@ def main() -> None:
             f"(sim_steps/s vs control_hz={control_hz:.1f}; "
             f"realtime_ratio=1.0 means real-time sim)."
         )
+    if args_cli.real_time:
+        print(
+            f"[INFO] --real_time: pacing steps on wall clock at {control_hz:.1f} Hz "
+            "(audio 1x; cumulative deadline, not per-step sleep delta)."
+        )
 
     dt = env_unwrapped.step_dt
     perf = _PlayPerfTracker(
@@ -735,11 +781,75 @@ def main() -> None:
     playback.dance_title = DANCE_NAME or os.path.splitext(os.path.basename(h5_path))[0]
     playback.wav_path = _resolve_dance_wav_path(DANCE_NAME)
     playback.audio_enabled = bool(playback.wav_path)
+    playback.record_avi_enabled = bool(args_cli.record_avi)
     if playback.wav_path:
         audio_util.warn_if_no_pygame_sync()
         print(f"[INFO] Dance audio: {playback.wav_path}")
     else:
         print("[INFO] No dance WAV configured for this eval run.")
+    if playback.record_avi_enabled and getattr(args_cli, "headless", False):
+        print("[WARN] --record_avi ignored in headless mode (no viewport).")
+        playback.record_avi_enabled = False
+
+    if playback.record_avi_enabled and not args_cli.real_time:
+        print(
+            "[INFO] Record AVI: policy rollout runs at full sim speed; "
+            f"viewport AVI exported at {_RECORD_AVI_FPS:.0f} fps after rollout."
+        )
+
+    pose_log = PolicyRolloutPoseLog()
+    pose_log_active = False
+
+    def _avi_pre_render() -> None:
+        try:
+            env_unwrapped.sim.render()
+        except Exception:
+            pass
+
+    def _export_avi_from_pose_log(*, reason: str) -> None:
+        nonlocal pose_log_active
+        if len(pose_log) <= 0:
+            print(f"[WARN] AVI export skipped ({reason}): no pose snapshots.")
+            pose_log_active = False
+            return
+        label = f"eval_{playback.dance_title}"
+        out_path = default_playback_avi_path(media_dir=MEDIA_DIR, motion_label=label)
+        print(
+            f"[INFO] Exporting AVI from {len(pose_log)} pose snapshots @ {_RECORD_AVI_FPS:.0f} fps "
+            f"(control_hz={control_hz:.1f}) -> {out_path}"
+        )
+        recorder = ViewportAviRecorder(fps=_RECORD_AVI_FPS, pre_render=_avi_pre_render)
+        try:
+            recorder.start(out_path)
+            export_pose_log_to_avi(
+                env_unwrapped,
+                pose_log,
+                recorder,
+                export_fps=_RECORD_AVI_FPS,
+                control_hz=control_hz,
+                pre_render=_avi_pre_render,
+            )
+            frame_count = int(recorder.frame_count)
+            recorder_fps = float(recorder.fps)
+            out_final = recorder.stop()
+        except Exception as exc:
+            print(f"[ERROR] AVI export failed ({reason}): {exc}")
+            pose_log.clear()
+            pose_log_active = False
+            return
+        pose_log.clear()
+        pose_log_active = False
+        if not out_final:
+            print(f"[WARN] AVI export produced no frames ({reason})")
+            return
+        if playback.wav_path and os.path.isfile(playback.wav_path):
+            mux_wav_into_avi(out_final, playback.wav_path, replace_original=True)
+        expected_s = float(frame_count) / max(recorder_fps, 1e-6)
+        print(
+            f"[INFO] AVI export complete ({reason}): {out_final} "
+            f"({frame_count} frames @ {recorder_fps:.1f} fps, "
+            f"expected duration {expected_s:.2f}s)"
+        )
 
     if not getattr(args_cli, "headless", False):
         from source.train_workflow.ui import eval_play_ui
@@ -751,6 +861,10 @@ def main() -> None:
         eval_play_ui.set_audio_enabled_setter(
             lambda enabled: setattr(playback, "audio_enabled", bool(enabled))
         )
+        eval_play_ui.set_record_avi_callbacks(
+            lambda: playback.record_avi_enabled,
+            lambda enabled: setattr(playback, "record_avi_enabled", bool(enabled)),
+        )
         eval_play_ui.create_eval_play_ui()
 
     start_listener: _StartKeyListener | None = None
@@ -761,10 +875,26 @@ def main() -> None:
             print("[WARN] Keyboard unavailable; falling back to --auto_start.")
             wait_for_key = False
 
+    rollout_wall_start: float | None = None
+    idle_wall_start: float | None = None
+    idle_steps_done = 0
+
+    def _reset_idle_wall_clock() -> None:
+        nonlocal idle_wall_start, idle_steps_done
+        idle_wall_start = None
+        idle_steps_done = 0
+
     def _begin_rollout(*, episode_idx: int) -> None:
-        nonlocal obs_raw
+        nonlocal obs_raw, pose_log_active, rollout_wall_start, idle_wall_start, idle_steps_done
         audio_util.stop_wav()
+        _reset_idle_wall_clock()
         obs_raw, _ = _env_reset(wrapped)
+        if playback.record_avi_enabled and not getattr(args_cli, "headless", False):
+            pose_log.clear()
+            pose_log_active = True
+        else:
+            pose_log_active = False
+        rollout_wall_start = time.perf_counter()
         if playback.wav_path and playback.audio_enabled:
             audio_util.play_wav_async(playback.wav_path)
         playback.playing = True
@@ -772,12 +902,19 @@ def main() -> None:
         playback.policy_step = 0
         print(f"[INFO] Policy rollout started (episode={episode_idx}, steps={T}).")
 
-    def _abort_rollout() -> None:
-        nonlocal obs_raw
+    def _abort_rollout(*, export_avi: bool = False) -> None:
+        nonlocal obs_raw, pose_log_active, rollout_wall_start
         audio_util.stop_wav()
         playback.playing = False
         playback.stop_requested = False
         playback.policy_step = 0
+        rollout_wall_start = None
+        _reset_idle_wall_clock()
+        if export_avi and pose_log_active:
+            _export_avi_from_pose_log(reason="stop")
+        else:
+            pose_log.clear()
+            pose_log_active = False
         _reset_to_standing_pose(env_unwrapped)
         obs_raw = wrapped.get_observations()
         print("[INFO] Policy rollout stopped.")
@@ -808,11 +945,12 @@ def main() -> None:
                 if start_listener is not None and start_listener.consume():
                     _begin_rollout(episode_idx=episode)
                 else:
-                    start_time = time.time()
+                    if idle_wall_start is None:
+                        idle_wall_start = time.perf_counter()
+                    idle_steps_done += 1
                     obs_raw, _, _, _ = _idle_hold_step(env_unwrapped, wrapped, zero_actions)
-                    sleep_time = dt - (time.time() - start_time)
-                    if args_cli.real_time and sleep_time > 0:
-                        time.sleep(sleep_time)
+                    if args_cli.real_time:
+                        _wait_until_wall_deadline(idle_wall_start + idle_steps_done * dt)
                 continue
 
             err_accum = torch.zeros(env_unwrapped.num_envs, device=env_unwrapped.device)
@@ -820,11 +958,11 @@ def main() -> None:
             steps_done = 0
             smoothed_actions = None
             rollout_aborted = False
+            skip_step_tracking_error = bool(args_cli.play)
             for _ in range(T):
                 if playback.stop_requested:
                     rollout_aborted = True
                     break
-                start_time = time.time()
                 with torch.inference_mode():
                     actions = policy(obs_adapter(obs_raw))
                     if smooth_alpha < 1.0:
@@ -836,34 +974,50 @@ def main() -> None:
                             )
                         actions = smoothed_actions
                 obs_raw, _, _, _ = wrapped.step(actions)
-                with torch.no_grad():
-                    err = joint_pos_tracking_error(env_unwrapped, h5_path, window_s)
-                rms = torch.sqrt(torch.mean(err.pow(2), dim=1))
-                err_accum += rms
-                max_per_step = torch.maximum(max_per_step, rms)
+                if not skip_step_tracking_error:
+                    with torch.no_grad():
+                        err = joint_pos_tracking_error(env_unwrapped, h5_path, window_s)
+                    rms = torch.sqrt(torch.mean(err.pow(2), dim=1))
+                    err_accum += rms
+                    max_per_step = torch.maximum(max_per_step, rms)
                 steps_done += 1
                 playback.policy_step = steps_done
                 perf.on_step()
-                sleep_time = dt - (time.time() - start_time)
-                if args_cli.real_time and sleep_time > 0:
-                    time.sleep(sleep_time)
+                if pose_log_active:
+                    pose_log.append_from_env(env_unwrapped)
+                if args_cli.real_time and rollout_wall_start is not None:
+                    _wait_until_wall_deadline(rollout_wall_start + steps_done * dt)
 
             if rollout_aborted:
                 playback.stop_requested = False
-                _abort_rollout()
+                _abort_rollout(export_avi=pose_log_active)
                 continue
 
             audio_util.stop_wav()
-            mean_rms = (err_accum / max(steps_done, 1)).mean().item()
-            max_rms = max_per_step.mean().item()
-            print(
-                f"[EVAL] episode={episode} steps={steps_done} "
-                f"mean_joint_rms={mean_rms:.4f} rad   peak_joint_rms={max_rms:.4f} rad"
-            )
+            if pose_log_active:
+                _export_avi_from_pose_log(reason="complete")
+            if skip_step_tracking_error:
+                with torch.no_grad():
+                    err = joint_pos_tracking_error(env_unwrapped, h5_path, window_s)
+                final_rms = torch.sqrt(torch.mean(err.pow(2), dim=1)).mean().item()
+                print(
+                    f"[EVAL] episode={episode} steps={steps_done} "
+                    f"final_joint_rms={final_rms:.4f} rad "
+                    f"(play mode: per-step tracking error skipped)"
+                )
+            else:
+                mean_rms = (err_accum / max(steps_done, 1)).mean().item()
+                max_rms = max_per_step.mean().item()
+                print(
+                    f"[EVAL] episode={episode} steps={steps_done} "
+                    f"mean_joint_rms={mean_rms:.4f} rad   peak_joint_rms={max_rms:.4f} rad"
+                )
             perf.on_episode_end(episode)
             episode += 1
             playback.playing = False
             playback.policy_step = 0
+            rollout_wall_start = None
+            _reset_idle_wall_clock()
 
             if int(args_cli.num_episodes) > 0 and episode >= int(args_cli.num_episodes):
                 break
@@ -880,6 +1034,7 @@ def main() -> None:
                 _begin_rollout(episode_idx=episode)
     finally:
         audio_util.stop_wav()
+        pose_log.clear()
         if start_listener is not None:
             start_listener.unsubscribe()
 

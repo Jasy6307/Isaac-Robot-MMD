@@ -64,7 +64,7 @@ C1_ALIVE_WEIGHT = 2.0
 C1_TERMINATED_PENALTY_WEIGHT = -1.0
 C1_ROOT_YAW_TRACK_WEIGHT = 20.0
 C1_ROOT_YAW_TRACK_SIGMA = 0.10
-C1_ROOT_XY_TRACK_WEIGHT = 15.0
+C1_ROOT_XY_TRACK_WEIGHT = 20.0
 C1_ROOT_XY_TRACK_SIGMA = 0.10
 C1_ROOT_Z_TRACK_WEIGHT = 1.0
 C1_ROOT_Z_TRACK_SIGMA = 0.10
@@ -330,8 +330,8 @@ class G1VmdTrainBaseEnvCfg(ManagerBasedRLEnvCfg):
         super().__post_init__()
         # Control loop: dt=1/60 physics, decimation=2 -> 30Hz control.
         self.sim.dt = 1.0 / 60.0   # 物理 60 Hz
-        self.decimation = 2         # 控制 30 Hz
-        self.sim.render_interval = self.decimation 
+        self.decimation = 1        # 控制 30 Hz
+        self.sim.render_interval = self.decimation / 2
         self.sim.physics_material = self.scene.terrain.physics_material
         # Window length must match the reference buffer window seconds.
         self.episode_length_s = DEFAULT_WINDOW_SECONDS

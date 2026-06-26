@@ -102,6 +102,7 @@ from source.train_workflow.ui.mmd_config_ui import (
     set_foot_ground_comp_callbacks,
     set_joint_value_provider,
     set_mapping_changed_callback,
+    set_need_record_avi_callbacks,
     set_pd_drive_callbacks,
     set_playback_status_provider,
     set_playback_transport_callbacks,
@@ -112,6 +113,10 @@ from source.train_workflow.ui.mmd_config_ui import (
 )
 from source.train_workflow.ui.retargeting_tune_ui import create_retarget_tune_ui
 from source.train_workflow.utils.media import audio_util
+from source.train_workflow.utils.media.viewport_avi_recorder import (
+    ViewportAviRecorder,
+    default_playback_avi_path,
+)
 from source.train_workflow.utils.format.csv_loader import (
     FootIkConfig,
     FootIkState,
@@ -762,6 +767,11 @@ def main():
     h5_recorder: PlaybackH5Recorder | None = None
     h5_record_frame_cursor = 0
     h5_record_dance_key: str | None = None
+    need_record_avi_ui = False
+    avi_recorder: ViewportAviRecorder | None = None
+    avi_recording_active = False
+    last_avi_motion_frame: int | None = None
+    pending_avi_finalize_max_frame: int | None = None
     motion_has_wav = False
     root_quat_rpy_scale = list(MMD_ROOT_QUAT_RPY_SCALE_DEFAULT)
     root_quat_rpy_axis_idx = list(MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT)
@@ -908,6 +918,13 @@ def main():
     def _on_mapping_ui_changed():
         nonlocal mapping_reapply_requested
         mapping_reapply_requested = True
+
+    def _get_need_record_avi_for_ui() -> bool:
+        return bool(need_record_avi_ui)
+
+    def _set_need_record_avi_from_ui(enabled: bool) -> None:
+        nonlocal need_record_avi_ui
+        need_record_avi_ui = bool(enabled)
 
     def _get_pd_drive_for_ui() -> bool:
         return bool(pd_drive_enabled_ui)
@@ -1129,6 +1146,7 @@ def main():
         _dance_h5_deletable,
     )
     set_pd_drive_callbacks(_get_pd_drive_for_ui, _set_pd_drive_from_ui)
+    set_need_record_avi_callbacks(_get_need_record_avi_for_ui, _set_need_record_avi_from_ui)
     set_z_offset_enable_callbacks(_get_z_offset_enable_for_ui, _set_z_offset_enable_from_ui)
     set_root_z_compress_callbacks(_get_root_z_compress_for_ui, _set_root_z_compress_from_ui)
     set_foot_ground_comp_callbacks(_get_foot_ground_comp_for_ui, _set_foot_ground_comp_from_ui)
@@ -1384,9 +1402,116 @@ def main():
         if default_joint_pos is not None:
             playback_default_joint_pos = default_joint_pos.copy()
         print(f"[INFO] 开始播放 {label}")
+        if need_record_avi_ui:
+            _start_avi_recording(label)
+
+    def _start_avi_recording(motion_label: str) -> None:
+        nonlocal avi_recorder, avi_recording_active, last_avi_motion_frame
+        if avi_recording_active:
+            _finalize_avi_recording(reason="restart")
+        play_hz = max(1.0, float(VMD_FPS) * float(args_cli.play_speed))
+        out_path = default_playback_avi_path(media_dir=_MEDIA_DIR, motion_label=motion_label)
+        try:
+            avi_recorder = ViewportAviRecorder(fps=play_hz)
+            avi_recorder.start(out_path)
+        except Exception as exc:
+            avi_recorder = None
+            avi_recording_active = False
+            last_avi_motion_frame = None
+            print(f"[ERROR] AVI recording failed to start: {exc}")
+            return
+        avi_recording_active = True
+        last_avi_motion_frame = None
+        print(
+            f"[INFO] AVI recording started: {out_path} @ {play_hz:.1f} fps "
+            f"(duplicate-fill when sim skips motion indices)"
+        )
+
+    def _sync_avi_recording_for_motion_frame(motion_frame: int) -> None:
+        """Capture viewport once per new motion index; duplicate-fill skipped indices."""
+        nonlocal last_avi_motion_frame
+        if not avi_recording_active or avi_recorder is None:
+            return
+        mf = int(motion_frame)
+        if last_avi_motion_frame is None:
+            if avi_recorder.capture_frame():
+                last_avi_motion_frame = mf
+            return
+        if mf == last_avi_motion_frame:
+            return
+        if mf > last_avi_motion_frame:
+            gap = mf - last_avi_motion_frame - 1
+            if gap > 0:
+                avi_recorder.write_duplicate_frames(gap)
+            if avi_recorder.capture_frame():
+                last_avi_motion_frame = mf
+        else:
+            if avi_recorder.capture_frame():
+                last_avi_motion_frame = mf
+
+    def _pad_avi_recording_to_max_frame(max_frame: int) -> None:
+        """Pad trailing motion indices with duplicates so video length matches playback."""
+        nonlocal last_avi_motion_frame
+        if not avi_recording_active or avi_recorder is None or last_avi_motion_frame is None:
+            return
+        pad = int(max_frame) - int(last_avi_motion_frame)
+        if pad > 0:
+            avi_recorder.write_duplicate_frames(pad)
+            last_avi_motion_frame = int(max_frame)
+
+    def _finalize_avi_recording(*, reason: str) -> None:
+        nonlocal avi_recorder, avi_recording_active, last_avi_motion_frame, pending_avi_finalize_max_frame
+        if not avi_recording_active and avi_recorder is None:
+            return
+        recorder = avi_recorder
+        avi_recorder = None
+        avi_recording_active = False
+        last_avi_motion_frame = None
+        pending_avi_finalize_max_frame = None
+        if recorder is None:
+            return
+        frame_count = int(recorder.frame_count)
+        recorder_fps = float(recorder.fps)
+        try:
+            out_path = recorder.stop()
+        except Exception as exc:
+            print(f"[ERROR] AVI recording finalize failed ({reason}): {exc}")
+            return
+        if out_path:
+            expected_s = float(frame_count) / max(recorder_fps, 1e-6)
+            print(
+                f"[INFO] AVI recording complete ({reason}): {out_path} "
+                f"({frame_count} frames @ {recorder_fps:.1f} fps, "
+                f"expected duration {expected_s:.2f}s)"
+            )
+        else:
+            print(f"[WARN] AVI recording produced no frames ({reason})")
+
+    def _cancel_avi_recording(*, reason: str) -> None:
+        nonlocal avi_recorder, avi_recording_active, last_avi_motion_frame, pending_avi_finalize_max_frame
+        if not (avi_recording_active or avi_recorder is not None):
+            return
+        recorder = avi_recorder
+        avi_recorder = None
+        avi_recording_active = False
+        last_avi_motion_frame = None
+        pending_avi_finalize_max_frame = None
+        if recorder is not None:
+            try:
+                recorder.stop()
+            except Exception:
+                pass
+        print(f"[INFO] AVI recording cancelled ({reason})")
 
     def _reset_to_initial_pose(sync_ui_cache: bool = False) -> None:
         _ensure_joint_info()
+        if initial_root_snapshot_row is not None:
+            row = initial_root_snapshot_row
+            apply_root_pos_instant(
+                env,
+                (float(row[0]), float(row[1]), float(row[2])),
+                [float(row[3]), float(row[4]), float(row[5]), float(row[6])],
+            )
         if initial_default_joint_pos is None:
             return
         _set_control_reference_pose(initial_default_joint_pos)
@@ -1405,6 +1530,8 @@ def main():
         nonlocal h5_record_busy, h5_record_active, h5_recorder, h5_record_frame_cursor
         if h5_record_active or h5_recorder is not None:
             _cancel_h5_recording(reason="stop")
+        if avi_recording_active or avi_recorder is not None:
+            _finalize_avi_recording(reason="stop")
         pending_playback_stop = False
         audio_util.stop_wav()
         motion_has_wav = False
@@ -1426,13 +1553,6 @@ def main():
         last_playback_target_root_quat = None
         foot_ik_state.reset()
         foot_ik_viz.clear()
-        if initial_root_snapshot_row is not None:
-            row = initial_root_snapshot_row
-            apply_root_pos_instant(
-                env,
-                (float(row[0]), float(row[1]), float(row[2])),
-                [float(row[3]), float(row[4]), float(row[5]), float(row[6])],
-            )
         _reset_to_initial_pose(sync_ui_cache=True)
         print("[INFO] Playback stopped; reset to initial pose")
 
@@ -1566,7 +1686,6 @@ def main():
                 robot_inner,
                 ui_debug,
                 root_snapshot_row=initial_root_snapshot_row,
-                root_z_compress_cfg=root_z_cfg,
             )
         return compute_targets_for_motion_frame(
             frame_idx,
@@ -1612,6 +1731,8 @@ def main():
                 pending_record_h5_key = None
                 if h5_record_busy or h5_record_active:
                     _cancel_h5_recording(reason="env reset")
+                if avi_recording_active or avi_recorder is not None:
+                    _cancel_avi_recording(reason="env reset")
                 pending_z_edit_key = None
                 ui_debug.reset()
                 initial_root_snapshot_row = robot_root_row_clone(env)
@@ -1652,7 +1773,9 @@ def main():
                                 knee_hinge_projection=bool(args_cli.mmd_knee_hinge_projection),
                             ),
                         )
-                        initial_root_snapshot_row = robot_root_row_clone(env)
+                        foot_ik_state.reset()
+                        foot_ik_viz.clear()
+                        ui_debug.reset()
                         _reset_to_initial_pose(sync_ui_cache=True)
                     except Exception as exc:
                         print(f"[ERROR] Z_editted generation failed for [{dkey}]: {exc}")
@@ -1779,6 +1902,8 @@ def main():
                             did_seek_audio = True
                             pause_hold_frame = sf
                             play_start_time = time.perf_counter() - sf / play_hz
+                            if avi_recording_active:
+                                last_avi_motion_frame = int(sf) - 1 if int(sf) > 0 else None
 
                     if did_seek_audio and motion_has_wav:
                         audio_util.sync_audio_to_motion_frame(sf_applied, play_hz, paused_before_seek)
@@ -1788,7 +1913,8 @@ def main():
                     else:
                         elapsed_sec = max(0.0, time.perf_counter() - play_start_time)
                         frame = min(int(elapsed_sec * play_hz), max_frame)
-                        pause_hold_frame = frame
+
+                    pause_hold_frame = frame
 
                     did_toggle_audio = False
                     if pending_playback_toggle:
@@ -1930,6 +2056,8 @@ def main():
                         )
                         _apply_joint_pd_target(pd_hold_joint_pos_cmd)
                         actions = zero_action
+                    if avi_recording_active or avi_recorder is not None:
+                        pending_avi_finalize_max_frame = int(max_frame)
                     is_playing = False
                     playback_paused = False
                     motion_has_wav = False
@@ -1998,6 +2126,16 @@ def main():
                 )
             if (not pd_drive_enabled_ui) and last_frame_joint_pos_cmd is not None and joint_ids is not None:
                 apply_joint_state_instant(env, last_frame_joint_pos_cmd, joint_ids)
+            if avi_recording_active and avi_recorder is not None and is_playing and not playback_paused:
+                motion_frame = last_csv_motion_frame
+                if motion_frame is not None:
+                    _sync_avi_recording_for_motion_frame(int(motion_frame))
+            if pending_avi_finalize_max_frame is not None:
+                mf = int(pending_avi_finalize_max_frame)
+                pending_avi_finalize_max_frame = None
+                _sync_avi_recording_for_motion_frame(mf)
+                _pad_avi_recording_to_max_frame(mf)
+                _finalize_avi_recording(reason="complete")
             if is_playing:
                 _update_ankle_link_debug_viz(
                     last_playback_target_root,

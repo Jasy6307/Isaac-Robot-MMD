@@ -620,8 +620,18 @@ def generate_z_editted_motion(
     print(f"[INFO] z_delta_world_max={z_delta_world:.6f}m")
     print(f"[INFO] airborne_frames_detected={airborne_count}")
 
+    def _restore_initial_pose() -> None:
+        row = initial_root_snapshot_row
+        apply_root_pos_instant(
+            env,
+            (float(row[0]), float(row[1]), float(row[2])),
+            [float(row[3]), float(row[4]), float(row[5]), float(row[6])],
+        )
+        apply_joint_state_instant(env, default_joint_pos, joint_ids)
+
     if cfg.dry_run:
         print("[INFO] dry-run: no output file written.")
+        _restore_initial_pose()
         return output_path
 
     if kind == "csv":
@@ -650,4 +660,5 @@ def generate_z_editted_motion(
         )
         print(f"[INFO] Wrote compensated H5: {output_path} ({changed_rows} frames)")
 
+    _restore_initial_pose()
     return output_path
