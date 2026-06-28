@@ -399,6 +399,7 @@ def _disabled_dance_btn_style(*names: str) -> dict[str, dict[str, int]]:
 _DANCE_FILE_ROW_BTN_STYLE = _disabled_dance_btn_style(
     "gen_z_edited",
     "delete_z_edit",
+    "record_h5",
     "delete_h5",
 )
 
@@ -425,13 +426,17 @@ def _combo_selected_dance_key(
         return None
 
 
+def _dance_has_h5_file(selected_key: str | None) -> bool:
+    if not selected_key or _dance_h5_exists_provider is None:
+        return False
+    try:
+        return bool(_dance_h5_exists_provider(selected_key))
+    except Exception:
+        return False
+
+
 def _update_h5_status_label(label: Any, selected_key: str | None) -> None:
-    has_h5 = False
-    if selected_key and _dance_h5_exists_provider is not None:
-        try:
-            has_h5 = bool(_dance_h5_exists_provider(selected_key))
-        except Exception:
-            has_h5 = False
+    has_h5 = _dance_has_h5_file(selected_key)
     if has_h5:
         label.text = "H5 file available"
         label.style = {"color": _H5_STATUS_COLOR_OK}
@@ -770,7 +775,13 @@ def _build_mapping_window(ui):
                 )
                 ui.Spacer()
             with ui.HStack(height=28, style=_DANCE_FILE_ROW_BTN_STYLE):
-                btn_record_h5 = ui.Button("Record H5", width=82, height=24, clicked_fn=_on_record_h5_click)
+                btn_record_h5 = ui.Button(
+                    "Record H5",
+                    width=82,
+                    height=24,
+                    name="record_h5",
+                    clicked_fn=_on_record_h5_click,
+                )
                 btn_delete_h5 = ui.Button(
                     "Delete H5",
                     width=82,
@@ -1103,23 +1114,20 @@ async def _mapping_ui_refresh_loop() -> None:
             h5_lbl = tr.get("h5_status_label")
             if h5_lbl is not None:
                 _update_h5_status_label(h5_lbl, selected_key)
+            has_h5 = _dance_has_h5_file(selected_key)
+            h5_busy = False
+            if _h5_record_busy_provider is not None:
+                try:
+                    h5_busy = bool(_h5_record_busy_provider())
+                except Exception:
+                    h5_busy = False
             if btn_rec is not None:
-                h5_busy = False
-                if _h5_record_busy_provider is not None:
-                    try:
-                        h5_busy = bool(_h5_record_busy_provider())
-                    except Exception:
-                        h5_busy = False
-                btn_rec.enabled = not h5_busy
+                btn_rec.enabled = bool(selected_key) and not h5_busy and not has_h5
                 btn_rec.text = "Recording..." if h5_busy else "Record H5"
             if btn_del_h5 is not None:
-                h5_busy = False
-                if _h5_record_busy_provider is not None:
-                    try:
-                        h5_busy = bool(_h5_record_busy_provider())
-                    except Exception:
-                        h5_busy = False
-                btn_del_h5.enabled = _can_delete_h5(selected_key) and not h5_busy
+                btn_del_h5.enabled = (
+                    bool(selected_key) and has_h5 and _can_delete_h5(selected_key) and not h5_busy
+                )
             playing = bool(st.get("playing"))
             paused = bool(st.get("playback_paused"))
             mx = st.get("max_frame")

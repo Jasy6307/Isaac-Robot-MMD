@@ -93,7 +93,7 @@ def build_joint_pos_deg_cache(joint_names: list[str], joint_pos_cmd: Any) -> dic
 
 
 def compute_action_for_frame(
-    frame: int,
+    frame: float,
     current_frames: Any,
     current_bone_frame_lists: dict[str, list[int]],
     current_all_bones: set[str],
@@ -139,7 +139,7 @@ def motion_is_static_pose(frames: Any) -> bool:
 
 
 def get_csv_root_quat_with_bone(
-    frame: int,
+    frame: float,
     frames: Any,
     bone_frame_lists: dict[str, list[int]],
 ) -> tuple[str | None, list[float] | None]:
@@ -165,7 +165,7 @@ def get_csv_root_quat_with_bone(
 
 
 def interpolate_mmd_root_translation_bone(
-    frame: int,
+    frame: float,
     frames: Any,
     bone_frame_lists: dict[str, list[int]],
 ) -> tuple[str | None, dict | None]:
@@ -234,7 +234,7 @@ def _update_foot_ik_mmd_viz_world(
 
 
 def _interp_frame_data(
-    frame: int,
+    frame: float,
     frames: Any,
     bone_frame_lists: dict[str, list[int]],
     all_bones: set[str],
@@ -248,7 +248,7 @@ def _interp_frame_data(
 
 
 def _compute_csv_root_targets(
-    frame: int,
+    frame: float,
     frames: Any,
     bone_frame_lists: dict[str, list[int]],
     groove_pos_to_world: float,
@@ -331,7 +331,7 @@ def _compute_csv_root_targets(
 
 
 def compute_targets_for_motion_frame(
-    frame: int,
+    frame: float,
     frames: Any,
     bone_frame_lists: dict[str, list[int]],
     all_bones: set[str],
@@ -353,7 +353,7 @@ def compute_targets_for_motion_frame(
     foot_ik_state: FootIkState | None = None,
     foot_ik_viz_cfg: FootIkVizConfig | None = None,
 ) -> tuple[Any, tuple[float, float, float] | None, list[float] | None, Any, str | None, bool | None]:
-    """Compute joint/root targets for one CSV motion frame."""
+    """Compute joint/root targets for one CSV motion sample (supports sub-frame interpolation)."""
     ui_debug.root_rpy_euler_scaled_deg = (None, None, None)
     ui_debug.root_rot_bone_name = None
 
@@ -407,7 +407,7 @@ def compute_targets_for_motion_frame(
             enable_hand=enable_hand,
             foot_ik_cfg=foot_ik_cfg,
             foot_ik_state=foot_ik_state,
-            foot_ik_frame_idx=int(frame),
+            foot_ik_frame_idx=int(round(float(frame))),
             foot_ik_root_pos_world=target_root_pos,
             foot_ik_root_quat_wxyz=target_root_quat_wxyz,
             foot_ik_viz_cfg=foot_ik_viz_cfg,

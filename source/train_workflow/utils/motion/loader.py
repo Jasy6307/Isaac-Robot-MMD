@@ -219,16 +219,9 @@ def build_dance_hdf5_motion_by_key(
             continue
         if kind != "csv" or not path:
             continue
-        stem = os.path.splitext(path)[0]
-        for ext in (".h5", ".hdf5"):
-            alt_path = stem + ext
-            if not os.path.isfile(alt_path):
-                continue
-            alt_data = load_motion(alt_path)
-            if alt_data is None or str(alt_data.get("kind", "")) != "hdf5":
-                continue
-            out[dkey] = (os.path.basename(alt_path), alt_data)
-            break
+        loaded = _first_loadable_h5_sibling(path)
+        if loaded is not None:
+            out[dkey] = loaded
     return out
 
 
@@ -299,7 +292,7 @@ def delete_z_editted_siblings(path: str) -> list[str]:
 
 
 def iter_h5_sibling_paths(path: str) -> list[str]:
-    """Sibling ``.h5`` / ``.hdf5`` next to a CSV motion (not ``*_z_editted`` variants)."""
+    """Sibling ``.h5`` / ``.hdf5`` next to a CSV motion (includes ``*_z_editted`` variants)."""
     if not path or not str(path).strip():
         return []
     abs_path = os.path.abspath(str(path))
@@ -307,14 +300,35 @@ def iter_h5_sibling_paths(path: str) -> list[str]:
     if ext.lower() != ".csv":
         return []
     stem = os.path.splitext(abs_path)[0]
-    if stem.endswith("_z_editted") or stem.endswith("_hand"):
-        return []
+    if stem.endswith("_hand"):
+        base_stems = [stem]
+    elif stem.endswith("_z_editted"):
+        base_stems = [stem]
+    else:
+        base_stems = [stem, stem + "_z_editted"]
+    candidates: list[str] = []
+    for base in base_stems:
+        for h5_ext in (".h5", ".hdf5"):
+            candidates.append(base + h5_ext)
     out: list[str] = []
-    for h5_ext in (".h5", ".hdf5"):
-        cand = stem + h5_ext
-        if os.path.isfile(cand):
-            out.append(cand)
+    seen: set[str] = set()
+    for cand in candidates:
+        norm = os.path.normpath(cand)
+        if norm in seen or not os.path.isfile(norm):
+            continue
+        seen.add(norm)
+        out.append(norm)
     return out
+
+
+def _first_loadable_h5_sibling(path: str) -> tuple[str, MotionBundle] | None:
+    """Return (basename, bundle) for the first readable H5 sibling of a CSV motion."""
+    for alt_path in iter_h5_sibling_paths(path):
+        alt_data = load_motion(alt_path)
+        if alt_data is None or str(alt_data.get("kind", "")) != "hdf5":
+            continue
+        return os.path.basename(alt_path), alt_data
+    return None
 
 
 def has_deletable_h5_sibling(path: str) -> bool:
@@ -409,13 +423,7 @@ def build_dance_hand_hdf5_motion_by_key(
             continue
         if kind != "csv" or not path:
             continue
-        for ext in (".h5", ".hdf5"):
-            alt_path = _replace_ext(path, ext)
-            if not os.path.isfile(alt_path):
-                continue
-            alt_data = load_motion(alt_path)
-            if alt_data is None or str(alt_data.get("kind", "")) != "hdf5":
-                continue
-            out[dkey] = (os.path.basename(alt_path), alt_data)
-            break
+        loaded = _first_loadable_h5_sibling(path)
+        if loaded is not None:
+            out[dkey] = loaded
     return out

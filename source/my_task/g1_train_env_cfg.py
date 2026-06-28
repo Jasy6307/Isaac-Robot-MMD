@@ -58,14 +58,14 @@ DEFAULT_WINDOW_SECONDS = 10.0
 
 # C1-only tuning (floating root): smaller action scale + stronger smoothness penalties.
 C1_ACTION_SCALE = 0.5 # 0.5
-C1_ACTION_RATE_L2_WEIGHT = -0.05 # -0.01
+C1_ACTION_RATE_L2_WEIGHT = -0.03 # -0.01
 C1_ACTION_L2_WEIGHT = -1.0e-4 # -1.0e-4
 C1_ALIVE_WEIGHT = 2.0
 C1_TERMINATED_PENALTY_WEIGHT = -1.0
-C1_ROOT_YAW_TRACK_WEIGHT = 20.0
-C1_ROOT_YAW_TRACK_SIGMA = 0.10
-C1_ROOT_XY_TRACK_WEIGHT = 20.0
-C1_ROOT_XY_TRACK_SIGMA = 0.10
+C1_ROOT_YAW_TRACK_WEIGHT = 10.0
+C1_ROOT_YAW_TRACK_SIGMA = 0.08
+C1_ROOT_XY_TRACK_WEIGHT = 25.0
+C1_ROOT_XY_TRACK_SIGMA = 0.06
 C1_ROOT_Z_TRACK_WEIGHT = 1.0
 C1_ROOT_Z_TRACK_SIGMA = 0.10
 # C1 joint tracking group weights (lower body): ankles are down-weighted.
@@ -88,8 +88,8 @@ C1_RESET_JOINT_POS_NOISE = 0.05
 # C1 residual defaults: arms+waist frozen; legs learn residual around q_ref.
 C1_RESIDUAL_ALPHA = 0.3
 # Residual variant: stronger tracking signal + slightly looser sigma for gradient when balancing.
-C1_RESIDUAL_JOINT_TRACK_WEIGHT = 15.0
-C1_RESIDUAL_JOINT_TRACK_SIGMA = 0.10
+C1_RESIDUAL_JOINT_TRACK_WEIGHT = 50.0
+C1_RESIDUAL_JOINT_TRACK_SIGMA = 0.07
 # C2 defaults: full-window (no random start/length) + stronger root XY/yaw tracking.
 C2_ALIVE_WEIGHT = 10.0
 C2_TERMINATED_PENALTY_WEIGHT = -5.0
@@ -172,7 +172,7 @@ class ObservationsCfg:
         joint_pos_rel, joint_vel_rel, projected_gravity, last_action,
         ref_joint_pos_rel (current step),
         ref_joint_pos_rel_next (current step + 1),
-        motion_phase, root_yaw_error_sin_cos.
+        motion_phase, root_xy_error, root_yaw_error_sin_cos.
     """
 
     @configclass
@@ -197,6 +197,10 @@ class ObservationsCfg:
         )
         phase = ObsTerm(
             func=mdp.motion_phase,
+            params={"h5_path": DEFAULT_DANCE_H5, "window_seconds": DEFAULT_WINDOW_SECONDS},
+        )
+        root_xy_error = ObsTerm(
+            func=mdp.root_xy_error,
             params={"h5_path": DEFAULT_DANCE_H5, "window_seconds": DEFAULT_WINDOW_SECONDS},
         )
         root_yaw_error = ObsTerm(

@@ -29,8 +29,6 @@ class FootAnkleGroundCompConfig:
     enable: bool = True
     ground_z: float = 0.0
     clearance_m: float = 0.005
-    max_pitch_delta_deg: float = 28.0
-    max_roll_delta_deg: float = 18.0
     pitch_search_steps: int = 11
     roll_search_steps: int = 5
 
@@ -59,13 +57,18 @@ def foot_ankle_ground_comp_config_from_namespace(ns: Any) -> FootAnkleGroundComp
         enable=bool(getattr(ns, "foot_ankle_ground_comp", True)),
         ground_z=float(getattr(ns, "foot_ground_z", 0.0)),
         clearance_m=float(getattr(ns, "foot_ground_clearance", 0.005)),
-        max_pitch_delta_deg=float(getattr(ns, "foot_ankle_ground_max_pitch_deg", 28.0)),
-        max_roll_delta_deg=float(getattr(ns, "foot_ankle_ground_max_roll_deg", 18.0)),
     )
 
 
-def _clamp(v: float, lo: float, hi: float) -> float:
-    return float(max(lo, min(hi, float(v))))
+def ankle_comp_joint_limits_deg(side: str = "left") -> dict[str, tuple[float, float]]:
+    """Ankle pitch/roll URDF limits in degrees (search spans full joint range)."""
+    limits = g1_leg_joint_limits(str(side))
+    ap_lo, ap_hi = limits[4]
+    ar_lo, ar_hi = limits[5]
+    return {
+        "pitch": (math.degrees(ap_lo), math.degrees(ap_hi)),
+        "roll": (math.degrees(ar_lo), math.degrees(ar_hi)),
+    }
 
 
 def _q6_from_joint_cmd(
@@ -176,11 +179,10 @@ def _search_ankle_angles(
     ap_hi: float,
     ar_lo: float,
     ar_hi: float,
-    max_dp: float,
-    max_dr: float,
     n_pitch: int,
     n_roll: int,
 ) -> tuple[float, float]:
+    """Search ankle pitch/roll across full URDF joint limits (not a fixed delta)."""
     best: dict[str, float | bool] = {
         "best_ap": ap0,
         "best_ar": ar0,
@@ -190,30 +192,36 @@ def _search_ankle_angles(
     }
     n_p = max(3, int(n_pitch))
     n_r = max(1, int(n_roll))
+    ap_span = float(ap_hi) - float(ap_lo)
+    ar_span = float(ar_hi) - float(ar_lo)
 
     for i in range(n_p):
         t = 0.0 if n_p <= 1 else float(i) / float(n_p - 1)
-        ap = _clamp(ap0 + (2.0 * t - 1.0) * max_dp, ap_lo, ap_hi)
+        ap = float(ap_lo) + t * ap_span
         _consider_candidate(ap, ar0, ap0, ar0, ctx, best=best)
 
     if not bool(best["found_ok"]) and n_r > 1:
         ap_seed = float(best["best_ap"])
         for j in range(n_r):
-            u = float(j) / float(n_r - 1)
-            ar = _clamp(ar0 + (2.0 * u - 1.0) * max_dr, ar_lo, ar_hi)
+            u = 0.0 if n_r <= 1 else float(j) / float(n_r - 1)
+            ar = float(ar_lo) + u * ar_span
             _consider_candidate(ap_seed, ar, ap0, ar0, ctx, best=best)
 
     if not bool(best["found_ok"]) and n_r > 1 and n_p > 3:
         ap_seed = float(best["best_ap"])
         ar_seed = float(best["best_ar"])
-        refine_dp = max_dp / max(3.0, float(n_p) / 3.0)
-        refine_dr = max_dr / max(2.0, float(n_r) / 2.0)
+        refine_ap_lo = max(float(ap_lo), ap_seed - ap_span / 6.0)
+        refine_ap_hi = min(float(ap_hi), ap_seed + ap_span / 6.0)
+        refine_ar_lo = max(float(ar_lo), ar_seed - ar_span / 2.0)
+        refine_ar_hi = min(float(ar_hi), ar_seed + ar_span / 2.0)
+        refine_ap_span = max(refine_ap_hi - refine_ap_lo, 1e-9)
+        refine_ar_span = max(refine_ar_hi - refine_ar_lo, 1e-9)
         for i in range(3):
             t = 0.0 if n_p <= 1 else float(i) / 2.0
-            ap = _clamp(ap_seed + (2.0 * t - 1.0) * refine_dp, ap_lo, ap_hi)
+            ap = refine_ap_lo + t * refine_ap_span
             for j in range(2):
                 u = float(j)
-                ar = _clamp(ar_seed + (2.0 * u - 1.0) * refine_dr, ar_lo, ar_hi)
+                ar = refine_ar_lo + u * refine_ar_span
                 _consider_candidate(ap, ar, ap0, ar0, ctx, best=best)
 
     return float(best["best_ap"]), float(best["best_ar"])
@@ -264,8 +272,6 @@ def compensate_leg_ankle_for_ground(
     limits = g1_leg_joint_limits(side)
     ap_lo, ap_hi = limits[4]
     ar_lo, ar_hi = limits[5]
-    max_dp = math.radians(float(cfg.max_pitch_delta_deg))
-    max_dr = math.radians(float(cfg.max_roll_delta_deg))
     best_ap, best_ar = _search_ankle_angles(
         ctx,
         ap0,
@@ -274,8 +280,6 @@ def compensate_leg_ankle_for_ground(
         ap_hi,
         ar_lo,
         ar_hi,
-        max_dp,
-        max_dr,
         int(cfg.pitch_search_steps),
         int(cfg.roll_search_steps),
     )

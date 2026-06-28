@@ -143,6 +143,7 @@ from source.train_workflow.utils.motion.loader import (
 from source.train_workflow.utils.ik.ankle_ground import (
     FootAnkleGroundCompConfig,
     FootAnkleGroundCompState,
+    ankle_comp_joint_limits_deg,
     apply_ankle_ground_comp_to_joint_cmd,
 )
 from source.train_workflow.utils.ik.mmd_fk import (
@@ -820,14 +821,20 @@ def main():
             str(tuple(float(v) for v in foot_ik_viz_cfg.right_ref_origin_m)),
         )
     )
+    _ankle_comp_lim = ankle_comp_joint_limits_deg("left")
+    _ap_lim = _ankle_comp_lim["pitch"]
+    _ar_lim = _ankle_comp_lim["roll"]
     print(
-        "[INFO] Ankle ground comp: %s ground_z=%.3f clearance=%.1fmm max_pitch=%.0fdeg max_roll=%.0fdeg"
+        "[INFO] Ankle ground comp: %s ground_z=%.3f clearance=%.1fmm "
+        "ankle_pitch=[%.1f,%.1f]deg ankle_roll=[%.1f,%.1f]deg (URDF limits)"
         % (
             "on" if foot_ankle_ground_comp_cfg.enable else "off",
             float(foot_ankle_ground_comp_cfg.ground_z),
             float(foot_ankle_ground_comp_cfg.clearance_m) * 1000.0,
-            float(foot_ankle_ground_comp_cfg.max_pitch_delta_deg),
-            float(foot_ankle_ground_comp_cfg.max_roll_delta_deg),
+            float(_ap_lim[0]),
+            float(_ap_lim[1]),
+            float(_ar_lim[0]),
+            float(_ar_lim[1]),
         )
     )
     foot_ik_state = FootIkState()
@@ -977,13 +984,19 @@ def main():
         prev = bool(foot_ankle_ground_comp_enabled_ui)
         foot_ankle_ground_comp_enabled_ui = bool(enabled)
         if prev != foot_ankle_ground_comp_enabled_ui:
+            _lim = ankle_comp_joint_limits_deg("left")
+            _ap = _lim["pitch"]
+            _ar = _lim["roll"]
             print(
-                "[INFO] Ankle ground comp -> %s (clearance=%.1fmm max_pitch=%.0fdeg max_roll=%.0fdeg)"
+                "[INFO] Ankle ground comp -> %s (clearance=%.1fmm "
+                "ankle_pitch=[%.1f,%.1f]deg ankle_roll=[%.1f,%.1f]deg URDF)"
                 % (
                     "on" if foot_ankle_ground_comp_enabled_ui else "off",
                     float(foot_ankle_ground_comp_cfg.clearance_m) * 1000.0,
-                    float(foot_ankle_ground_comp_cfg.max_pitch_delta_deg),
-                    float(foot_ankle_ground_comp_cfg.max_roll_delta_deg),
+                    float(_ap[0]),
+                    float(_ap[1]),
+                    float(_ar[0]),
+                    float(_ar[1]),
                 )
             )
 
@@ -1661,6 +1674,7 @@ def main():
 
     def _call_compute_targets(
         frame_idx: int,
+        frame_time: float | None = None,
         *,
         motion_bundle: MotionBundle,
         joint_default: Any,
@@ -1687,8 +1701,9 @@ def main():
                 ui_debug,
                 root_snapshot_row=initial_root_snapshot_row,
             )
+        csv_frame = float(frame_idx if frame_time is None else frame_time)
         return compute_targets_for_motion_frame(
-            frame_idx,
+            csv_frame,
             motion_bundle["frames"],
             motion_bundle["bone_frame_lists"],
             motion_bundle["all_bones"],
@@ -1892,6 +1907,7 @@ def main():
 
                 if h5_record_active:
                     frame = max(0, min(int(h5_record_frame_cursor), max_frame))
+                    frame_float = float(frame)
                     playback_paused = False
                 else:
                     if pending_seek_frame is not None:
@@ -1910,9 +1926,11 @@ def main():
 
                     if playback_paused:
                         frame = min(pause_hold_frame, max_frame)
+                        frame_float = float(frame)
                     else:
                         elapsed_sec = max(0.0, time.perf_counter() - play_start_time)
-                        frame = min(int(elapsed_sec * play_hz), max_frame)
+                        frame_float = min(float(elapsed_sec * play_hz), float(max_frame))
+                        frame = min(int(frame_float), max_frame)
 
                     pause_hold_frame = frame
 
@@ -1941,6 +1959,7 @@ def main():
                     csv_root_rotation_lookup,
                 ) = _call_compute_targets(
                     frame,
+                    frame_time=frame_float,
                     motion_bundle=current_motion,
                     joint_default=default_joint_pos,
                     motion_track_state=motion_track,

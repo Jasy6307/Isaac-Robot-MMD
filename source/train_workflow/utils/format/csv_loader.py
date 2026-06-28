@@ -102,7 +102,7 @@ class FootIkConfig:
     hip_roll_gain: float = 0.85
     ankle_pitch_stabilize_gain: float = 0.75
     debug_every_n_frames: int = 0
-    ik_max_iters: int = 20
+    ik_max_iters: int = 5
     ik_warm_start: bool = True
     ik_warm_reset_target_delta_m: float = 0.04
     ik_max_apply_residual_m: float = 0.012
@@ -782,13 +782,13 @@ def get_bone_frame_lists(
 
 
 def interpolate_bone(
-    frame: int,
+    frame: float,
     bone: str,
     frames: dict[int, dict[str, dict]],
     bone_frame_list: list[int] | None = None,
 ) -> dict | None:
     """
-    对指定帧、指定骨骼进行线性插值。
+    对指定帧（可为小数子帧）、指定骨骼进行线性插值。
     若该帧有数据则直接返回；否则在前后关键帧之间插值。
     bone_frame_list: 该骨骼存在的帧号列表（已排序），传入则用 bisect 二分查找，否则内部计算。
     """
@@ -798,11 +798,14 @@ def interpolate_bone(
     if not bone_frame_list:
         return None
 
-    if frame in frames and bone in frames[frame]:
-        return _finalize_bone_dict(dict(frames[frame][bone]))
+    frame_f = float(frame)
+    if float(frame_f).is_integer():
+        frame_i = int(round(frame_f))
+        if frame_i in frames and bone in frames[frame_i]:
+            return _finalize_bone_dict(dict(frames[frame_i][bone]))
 
     # bisect 二分查找前后关键帧
-    idx = bisect.bisect_right(bone_frame_list, frame)
+    idx = bisect.bisect_right(bone_frame_list, frame_f)
     prev_f = bone_frame_list[idx - 1] if idx > 0 else None
     next_f = bone_frame_list[idx] if idx < len(bone_frame_list) else None
 
@@ -825,7 +828,7 @@ def interpolate_bone(
     if bone not in frames.get(prev_f, {}) or bone not in frames.get(next_f, {}):
         return None
     d0, d1 = frames[prev_f][bone], frames[next_f][bone]
-    t = (frame - prev_f) / (next_f - prev_f)
+    t = (frame_f - float(prev_f)) / max(float(next_f - prev_f), 1e-8)
     pos = tuple((1 - t) * a + t * b for a, b in zip(d0["pos"], d1["pos"]))
     e0, e1 = d0["euler"], d1["euler"]
     euler = tuple((1 - t) * a + t * b for a, b in zip(e0, e1))
