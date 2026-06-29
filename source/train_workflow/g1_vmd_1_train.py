@@ -123,6 +123,27 @@ parser.add_argument(
     help="Enable random motion start at reset (C1 random short-segment training).",
 )
 parser.add_argument(
+    "--auto_motion_start_weight",
+    action="store_true",
+    default=False,
+    help=(
+        "Enable weighted random motion-start sampling from H5 difficulty "
+        "(weights clamped to [1,3]). Effective only when random start is on."
+    ),
+)
+parser.add_argument(
+    "--auto_motion_start_weight_lookahead_seconds",
+    type=float,
+    default=3.0,
+    help="Future horizon (seconds) used by motion-start weight estimation.",
+)
+parser.add_argument(
+    "--auto_motion_start_weight_top_ratio",
+    type=float,
+    default=0.25,
+    help="Top ratio for high-weight range reporting in auto motion-start weights.",
+)
+parser.add_argument(
     "--residual_alpha",
     type=float,
     default=None,
@@ -362,6 +383,7 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
         and args_cli.episode_max_seconds is None
         and args_cli.residual_alpha is None
         and args_cli.use_reference_residual is None
+        and not args_cli.auto_motion_start_weight
     ):
         return
 
@@ -380,6 +402,9 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
     new_episode_max_s = args_cli.episode_max_seconds
     new_residual_alpha = args_cli.residual_alpha
     new_use_reference_residual = args_cli.use_reference_residual
+    new_auto_start_weight = bool(args_cli.auto_motion_start_weight)
+    new_auto_start_lookahead_s = float(args_cli.auto_motion_start_weight_lookahead_seconds)
+    new_auto_start_top_ratio = float(args_cli.auto_motion_start_weight_top_ratio)
 
     if new_episode_s is not None:
         env_cfg.episode_length_s = float(new_episode_s)
@@ -410,6 +435,16 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
             _patch(term.params)
             if new_random_start is not None and "random_start" in term.params:
                 term.params["random_start"] = bool(new_random_start)
+            if "auto_motion_start_weight" in term.params:
+                term.params["auto_motion_start_weight"] = bool(new_auto_start_weight)
+            if "auto_motion_start_weight_lookahead_seconds" in term.params:
+                term.params["auto_motion_start_weight_lookahead_seconds"] = float(
+                    new_auto_start_lookahead_s
+                )
+            if "auto_motion_start_weight_top_ratio" in term.params:
+                term.params["auto_motion_start_weight_top_ratio"] = float(
+                    new_auto_start_top_ratio
+                )
             if new_episode_s is not None and "segment_seconds" in term.params:
                 term.params["segment_seconds"] = float(new_episode_s)
             elif new_ws is not None and "segment_seconds" in term.params:

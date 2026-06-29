@@ -20,6 +20,10 @@ from source.my_task.motion_reference import (
     reset_motion_start_steps,
     set_motion_start_steps,
 )
+from source.train_workflow.utils.motion.start_weight import (
+    compute_motion_start_weights_from_h5,
+    summarize_result,
+)
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -27,6 +31,8 @@ if TYPE_CHECKING:
 
 _ENV_START_TO_END_MODE_ATTR = "_g1_episode_random_start_to_end"
 _ENV_STAGE_END_SECONDS_ATTR = "_g1_episode_end_seconds"
+_ENV_START_WEIGHT_CACHE_ATTR = "_g1_motion_start_weight_cache"
+_ENV_START_WEIGHT_LOGGED_KEYS_ATTR = "_g1_motion_start_weight_logged_keys"
 
 
 def _cloner_env_origins(env: "ManagerBasedRLEnv") -> torch.Tensor:
@@ -36,6 +42,59 @@ def _cloner_env_origins(env: "ManagerBasedRLEnv") -> torch.Tensor:
     if cloner_origins is not None:
         return cloner_origins
     return scene.env_origins
+
+
+def _get_or_build_motion_start_weights(
+    env: "ManagerBasedRLEnv",
+    *,
+    h5_path: str,
+    steps: int,
+    lookahead_seconds: float,
+    top_ratio: float,
+    device: torch.device,
+) -> torch.Tensor:
+    """Build/cached per-step sampling weights for random motion starts."""
+    cache: dict[tuple[str, int, float, float], torch.Tensor] | None = getattr(
+        env, _ENV_START_WEIGHT_CACHE_ATTR, None
+    )
+    if cache is None:
+        cache = {}
+        setattr(env, _ENV_START_WEIGHT_CACHE_ATTR, cache)
+
+    key = (
+        str(h5_path),
+        int(steps),
+        float(lookahead_seconds),
+        float(top_ratio),
+    )
+    if key in cache:
+        w = cache[key]
+        if w.device != device:
+            w = w.to(device=device)
+            cache[key] = w
+        return w
+
+    result = compute_motion_start_weights_from_h5(
+        h5_path=h5_path,
+        target_steps=int(steps),
+        lookahead_seconds=float(lookahead_seconds),
+        top_ratio=float(top_ratio),
+    )
+    w = torch.as_tensor(result.weights, dtype=torch.float32, device=device).clamp_min(1.0e-8)
+    cache[key] = w
+
+    logged_keys: set[tuple[str, int, float, float]] | None = getattr(
+        env, _ENV_START_WEIGHT_LOGGED_KEYS_ATTR, None
+    )
+    if logged_keys is None:
+        logged_keys = set()
+        setattr(env, _ENV_START_WEIGHT_LOGGED_KEYS_ATTR, logged_keys)
+    if key not in logged_keys:
+        print("[INFO] Auto motion-start weighting enabled (runtime reset sampling).")
+        print(summarize_result(result))
+        logged_keys.add(key)
+
+    return w
 
 
 def reset_root_to_spawn(
@@ -69,6 +128,9 @@ def reset_to_motion_start(
     reset_root_to_motion_pose: bool = False,
     joint_noise_scale_by_expr: dict[str, float] | None = None,
     random_start: bool = False,
+    auto_motion_start_weight: bool = False,
+    auto_motion_start_weight_lookahead_seconds: float = 3.0,
+    auto_motion_start_weight_top_ratio: float = 0.25,
     segment_seconds: float | None = None,
     random_episode_length: bool = False,
     episode_min_seconds: float = 2.0,
@@ -132,15 +194,31 @@ def reset_to_motion_start(
         if start_steps is None:
             start_steps = torch.zeros((env_ids.numel(),), device=asset.device, dtype=torch.long)
     elif random_start:
-        # Tail-coverage mode: uniformly sample any start in [0, num_steps-1].
-        # Overrun segments are naturally held at the last reference frame via buffer clamping.
-        start_steps = torch.randint(
-            low=0,
-            high=max(1, int(buf.num_steps)),
-            size=(env_ids.numel(),),
-            device=asset.device,
-            dtype=torch.long,
-        )
+        if auto_motion_start_weight:
+            weights = _get_or_build_motion_start_weights(
+                env,
+                h5_path=buf.h5_path,
+                steps=int(buf.num_steps),
+                lookahead_seconds=float(auto_motion_start_weight_lookahead_seconds),
+                top_ratio=float(auto_motion_start_weight_top_ratio),
+                device=asset.device,
+            )
+            # Sample start indices from per-step weights (weights are in [1, 3], not normalized).
+            start_steps = torch.multinomial(
+                weights,
+                num_samples=int(env_ids.numel()),
+                replacement=True,
+            ).to(device=asset.device, dtype=torch.long)
+        else:
+            # Tail-coverage mode: uniformly sample any start in [0, num_steps-1].
+            # Overrun segments are naturally held at the last reference frame via buffer clamping.
+            start_steps = torch.randint(
+                low=0,
+                high=max(1, int(buf.num_steps)),
+                size=(env_ids.numel(),),
+                device=asset.device,
+                dtype=torch.long,
+            )
         set_motion_start_steps(env, env_ids, start_steps)
     else:
         reset_motion_start_steps(env, env_ids)
