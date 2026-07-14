@@ -26,6 +26,8 @@ _dance_entries_provider: Callable[[], list[tuple[str, str]]] | None = None
 _dance_select_setter: Callable[[str], None] | None = None
 _policy_entries_provider: Callable[[], list[tuple[str, str]]] | None = None
 _policy_select_setter: Callable[[str], None] | None = None
+_window_frames_provider: Callable[[], int] | None = None
+_window_frames_setter: Callable[[int], None] | None = None
 
 _window_ref: list[Any] = []
 _title_label_ref: Any | None = None
@@ -37,6 +39,7 @@ _audio_checkbox_ref: Any | None = None
 _audio_volume_model_ref: Any | None = None
 _record_avi_model_ref: Any | None = None
 _record_avi_checkbox_ref: Any | None = None
+_window_frames_model_ref: Any | None = None
 _btn_play_ref: Any | None = None
 _btn_stop_ref: Any | None = None
 _policy_path_label_ref: Any | None = None
@@ -50,6 +53,7 @@ _suppress_audio_volume_sync = False
 _suppress_record_avi_sync = False
 _suppress_dance_sync = False
 _suppress_policy_sync = False
+_suppress_window_frames_sync = False
 
 
 def _disabled_eval_btn_style(*names: str) -> dict[str, dict[str, int]]:
@@ -138,6 +142,15 @@ def set_policy_selector_callbacks(
     _policy_select_setter = setter
 
 
+def set_window_frames_callbacks(
+    provider: Callable[[], int] | None,
+    setter: Callable[[int], None] | None,
+) -> None:
+    global _window_frames_provider, _window_frames_setter
+    _window_frames_provider = provider
+    _window_frames_setter = setter
+
+
 def _normalize_combo_entries(raw: object) -> list[tuple[str, str]]:
     if not isinstance(raw, list):
         return []
@@ -214,6 +227,7 @@ def _build_window(ui: Any) -> None:
     global _audio_checkbox_ref, _btn_play_ref, _btn_stop_ref, _policy_path_label_ref
     global _dance_combo_ref, _policy_combo_ref, _dance_combo_entries, _policy_combo_entries
     global _record_avi_model_ref, _record_avi_checkbox_ref, _audio_volume_model_ref
+    global _window_frames_model_ref
 
     def _on_play() -> None:
         if _play_cb is not None:
@@ -264,6 +278,18 @@ def _build_window(ui: Any) -> None:
         if key:
             _policy_select_setter(key)
 
+    def _on_window_frames_changed(model: Any) -> None:
+        global _suppress_window_frames_sync
+        if _suppress_window_frames_sync:
+            return
+        if _window_frames_setter is None:
+            return
+        try:
+            value = int(model.get_value_as_int())
+        except Exception:
+            value = 0
+        _window_frames_setter(value)
+
     title_label: Any | None = None
     policy_progress_label: Any | None = None
     progress_bar: Any | None = None
@@ -278,6 +304,7 @@ def _build_window(ui: Any) -> None:
     policy_combo: Any | None = None
     record_avi_model: Any | None = None
     record_avi_checkbox: Any | None = None
+    window_frames_model: Any | None = None
 
     _dance_combo_entries = (
         _normalize_combo_entries(_dance_entries_provider()) if _dance_entries_provider is not None else []
@@ -297,7 +324,6 @@ def _build_window(ui: Any) -> None:
                 btn_play.set_clicked_fn(_on_play)
             if btn_stop is not None:
                 btn_stop.set_clicked_fn(_on_stop)
-            policy_path_label = ui.Label("(loading checkpoint)", word_wrap=True)
             ui.Spacer()
         with ui.HStack(spacing=8, height=26):
             ui.Label("Dance", width=72, height=22)
@@ -306,7 +332,18 @@ def _build_window(ui: Any) -> None:
         with ui.HStack(spacing=8, height=26):
             ui.Label("Policy", width=72, height=22)
             policy_combo = ui.ComboBox(0, *policy_labels, width=260, height=24)
+            policy_path_label = ui.Label("(loading checkpoint)", word_wrap=True)
             ui.Spacer()
+        with ui.HStack(spacing=8, height=26):
+            policy_progress_label = ui.Label("Policy: step 0 / 0", width=180, height=22)
+            ui.Label("Window", width=56, height=22)
+            window_frames_model = ui.SimpleIntModel(0)
+            ui.IntField(model=window_frames_model, width=90, height=24)
+            ui.Label("frames (<=0:auto)", height=22)
+            ui.Spacer()
+        progress_bar_model = _make_policy_progress_bar_model(ui)
+        progress_bar = ui.ProgressBar(model=progress_bar_model, height=8)
+        ui.Spacer(height=4)
         with ui.HStack(spacing=8, height=24):
             ui.Label("Play audio", width=72, height=22)
             audio_enabled_model = ui.SimpleBoolModel(True)
@@ -324,10 +361,6 @@ def _build_window(ui: Any) -> None:
             record_avi_model = ui.SimpleBoolModel(False)
             record_avi_checkbox = ui.CheckBox(model=record_avi_model, width=24, height=22)
             ui.Spacer()
-        policy_progress_label = ui.Label("Policy: step 0 / 0")
-        progress_bar_model = _make_policy_progress_bar_model(ui)
-        progress_bar = ui.ProgressBar(model=progress_bar_model, height=8)
-        ui.Spacer(height=4)
 
     if audio_enabled_model is not None:
         audio_enabled_model.add_value_changed_fn(_on_audio_enabled_changed)
@@ -339,6 +372,8 @@ def _build_window(ui: Any) -> None:
         dance_combo.model.get_item_value_model().add_value_changed_fn(_on_dance_changed)
     if policy_combo is not None:
         policy_combo.model.get_item_value_model().add_value_changed_fn(_on_policy_changed)
+    if window_frames_model is not None:
+        window_frames_model.add_value_changed_fn(_on_window_frames_changed)
 
     _title_label_ref = title_label
     _policy_progress_label_ref = policy_progress_label
@@ -354,6 +389,7 @@ def _build_window(ui: Any) -> None:
     _policy_combo_ref = policy_combo
     _record_avi_model_ref = record_avi_model
     _record_avi_checkbox_ref = record_avi_checkbox
+    _window_frames_model_ref = window_frames_model
 
 
 def schedule_eval_play_ui_refresh() -> None:
@@ -368,7 +404,7 @@ async def _refresh_loop() -> None:
     import omni.kit.app
 
     global _suppress_audio_enabled_sync, _suppress_record_avi_sync, _suppress_audio_volume_sync
-    global _suppress_dance_sync, _suppress_policy_sync
+    global _suppress_dance_sync, _suppress_policy_sync, _suppress_window_frames_sync
 
     while True:
         await omni.kit.app.get_app().next_update_async()
@@ -412,6 +448,23 @@ async def _refresh_loop() -> None:
                 _combo_set_selected_key(_policy_combo_ref, _policy_combo_entries, policy_selected)
             finally:
                 _suppress_policy_sync = False
+        if _window_frames_model_ref is not None and _window_frames_provider is not None:
+            try:
+                desired_wf = int(_window_frames_provider())
+            except Exception:
+                desired_wf = 0
+            try:
+                current_wf = int(_window_frames_model_ref.get_value_as_int())
+            except Exception:
+                current_wf = -1
+            if current_wf != desired_wf:
+                _suppress_window_frames_sync = True
+                try:
+                    _window_frames_model_ref.set_value(desired_wf)
+                except Exception:
+                    pass
+                finally:
+                    _suppress_window_frames_sync = False
 
         if policy_total > 0:
             ratio = max(0.0, min(1.0, float(policy_step) / float(policy_total)))

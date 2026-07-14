@@ -58,14 +58,15 @@ DEFAULT_WINDOW_SECONDS = 10.0
 
 # C1-only tuning (floating root): smaller action scale + stronger smoothness penalties.
 C1_ACTION_SCALE = 0.5 # 0.5
-C1_ACTION_RATE_L2_WEIGHT = -0.03 # -0.01
-C1_ACTION_L2_WEIGHT = -1.0e-4 # -1.0e-4
+# Smoothness penalties (balanced anti-jitter vs jump explosiveness):
+C1_ACTION_RATE_L2_WEIGHT = -0.03
+C1_ACTION_L2_WEIGHT = -1.0e-4
 C1_ALIVE_WEIGHT = 2.0
 C1_TERMINATED_PENALTY_WEIGHT = -1.0
 C1_ROOT_YAW_TRACK_WEIGHT = 10.0
 C1_ROOT_YAW_TRACK_SIGMA = 0.08
 C1_ROOT_XY_TRACK_WEIGHT = 25.0
-C1_ROOT_XY_TRACK_SIGMA = 0.06
+C1_ROOT_XY_TRACK_SIGMA = 0.08
 C1_ROOT_Z_TRACK_WEIGHT = 1.0
 C1_ROOT_Z_TRACK_SIGMA = 0.10
 # C1 joint tracking group weights (lower body): ankles are down-weighted.
@@ -79,21 +80,20 @@ C1_BAD_ORIENTATION_LIMIT_ANGLE = 1.5
 # C1 random-segment training defaults.
 C1_RANDOM_MOTION_START = True
 C1_TRAIN_SEGMENT_SECONDS = 2.0
-C1_RANDOM_EPISODE_LENGTH = True
-C1_EPISODE_MIN_SECONDS = 2.0
-C1_EPISODE_MAX_SECONDS = 4.0
-C1_EPISODE_LENGTH_CURRICULUM_SPEC = "0:2:4,3000:3:5,6000"
+C1_EPISODE_LENGTH_CURRICULUM_SPEC = "0:3,5000:full"
 # C1: arms+waist track H5 open-loop; legs get reset/obs noise.
 C1_RESET_JOINT_POS_NOISE = 0.05
 # C1 residual defaults: arms+waist frozen; legs learn residual around q_ref.
-C1_RESIDUAL_ALPHA = 0.3
+C1_RESIDUAL_ALPHA = 0.38
 # Residual variant: stronger tracking signal + slightly looser sigma for gradient when balancing.
-C1_RESIDUAL_JOINT_TRACK_WEIGHT = 50.0
-C1_RESIDUAL_JOINT_TRACK_SIGMA = 0.07
+C1_RESIDUAL_JOINT_TRACK_WEIGHT = 30.0
+C1_RESIDUAL_JOINT_TRACK_SIGMA = 0.12
 # C2 defaults: full-window (no random start/length) + stronger root XY/yaw tracking.
 C2_ALIVE_WEIGHT = 10.0
 C2_TERMINATED_PENALTY_WEIGHT = -5.0
 C2_END_HOLD_SECONDS = 2.0
+# After motion window ends in curriculum ``start:full``, keep last ref frame this long.
+C1_FULL_WINDOW_HOLD_SECONDS = 2.0
 
 ##
 # Scene definition
@@ -111,8 +111,8 @@ def _vmd_train_terrain_cfg(*, ground_z_offset: float) -> LoweredGroundTerrainImp
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
             restitution_combine_mode="multiply",
-            static_friction=1.0,
-            dynamic_friction=1.0,
+            static_friction=0.95,
+            dynamic_friction=0.9,
         ),
         visual_material=sim_utils.MdlFileCfg(
             mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
@@ -301,9 +301,6 @@ class C1EventCfg(EventCfg):
             "auto_motion_start_weight_lookahead_seconds": 3.0,
             "auto_motion_start_weight_top_ratio": 0.25,
             "segment_seconds": C1_TRAIN_SEGMENT_SECONDS,
-            "random_episode_length": C1_RANDOM_EPISODE_LENGTH,
-            "episode_min_seconds": C1_EPISODE_MIN_SECONDS,
-            "episode_max_seconds": C1_EPISODE_MAX_SECONDS,
         },
     )
 
@@ -339,6 +336,10 @@ class G1VmdTrainBaseEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.dt = 1.0 / 60.0   # 物理 60 Hz
         self.decimation = 1        # 控制 30 Hz
         self.sim.render_interval = self.decimation / 2
+        # Increase PhysX GPU contact buffers for large-scale dance training
+        # (high num_envs and optional self-collision can overflow default patch buffers).
+        self.sim.physx.gpu_max_rigid_patch_count = 2**20
+        self.sim.physx.gpu_max_rigid_contact_count = 2**24
         self.sim.physics_material = self.scene.terrain.physics_material
         # Window length must match the reference buffer window seconds.
         self.episode_length_s = DEFAULT_WINDOW_SECONDS
@@ -365,7 +366,7 @@ class G1VmdTrainC1EnvCfg(G1VmdTrainBaseEnvCfg):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        self.episode_length_s = C1_EPISODE_MAX_SECONDS
+        self.episode_length_s = C1_TRAIN_SEGMENT_SECONDS
         policy_body_cfg = SceneEntityCfg("robot", joint_names=G1_POLICY_BODY_JOINT_EXPR)
         # Legs keep scaled obs noise; arms/waist get none (see joint_groups). Hands excluded.
         self.observations.policy.joint_pos = ObsTerm(
@@ -479,10 +480,7 @@ class G1VmdTrainC2EnvCfg(G1VmdTrainC1EnvCfg):
         self.episode_length_s = DEFAULT_WINDOW_SECONDS
         evt = self.events.reset_robot_joints
         evt.params["random_start"] = False
-        evt.params["random_episode_length"] = False
         evt.params["segment_seconds"] = DEFAULT_WINDOW_SECONDS
-        evt.params["episode_min_seconds"] = DEFAULT_WINDOW_SECONDS
-        evt.params["episode_max_seconds"] = DEFAULT_WINDOW_SECONDS
         # C2: keep training for extra hold time after reaching the last motion frame.
         self.terminations.time_out = DoneTerm(
             func=mdp.motion_end_with_hold_time_out,

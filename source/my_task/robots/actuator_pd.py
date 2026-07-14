@@ -56,12 +56,12 @@ def build_g1_deploy_actuators(*, o6_hands: bool = False) -> dict[str, DCMotorCfg
         ),
         "feet": feet_base.replace(
             stiffness={
-                ".*_ankle_pitch_joint": 40.0,
-                ".*_ankle_roll_joint": 40.0,
+                ".*_ankle_pitch_joint": 50.0,
+                ".*_ankle_roll_joint": 50.0,
             },
             damping={
-                ".*_ankle_pitch_joint": 2.0,
-                ".*_ankle_roll_joint": 2.0,
+                ".*_ankle_pitch_joint": 3.5,
+                ".*_ankle_roll_joint": 3.5,
             },
         ),
         "waist": waist_base.replace(

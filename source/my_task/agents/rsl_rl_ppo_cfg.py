@@ -30,7 +30,7 @@ class G1VmdReplayPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 class G1VmdTrainPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     """Shared PPO config for G1 VMD train (C1/C2)."""
 
-    num_steps_per_env = 80
+    num_steps_per_env = 120
     max_iterations = 3000
     save_interval = 200
     experiment_name = "g1_dance_track"
@@ -46,7 +46,7 @@ class G1VmdTrainPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
-        clip_param=0.2,
+        clip_param=0.25, #原0.2
         entropy_coef=0.005,
         num_learning_epochs=5,
         num_mini_batches=4,
@@ -54,7 +54,7 @@ class G1VmdTrainPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         schedule="adaptive", #原adaptive
         gamma=0.99, #原0.99
         lam=0.95, #原0.95
-        desired_kl=0.01, #原0.01
+        desired_kl=0.015, #原0.01
         max_grad_norm=1.0, #原1.0
     )
 

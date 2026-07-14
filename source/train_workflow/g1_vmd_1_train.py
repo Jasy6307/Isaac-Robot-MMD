@@ -17,9 +17,8 @@ Example
       --window_frames 460 `
       --max_iterations 15000 `
       --random_motion_start `
-      --random_episode_length `
       --episode_length_curriculum `
-      --episode_length_curriculum_spec "0:3,10000:6" `
+      --episode_length_curriculum_spec "0:3,5000:full" `
       --headless
 """
 
@@ -75,31 +74,6 @@ parser.add_argument(
     help="Override episode length (seconds), independent from reference window.",
 )
 parser.add_argument(
-    "--random_episode_length",
-    dest="random_episode_length",
-    action="store_true",
-    default=None,
-    help="Enable per-reset random episode length sampling.",
-)
-parser.add_argument(
-    "--no_random_episode_length",
-    dest="random_episode_length",
-    action="store_false",
-    help="Disable random episode length sampling.",
-)
-parser.add_argument(
-    "--episode_min_seconds",
-    type=float,
-    default=None,
-    help="Minimum sampled episode length when random episode length is enabled.",
-)
-parser.add_argument(
-    "--episode_max_seconds",
-    type=float,
-    default=None,
-    help="Maximum sampled episode length when random episode length is enabled.",
-)
-parser.add_argument(
     "--episode_length_curriculum",
     action="store_true",
     default=False,
@@ -110,9 +84,19 @@ parser.add_argument(
     type=str,
     default=None,
     help=(
-        "Curriculum spec: start:sec for fixed length, start:min:max for random range, "
-        "or start alone for start-to-end (end = --window_frames). "
-        "e.g. 0:3,20000:6 (3s then 6s fixed stages)"
+        "Curriculum spec: start:sec (fixed length), start:full (frame 0 through motion "
+        "window plus post-hold; see --episode_full_hold_seconds), or start alone "
+        "(random motion start, play to window end). e.g. 0:3,5000:full"
+    ),
+)
+parser.add_argument(
+    "--episode_full_hold_seconds",
+    type=float,
+    default=None,
+    help=(
+        "Seconds to hold the last reference frame after a curriculum ``start:full`` "
+        "window (motion buffer clamps; policy keeps running). "
+        "Default: C1_FULL_WINDOW_HOLD_SECONDS (2.0)."
     ),
 )
 parser.add_argument(
@@ -185,6 +169,19 @@ parser.add_argument(
     ),
 )
 parser.add_argument(
+    "--self_collisions",
+    dest="self_collisions",
+    action="store_true",
+    default=None,
+    help="Enable robot self-collisions during training.",
+)
+parser.add_argument(
+    "--no_self_collisions",
+    dest="self_collisions",
+    action="store_false",
+    help="Disable robot self-collisions during training.",
+)
+parser.add_argument(
     "--resume", action="store_true", default=False, help="Resume from a checkpoint."
 )
 parser.add_argument("--load_run", type=str, default=None, help="Run folder to resume from.")
@@ -242,6 +239,7 @@ from isaaclab_tasks.utils import get_checkpoint_path  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry  # noqa: E402
 
 import source.my_task  # noqa: F401, E402  -- register Isaac-G1-* tasks
+from source.my_task.g1_train_env_cfg import C1_FULL_WINDOW_HOLD_SECONDS  # noqa: E402
 from source.my_task.robots.actuator_pd import (  # noqa: E402
     apply_pd_profile_to_scene_robot,
     log_pd_profile_summary,
@@ -257,18 +255,12 @@ from source.train_workflow.utils.motion.window import (  # noqa: E402
 @dataclass(frozen=True)
 class EpisodeLengthStage:
     start_iter: int
-    min_seconds: float | None = None
-    max_seconds: float | None = None
+    seconds: float | None = None
+    full_window: bool = False
 
     @property
     def start_to_end(self) -> bool:
-        return self.min_seconds is None and self.max_seconds is None
-
-    @property
-    def is_fixed_length(self) -> bool:
-        if self.start_to_end or self.min_seconds is None or self.max_seconds is None:
-            return False
-        return abs(self.min_seconds - self.max_seconds) < 1e-6
+        return not self.full_window and self.seconds is None
 
 
 def _parse_episode_length_curriculum(spec: str) -> list[EpisodeLengthStage]:
@@ -286,34 +278,20 @@ def _parse_episode_length_curriculum(spec: str) -> list[EpisodeLengthStage]:
             continue
         if len(parts) == 2:
             start_iter = int(parts[0])
-            fixed_s = float(parts[1])
             if start_iter < 0:
                 raise ValueError(f"start_iter must be >= 0, got {start_iter}")
+            if parts[1].strip().lower() == "full":
+                stages.append(EpisodeLengthStage(start_iter=start_iter, full_window=True))
+                continue
+            fixed_s = float(parts[1])
             if fixed_s <= 0.0:
                 raise ValueError(f"Episode seconds must be > 0, got {fixed_s}")
-            stages.append(
-                EpisodeLengthStage(
-                    start_iter=start_iter, min_seconds=fixed_s, max_seconds=fixed_s
-                )
-            )
+            stages.append(EpisodeLengthStage(start_iter=start_iter, seconds=fixed_s))
             continue
-        if len(parts) != 3:
-            raise ValueError(
-                f"Invalid curriculum chunk '{item}'. "
-                "Expected start:seconds (fixed), start:min:max (random range), "
-                "or start alone (start-to-end)."
-            )
-        start_iter = int(parts[0])
-        min_s = float(parts[1])
-        max_s = float(parts[2])
-        if start_iter < 0:
-            raise ValueError(f"start_iter must be >= 0, got {start_iter}")
-        if min_s <= 0.0 or max_s <= 0.0:
-            raise ValueError(f"Episode seconds must be > 0, got {min_s}, {max_s}")
-        if min_s > max_s:
-            min_s, max_s = max_s, min_s
-        stages.append(
-            EpisodeLengthStage(start_iter=start_iter, min_seconds=min_s, max_seconds=max_s)
+        raise ValueError(
+            f"Invalid curriculum chunk '{item}'. "
+            "Expected start:seconds (fixed), start:full (frame 0 through motion window), "
+            "or start alone (random motion start, play to window end)."
         )
     if not stages:
         raise ValueError("Curriculum spec produced no stages.")
@@ -347,10 +325,19 @@ def _curriculum_schedule(
     return schedule
 
 
-def _set_env_runtime_episode_range(env, min_seconds: float, max_seconds: float) -> None:
+def _set_env_runtime_episode_seconds(env, seconds: float) -> None:
+    from source.my_task.mdp.episode_length import set_runtime_episode_length_seconds
+
+    set_runtime_episode_length_seconds(env.unwrapped, seconds)
+
+
+def _set_env_episode_duration(env, seconds: float) -> None:
+    """Set per-reset episode length using runtime timeout targets."""
+    _set_env_runtime_episode_seconds(env, seconds)
     unwrapped = env.unwrapped
-    setattr(unwrapped, "_g1_episode_min_seconds", float(min_seconds))
-    setattr(unwrapped, "_g1_episode_max_seconds", float(max_seconds))
+    cfg = getattr(unwrapped, "cfg", None)
+    if cfg is not None and hasattr(cfg, "episode_length_s"):
+        cfg.episode_length_s = float(seconds)
 
 
 def _set_env_runtime_start_to_end_mode(
@@ -361,6 +348,11 @@ def _set_env_runtime_start_to_end_mode(
     setattr(unwrapped, "_g1_episode_random_start_to_end", bool(enabled))
     if end_seconds is not None:
         setattr(unwrapped, "_g1_episode_end_seconds", float(end_seconds))
+
+
+def _set_env_runtime_force_motion_start_zero(env, *, enabled: bool) -> None:
+    """Force motion reference to start at frame 0 on reset (curriculum ``start:full``)."""
+    setattr(env.unwrapped, "_g1_episode_force_motion_start_zero", bool(enabled))
 
 
 def _resolve_motion_window_seconds(env_cfg: ManagerBasedRLEnvCfg) -> float:
@@ -378,9 +370,6 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
         and args_cli.window_frames is None
         and args_cli.episode_seconds is None
         and args_cli.random_motion_start is None
-        and args_cli.random_episode_length is None
-        and args_cli.episode_min_seconds is None
-        and args_cli.episode_max_seconds is None
         and args_cli.residual_alpha is None
         and args_cli.use_reference_residual is None
         and not args_cli.auto_motion_start_weight
@@ -397,9 +386,6 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
         )
     new_episode_s = args_cli.episode_seconds
     new_random_start = args_cli.random_motion_start
-    new_random_episode_length = args_cli.random_episode_length
-    new_episode_min_s = args_cli.episode_min_seconds
-    new_episode_max_s = args_cli.episode_max_seconds
     new_residual_alpha = args_cli.residual_alpha
     new_use_reference_residual = args_cli.use_reference_residual
     new_auto_start_weight = bool(args_cli.auto_motion_start_weight)
@@ -449,19 +435,6 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
                 term.params["segment_seconds"] = float(new_episode_s)
             elif new_ws is not None and "segment_seconds" in term.params:
                 term.params["segment_seconds"] = float(new_ws)
-            if (
-                new_random_episode_length is not None
-                and "random_episode_length" in term.params
-            ):
-                term.params["random_episode_length"] = bool(new_random_episode_length)
-            if new_episode_min_s is not None and "episode_min_seconds" in term.params:
-                term.params["episode_min_seconds"] = float(new_episode_min_s)
-            elif new_ws is not None and "episode_min_seconds" in term.params:
-                term.params["episode_min_seconds"] = float(new_ws)
-            if new_episode_max_s is not None and "episode_max_seconds" in term.params:
-                term.params["episode_max_seconds"] = float(new_episode_max_s)
-            elif new_ws is not None and "episode_max_seconds" in term.params:
-                term.params["episode_max_seconds"] = float(new_ws)
     # terminations (C2 motion_end_with_hold_time_out must share motion h5/window)
     terminations_cfg = getattr(env_cfg, "terminations", None)
     if terminations_cfg is not None:
@@ -485,6 +458,31 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
             joint_pos_action.use_reference_residual = bool(new_use_reference_residual)
 
 
+def _apply_self_collision_override(env_cfg: ManagerBasedRLEnvCfg) -> None:
+    """Optionally override robot self-collision from CLI."""
+    if args_cli.self_collisions is None:
+        return
+    robot_cfg = getattr(getattr(env_cfg, "scene", None), "robot", None)
+    if robot_cfg is None:
+        print("[WARN] --self_collisions ignored: env_cfg.scene.robot unavailable.")
+        return
+    spawn = getattr(robot_cfg, "spawn", None)
+    if spawn is None:
+        print("[WARN] --self_collisions ignored: robot spawn unavailable.")
+        return
+    articulation_props = getattr(spawn, "articulation_props", None)
+    if articulation_props is None:
+        print("[WARN] --self_collisions ignored: robot spawn.articulation_props unavailable.")
+        return
+    enabled = bool(args_cli.self_collisions)
+    env_cfg.scene.robot = robot_cfg.replace(
+        spawn=spawn.replace(
+            articulation_props=articulation_props.replace(enabled_self_collisions=enabled)
+        )
+    )
+    print(f"[INFO] Robot self-collisions override: enabled_self_collisions={enabled}")
+
+
 def main() -> None:
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
@@ -504,6 +502,7 @@ def main() -> None:
     env_cfg.scene.robot = apply_pd_profile_to_scene_robot(
         env_cfg.scene.robot, args_cli.pd_profile, o6_hands=True
     )
+    _apply_self_collision_override(env_cfg)
     log_pd_profile_summary(args_cli.pd_profile, o6_hands=True)
     _apply_motion_overrides(env_cfg)
 
@@ -583,58 +582,68 @@ def main() -> None:
     if args_cli.episode_length_curriculum:
         spec = args_cli.episode_length_curriculum_spec
         if spec is None:
-            spec = "0:2:4,3000:3:5,6000"
+            spec = "0:3,5000:full"
         motion_window_seconds = _resolve_motion_window_seconds(env_cfg)
+        full_hold_seconds = (
+            float(args_cli.episode_full_hold_seconds)
+            if args_cli.episode_full_hold_seconds is not None
+            else float(C1_FULL_WINDOW_HOLD_SECONDS)
+        )
         stages = _parse_episode_length_curriculum(spec)
         schedule = _curriculum_schedule(stages, int(agent_cfg.max_iterations))
         print(f"[INFO] Episode-length curriculum enabled: {spec}")
-        print(f"[INFO] Start-to-end stages use motion window end: {motion_window_seconds:.2f}s")
+        print(f"[INFO] Full-window stages use motion window: {motion_window_seconds:.2f}s")
+        print(
+            f"[INFO] Full-window hold after last frame: {full_hold_seconds:.2f}s "
+            f"(ref clamps; same as short-segment tail hold)"
+        )
+        print(
+            f"[INFO] Start-to-end-only stages (iter alone) play to window end "
+            f"with random motion start."
+        )
         for stage, stage_iters in schedule:
-            if stage.start_to_end:
+            if stage.full_window:
+                full_episode_s = motion_window_seconds + full_hold_seconds
+                _set_env_episode_duration(env, full_episode_s)
+                _set_env_runtime_start_to_end_mode(env, enabled=False)
+                _set_env_runtime_force_motion_start_zero(env, enabled=True)
+                print(
+                    f"[INFO] Curriculum stage start={stage.start_iter} "
+                    f"mode=full_window motion={motion_window_seconds:.2f}s "
+                    f"hold={full_hold_seconds:.2f}s total={full_episode_s:.2f}s "
+                    f"motion_start=frame0 iters={stage_iters}"
+                )
+            elif stage.start_to_end:
+                _set_env_runtime_episode_seconds(env, motion_window_seconds)
                 _set_env_runtime_start_to_end_mode(
                     env,
                     enabled=True,
                     end_seconds=motion_window_seconds,
                 )
+                _set_env_runtime_force_motion_start_zero(env, enabled=False)
                 print(
                     f"[INFO] Curriculum stage start={stage.start_iter} "
                     f"mode=start_to_end end={motion_window_seconds:.2f}s "
-                    f"iters={stage_iters}"
+                    f"motion_start=random iters={stage_iters}"
                 )
             else:
-                assert stage.min_seconds is not None and stage.max_seconds is not None
-                _set_env_runtime_episode_range(
-                    env, min_seconds=stage.min_seconds, max_seconds=stage.max_seconds
-                )
+                assert stage.seconds is not None
+                _set_env_runtime_episode_seconds(env, stage.seconds)
                 _set_env_runtime_start_to_end_mode(env, enabled=False)
-                if stage.is_fixed_length:
-                    length_msg = f"fixed={stage.min_seconds:.2f}s"
-                else:
-                    length_msg = (
-                        f"random=[{stage.min_seconds:.2f}, {stage.max_seconds:.2f}]s"
-                    )
+                _set_env_runtime_force_motion_start_zero(env, enabled=False)
                 print(
                     f"[INFO] Curriculum stage start={stage.start_iter} "
-                    f"{length_msg} iters={stage_iters} start_to_end=off"
+                    f"fixed={stage.seconds:.2f}s iters={stage_iters} start_to_end=off"
                 )
             runner.learn(
                 num_learning_iterations=stage_iters, init_at_random_ep_len=True
             )
     else:
         _set_env_runtime_start_to_end_mode(env, enabled=False)
-        if args_cli.episode_min_seconds is not None or args_cli.episode_max_seconds is not None:
-            min_s = (
-                float(args_cli.episode_min_seconds)
-                if args_cli.episode_min_seconds is not None
-                else float(args_cli.episode_max_seconds)
-            )
-            max_s = (
-                float(args_cli.episode_max_seconds)
-                if args_cli.episode_max_seconds is not None
-                else float(args_cli.episode_min_seconds)
-            )
-            _set_env_runtime_episode_range(env, min_seconds=min_s, max_seconds=max_s)
-            print(f"[INFO] Runtime episode range set to [{min_s:.2f}, {max_s:.2f}]s")
+        _set_env_runtime_force_motion_start_zero(env, enabled=False)
+        if args_cli.episode_seconds is not None:
+            _set_env_runtime_episode_seconds(env, float(args_cli.episode_seconds))
+            print(f"[INFO] Runtime episode length set to {float(args_cli.episode_seconds):.2f}s")
         runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
     env.close()
 

@@ -10,8 +10,8 @@ from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
 
 from source.my_task.mdp.episode_length import (
+    episode_target_steps_from_seconds,
     get_runtime_episode_length_seconds,
-    sample_episode_target_steps,
     set_episode_target_steps,
 )
 from source.my_task.mdp.joint_groups import get_cached_joint_scales
@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
 _ENV_START_TO_END_MODE_ATTR = "_g1_episode_random_start_to_end"
 _ENV_STAGE_END_SECONDS_ATTR = "_g1_episode_end_seconds"
+_ENV_FORCE_MOTION_START_ZERO_ATTR = "_g1_episode_force_motion_start_zero"
 _ENV_START_WEIGHT_CACHE_ATTR = "_g1_motion_start_weight_cache"
 _ENV_START_WEIGHT_LOGGED_KEYS_ATTR = "_g1_motion_start_weight_logged_keys"
 
@@ -132,9 +133,6 @@ def reset_to_motion_start(
     auto_motion_start_weight_lookahead_seconds: float = 3.0,
     auto_motion_start_weight_top_ratio: float = 0.25,
     segment_seconds: float | None = None,
-    random_episode_length: bool = False,
-    episode_min_seconds: float = 2.0,
-    episode_max_seconds: float = 2.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> None:
     """Reset root + joints to the reference motion's first frame plus optional noise.
@@ -151,18 +149,19 @@ def reset_to_motion_start(
     asset: Articulation = env.scene[asset_cfg.name]
 
     start_to_end_mode = bool(getattr(env, _ENV_START_TO_END_MODE_ATTR, False))
-    stage_end_seconds = float(
-        getattr(env, _ENV_STAGE_END_SECONDS_ATTR, episode_max_seconds if random_episode_length else window_seconds)
-    )
+    force_motion_start_zero = bool(getattr(env, _ENV_FORCE_MOTION_START_ZERO_ATTR, False))
+    default_episode_s = float(segment_seconds if segment_seconds is not None else window_seconds)
+    episode_seconds = get_runtime_episode_length_seconds(env, default_episode_s)
+    stage_end_seconds = float(getattr(env, _ENV_STAGE_END_SECONDS_ATTR, window_seconds))
 
     if start_to_end_mode:
         end_steps = max(1, int(round(stage_end_seconds / float(env.step_dt))))
         end_steps = min(end_steps, int(buf.num_steps))
-        min_steps_for_start = max(1, int(round(float(episode_min_seconds) / float(env.step_dt))))
+        min_steps_for_start = max(1, int(round(episode_seconds / float(env.step_dt))))
         max_start_step = max(0, end_steps - min_steps_for_start)
 
         start_steps = torch.zeros((env_ids.numel(),), device=asset.device, dtype=torch.long)
-        if max_start_step > 0:
+        if not force_motion_start_zero and max_start_step > 0:
             start_steps = torch.randint(
                 low=0,
                 high=max_start_step + 1,
@@ -177,23 +176,14 @@ def reset_to_motion_start(
     else:
         start_steps: torch.Tensor | None = None
 
-    if random_episode_length:
-        min_s, max_s = get_runtime_episode_length_seconds(env, episode_min_seconds, episode_max_seconds)
-        target_steps = sample_episode_target_steps(env, env_ids, min_s, max_s)
-    else:
-        if segment_seconds is None:
-            fixed_steps = int(getattr(env, "max_episode_length", 1))
-        else:
-            fixed_steps = int(round(float(segment_seconds) / float(env.step_dt)))
-        fixed_steps = max(fixed_steps, 1)
-        target_steps = torch.full((env_ids.numel(),), fixed_steps, device=asset.device, dtype=torch.long)
     if not start_to_end_mode:
+        target_steps = episode_target_steps_from_seconds(env, env_ids, episode_seconds)
         set_episode_target_steps(env, env_ids, target_steps)
 
     if start_to_end_mode:
         if start_steps is None:
             start_steps = torch.zeros((env_ids.numel(),), device=asset.device, dtype=torch.long)
-    elif random_start:
+    elif random_start and not force_motion_start_zero:
         if auto_motion_start_weight:
             weights = _get_or_build_motion_start_weights(
                 env,

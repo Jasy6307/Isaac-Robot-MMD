@@ -19,6 +19,8 @@ each policy rollout from a stable standing pose; Stop ends rollout and audio ear
 When ``--dance`` has a companion WAV, audio starts with Play. Use ``--auto_start`` to
 run immediately without waiting for Play. Enable **Record AVI** to capture the viewport
 live during rollout at 30 fps (with dance WAV muxed when available).
+By default ``media/stage/station.usdz`` is spawned as the scene backdrop; use
+``--no_stage`` to disable or ``--stage <path>`` to override.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+import random
 import sys
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -82,7 +85,10 @@ parser.add_argument(
     "--window_frames",
     type=int,
     default=None,
-    help="Override reference motion window (control-step frame count). Full play runs this window.",
+    help=(
+        "Override reference motion window (control-step frame count). "
+        "If omitted, eval auto-uses the selected dance H5 full length."
+    ),
 )
 parser.add_argument(
     "--residual_alpha",
@@ -204,6 +210,21 @@ parser.add_argument(
     default=60.0,
     help="AVI recording FPS for --record_avi .",
 )
+parser.add_argument(
+    "--stage",
+    type=str,
+    default=os.path.join(_WORKSPACE_ROOT, "media", "stage", "station.usdz"),
+    help=(
+        "USD/USDZ stage background asset (absolute or repo-relative path). "
+        "Default: media/stage/station.usdz."
+    ),
+)
+parser.add_argument(
+    "--no_stage",
+    action="store_true",
+    default=False,
+    help="Do not spawn the stage background asset.",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -211,6 +232,9 @@ DANCE_NAME: str | None = None
 MOTION_H5_PATH: str | None = None
 if args_cli.dance:
     DANCE_NAME = normalize_dance_stem(args_cli.dance)
+WINDOW_FRAMES_OVERRIDE: int | None = (
+    int(args_cli.window_frames) if args_cli.window_frames is not None else None
+)
 
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
@@ -219,10 +243,13 @@ import time  # noqa: E402
 
 import carb  # noqa: E402
 import gymnasium as gym  # noqa: E402
+import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 
+import isaaclab.sim as sim_utils  # noqa: E402
+from isaaclab.assets import AssetBaseCfg  # noqa: E402
 from isaaclab.envs import ManagerBasedRLEnvCfg  # noqa: E402
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper  # noqa: E402
 from isaaclab_tasks.utils import get_checkpoint_path  # noqa: E402
@@ -249,6 +276,7 @@ from source.train_workflow.utils.motion.window import (  # noqa: E402
     control_hz_from_env_cfg,
     log_window_frames_override,
     resolve_motion_window_seconds,
+    window_seconds_from_frames,
 )
 from source.train_workflow.utils.media import audio_util  # noqa: E402
 from source.train_workflow.utils.media.avi_audio_mux import mux_wav_into_avi  # noqa: E402
@@ -396,10 +424,35 @@ def _idle_hold_step(env_unwrapped, wrapped, zero_actions: torch.Tensor):
     return result
 
 
-def _env_reset(wrapped):
+def _env_reset(wrapped, *, seed: int | None = None):
     """Env reset must run outside ``torch.inference_mode`` (Isaac articulation buffers)."""
     with torch.no_grad():
+        if seed is not None:
+            try:
+                wrapped.seed(int(seed))
+            except Exception as exc:
+                print(f"[WARN] Failed to apply reset seed {int(seed)}: {exc}")
         return wrapped.reset()
+
+
+def _active_termination_terms_for_env(env_unwrapped, env_idx: int) -> list[str]:
+    """Best-effort read active termination term names for one env index."""
+    tm = getattr(env_unwrapped, "termination_manager", None)
+    if tm is None:
+        return []
+    try:
+        pairs = tm.get_active_iterable_terms(int(env_idx))
+    except Exception:
+        return []
+    terms: list[str] = []
+    for name, values in pairs:
+        try:
+            v0 = float(values[0]) if values else 0.0
+        except Exception:
+            v0 = 0.0
+        if v0 > 0.5:
+            terms.append(str(name))
+    return terms
 
 
 def _resolve_dance_wav_path(dance_name: str | None) -> str | None:
@@ -582,6 +635,41 @@ def _find_h5_window(env_cfg: ManagerBasedRLEnvCfg) -> tuple[str, float]:
     return str(tracking.params["h5_path"]), float(tracking.params["window_seconds"])
 
 
+def _read_h5_frames_and_fps(h5_path: str) -> tuple[int, float]:
+    """Read H5 frame count and source fps without loading full motion arrays."""
+    import h5py
+
+    with h5py.File(os.path.abspath(h5_path), "r") as f:
+        if "frames" not in f:
+            raise ValueError(f"H5 missing 'frames' dataset: {h5_path}")
+        frames = int(f["frames"].shape[0])
+        fps = float(f.attrs.get("fps", 30.0))
+        if fps <= 0.0:
+            fps = 30.0
+        return frames, fps
+
+
+def _resolve_eval_window_seconds(
+    env_cfg: ManagerBasedRLEnvCfg,
+    h5_path: str,
+    window_frames_override: int | None,
+) -> tuple[float, int, str]:
+    """Resolve eval window seconds from override or current dance full H5 length."""
+    control_hz = control_hz_from_env_cfg(env_cfg)
+    if window_frames_override is not None:
+        frames = max(1, int(window_frames_override))
+        return float(window_seconds_from_frames(frames, control_hz)), frames, "override"
+    h5_frames, h5_fps = _read_h5_frames_and_fps(h5_path)
+    # H5 frames are authored at source fps (typically 30). Runtime uses control_hz (typically 60).
+    # Convert to control-step count so playback duration matches source clip time.
+    control_steps = max(1, int(round(float(h5_frames) * float(control_hz) / float(h5_fps))))
+    return (
+        float(window_seconds_from_frames(control_steps, control_hz)),
+        int(control_steps),
+        "auto_full_h5",
+    )
+
+
 def _infer_obs_device(obs_obj) -> torch.device:
     """Best-effort infer device from nested obs object."""
     if torch.is_tensor(obs_obj):
@@ -721,23 +809,40 @@ def _extract_policy_obs_tensor(obs_obj) -> torch.Tensor:
 
 
 def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
+    global WINDOW_FRAMES_OVERRIDE
     if (
         MOTION_H5_PATH is None
-        and args_cli.window_frames is None
+        and WINDOW_FRAMES_OVERRIDE is None
         and args_cli.residual_alpha is None
         and args_cli.use_reference_residual is None
     ):
         return
     new_h5 = MOTION_H5_PATH
-    new_ws = resolve_motion_window_seconds(env_cfg, window_frames=args_cli.window_frames)
+    new_ws = None
+    new_wf = None
+    ws_mode = "default"
+    if new_h5 is not None:
+        new_ws, new_wf, ws_mode = _resolve_eval_window_seconds(
+            env_cfg, new_h5, WINDOW_FRAMES_OVERRIDE
+        )
+    elif WINDOW_FRAMES_OVERRIDE is not None:
+        # Fallback when dance is unresolved (normally not hit).
+        new_ws = resolve_motion_window_seconds(env_cfg, window_frames=WINDOW_FRAMES_OVERRIDE)
+        new_wf = int(WINDOW_FRAMES_OVERRIDE)
+        ws_mode = "override"
     post_tail_s = max(0.0, float(getattr(args_cli, "post_play_seconds", 0.0)))
     extend_episode_tail = bool(args_cli.play and args_cli.full_window_episode and post_tail_s > 0.0)
-    if new_ws is not None and args_cli.window_frames is not None:
-        log_window_frames_override(
-            int(args_cli.window_frames),
-            new_ws,
-            control_hz_from_env_cfg(env_cfg),
-        )
+    if new_ws is not None and new_wf is not None:
+        if ws_mode == "override":
+            log_window_frames_override(new_wf, new_ws, control_hz_from_env_cfg(env_cfg))
+        else:
+            src_frames, src_fps = _read_h5_frames_and_fps(new_h5) if new_h5 is not None else (0, 0.0)
+            print(
+                f"[INFO] Auto window from dance H5: src_frames={src_frames}@{src_fps:.1f}fps "
+                f"=> control_steps={new_wf} "
+                f"=> window_seconds={new_ws:.6f} "
+                f"(control_hz={control_hz_from_env_cfg(env_cfg):.1f})"
+            )
     new_residual_alpha = args_cli.residual_alpha
     new_use_reference_residual = args_cli.use_reference_residual
 
@@ -749,8 +854,6 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
         if "random_start" in params:
             params["random_start"] = False
         if args_cli.full_window_episode:
-            if "random_episode_length" in params:
-                params["random_episode_length"] = False
             if "segment_seconds" in params:
                 if new_ws is not None:
                     seg_s = float(new_ws)
@@ -862,6 +965,32 @@ def _sync_runtime_motion_overrides(env_unwrapped, *, h5_path: str, window_second
         _patch_obj(getattr(env_unwrapped, attr, None))
 
 
+def _resolve_stage_usd_path(stage_path: str) -> str:
+    """Resolve stage asset path (absolute or repo-relative)."""
+    if os.path.isabs(stage_path):
+        return os.path.abspath(stage_path)
+    return os.path.abspath(os.path.join(REPO_ROOT, stage_path))
+
+
+def _apply_stage_background(env_cfg: ManagerBasedRLEnvCfg, stage_path: str) -> None:
+    """Spawn a shared USD/USDZ stage backdrop at /World/station."""
+    resolved = _resolve_stage_usd_path(stage_path)
+    if not os.path.isfile(resolved):
+        print(f"[WARN] Stage background not found, skipping: {resolved}")
+        return
+
+    env_cfg.scene.stage = AssetBaseCfg(
+        prim_path="/World/station",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=resolved,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0)),
+    )
+    print(f"[INFO] Stage background: {resolved}")
+
+
 def _apply_play_viewer(env_cfg: ManagerBasedRLEnvCfg) -> None:
     """Override Isaac Lab viewer camera for policy playback."""
     env_cfg.viewer.eye = _PLAY_VIEWER_EYE
@@ -881,14 +1010,20 @@ def _apply_play_mode(env_cfg: ManagerBasedRLEnvCfg) -> None:
     if policy_obs is not None and hasattr(policy_obs, "enable_corruption"):
         policy_obs.enable_corruption = False
 
+    # Play mode has its own rollout length control (rollout_steps),
+    # so env timeout should not preempt playback and auto-reset.
+    terminations = getattr(env_cfg, "terminations", None)
+    if terminations is not None and hasattr(terminations, "time_out"):
+        terminations.time_out = None
+
     print(
         f"[INFO] Play mode: rewards zeroed ({zeroed} terms), obs corruption off, "
-        "per-step joint_pos_tracking_error skipped during rollout."
+        "time_out termination disabled, per-step joint_pos_tracking_error skipped during rollout."
     )
 
 
 def main() -> None:
-    global DANCE_NAME, MOTION_H5_PATH
+    global DANCE_NAME, MOTION_H5_PATH, WINDOW_FRAMES_OVERRIDE
 
     env_cfg: ManagerBasedRLEnvCfg = load_cfg_from_registry(  # type: ignore[assignment]
         args_cli.task, "env_cfg_entry_point"
@@ -914,6 +1049,8 @@ def main() -> None:
     log_pd_profile_summary(args_cli.pd_profile, o6_hands=True)
     _apply_motion_overrides(env_cfg)
     _apply_play_viewer(env_cfg)
+    if not args_cli.no_stage:
+        _apply_stage_background(env_cfg, args_cli.stage)
     if args_cli.play:
         _apply_play_mode(env_cfg)
 
@@ -976,6 +1113,7 @@ def main() -> None:
     buf = get_or_create_motion_buffer(env_unwrapped, h5_path, window_s)
     T = buf.num_steps
     control_hz = float(buf.control_hz)
+    window_frames_current = int(T)
     print(f"[INFO] Reference window steps = {T}; control_hz = {control_hz:.1f}")
     post_play_seconds = max(0.0, float(args_cli.post_play_seconds))
     if post_play_seconds != float(args_cli.post_play_seconds):
@@ -1128,6 +1266,7 @@ def main() -> None:
 
     pending_dance_name: str | None = None
     pending_policy_key: str | None = None
+    pending_window_frames: int | None = None
 
     def _request_dance_from_ui(dance_name: str) -> None:
         nonlocal pending_dance_name, pending_policy_key
@@ -1138,13 +1277,21 @@ def main() -> None:
         nonlocal pending_policy_key
         pending_policy_key = str(policy_key or "").strip() or _POLICY_AUTO_KEY
 
+    def _request_window_frames_from_ui(window_frames: int) -> None:
+        nonlocal pending_window_frames
+        pending_window_frames = int(window_frames)
+
     def _apply_pending_selection() -> None:
-        global DANCE_NAME, MOTION_H5_PATH
-        nonlocal pending_dance_name, pending_policy_key
+        global DANCE_NAME, MOTION_H5_PATH, WINDOW_FRAMES_OVERRIDE
+        nonlocal pending_dance_name, pending_policy_key, pending_window_frames
         nonlocal resume_path, selected_policy_key, policy, obs_adapter, obs_raw
-        nonlocal h5_path, window_s, buf, T, control_hz, post_play_steps, rollout_steps
+        nonlocal h5_path, window_s, buf, T, control_hz, post_play_steps, rollout_steps, window_frames_current
         nonlocal perf
-        if pending_dance_name is None and pending_policy_key is None:
+        if (
+            pending_dance_name is None
+            and pending_policy_key is None
+            and pending_window_frames is None
+        ):
             return
         if playback.playing:
             return
@@ -1153,6 +1300,10 @@ def main() -> None:
         if not target_dance:
             target_dance = DANCE_NAME or selected_dance
         dance_changed = bool(target_dance and target_dance != (DANCE_NAME or ""))
+        window_changed = pending_window_frames is not None
+        if window_changed:
+            wf = int(pending_window_frames)
+            WINDOW_FRAMES_OVERRIDE = None if wf <= 0 else wf
         if dance_changed:
             try:
                 new_h5, canonical = resolve_dance_h5_by_name(target_dance)
@@ -1162,6 +1313,7 @@ def main() -> None:
                 return
             DANCE_NAME = canonical
             MOTION_H5_PATH = new_h5
+        if dance_changed or window_changed:
             _apply_motion_overrides(env_cfg)
             h5_cfg, ws_cfg = _find_h5_window(env_cfg)
             _sync_runtime_motion_overrides(env_unwrapped, h5_path=h5_cfg, window_seconds=ws_cfg)
@@ -1169,6 +1321,7 @@ def main() -> None:
             window_s = float(ws_cfg)
             buf = get_or_create_motion_buffer(env_unwrapped, h5_path, window_s)
             T = int(buf.num_steps)
+            window_frames_current = int(T)
             control_hz = float(buf.control_hz)
             post_play_steps = int(round(control_hz * post_play_seconds)) if args_cli.play else 0
             rollout_steps = int(T + post_play_steps)
@@ -1184,7 +1337,14 @@ def main() -> None:
                 playback.audio_enabled = False
             elif playback.wav_path is None:
                 playback.audio_enabled = False
-            print(f"[INFO] Switched dance: {DANCE_NAME} ({_checkpoint_relpath(h5_path)})")
+            if dance_changed:
+                print(f"[INFO] Switched dance: {DANCE_NAME} ({_checkpoint_relpath(h5_path)})")
+            if window_changed:
+                mode_msg = "auto_full_h5" if WINDOW_FRAMES_OVERRIDE is None else str(WINDOW_FRAMES_OVERRIDE)
+                print(
+                    f"[INFO] Updated eval window: mode={mode_msg} "
+                    f"effective_frames={window_frames_current} window_s={window_s:.3f}"
+                )
 
         target_policy_key = pending_policy_key or selected_policy_key
         target_policy_path: str
@@ -1241,6 +1401,7 @@ def main() -> None:
         playback.policy_error = ""
         pending_dance_name = None
         pending_policy_key = None
+        pending_window_frames = None
 
     if not getattr(args_cli, "headless", False):
         from source.train_workflow.ui import eval_play_ui
@@ -1273,6 +1434,10 @@ def main() -> None:
             lambda: list(policy_entries),
             _request_policy_from_ui,
         )
+        eval_play_ui.set_window_frames_callbacks(
+            lambda: int(window_frames_current),
+            _request_window_frames_from_ui,
+        )
         eval_play_ui.create_eval_play_ui()
 
     start_listener: _StartKeyListener | None = None
@@ -1286,17 +1451,30 @@ def main() -> None:
     rollout_wall_start: float | None = None
     idle_wall_start: float | None = None
     idle_steps_done = 0
+    play_seed_counter = 0
 
     def _reset_idle_wall_clock() -> None:
         nonlocal idle_wall_start, idle_steps_done
         idle_wall_start = None
         idle_steps_done = 0
 
+    def _next_play_seed(*, episode_idx: int) -> int:
+        nonlocal play_seed_counter
+        play_seed_counter += 1
+        seed = (time.time_ns() + int(episode_idx) * 131 + play_seed_counter * 1009) & 0x7FFFFFFF
+        return int(seed if seed > 0 else 1)
+
     def _begin_rollout(*, episode_idx: int) -> None:
         nonlocal obs_raw, rollout_wall_start, idle_wall_start, idle_steps_done
         audio_util.stop_wav()
         _reset_idle_wall_clock()
-        obs_raw, _ = _env_reset(wrapped)
+        rollout_seed = _next_play_seed(episode_idx=episode_idx)
+        random.seed(rollout_seed)
+        np.random.seed(rollout_seed % (2**32 - 1))
+        torch.manual_seed(rollout_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(rollout_seed)
+        obs_raw, _ = _env_reset(wrapped, seed=rollout_seed)
         if playback.record_avi_enabled and not getattr(args_cli, "headless", False):
             _start_live_avi_recording(episode_idx=episode_idx)
         rollout_wall_start = time.perf_counter()
@@ -1307,7 +1485,7 @@ def main() -> None:
         playback.policy_step = 0
         print(
             f"[INFO] Policy rollout started (episode={episode_idx}, "
-            f"steps={rollout_steps}, ref={T}, tail={post_play_steps})."
+            f"steps={rollout_steps}, ref={T}, tail={post_play_steps}, seed={rollout_seed})."
         )
 
     def _abort_rollout(*, export_avi: bool = False) -> None:
@@ -1367,6 +1545,8 @@ def main() -> None:
             steps_done = 0
             smoothed_actions = None
             rollout_aborted = False
+            aborted_by_done = False
+            done_warn_msg = ""
             skip_step_tracking_error = bool(args_cli.play)
             if policy is None or obs_adapter is None:
                 print("[WARN] Rollout aborted: no runnable policy.")
@@ -1386,7 +1566,30 @@ def main() -> None:
                                 smooth_alpha * actions + (1.0 - smooth_alpha) * smoothed_actions
                             )
                         actions = smoothed_actions
-                obs_raw, _, _, _ = wrapped.step(actions)
+                obs_raw, _, dones, _ = wrapped.step(actions)
+                try:
+                    if torch.any(dones > 0):
+                        done_idx = int(torch.nonzero(dones > 0, as_tuple=False)[0].item())
+                        term_names = _active_termination_terms_for_env(env_unwrapped, done_idx)
+                        try:
+                            is_timeout = bool(env_unwrapped.reset_time_outs[done_idx].item())
+                        except Exception:
+                            is_timeout = False
+                        try:
+                            is_terminated = bool(env_unwrapped.reset_terminated[done_idx].item())
+                        except Exception:
+                            is_terminated = False
+                        cause = ", ".join(term_names) if term_names else "unknown"
+                        done_warn_msg = (
+                            f"[WARN] Rollout interrupted by termination "
+                            f"(env={done_idx}, terminated={is_terminated}, time_out={is_timeout}, terms=[{cause}]). "
+                            "Stopping playback and returning to standing pose."
+                        )
+                        rollout_aborted = True
+                        aborted_by_done = True
+                        break
+                except Exception:
+                    pass
                 if not skip_step_tracking_error:
                     with torch.no_grad():
                         err = joint_pos_tracking_error(env_unwrapped, h5_path, window_s)
@@ -1403,6 +1606,8 @@ def main() -> None:
 
             if rollout_aborted:
                 playback.stop_requested = False
+                if aborted_by_done:
+                    print(done_warn_msg)
                 _abort_rollout(export_avi=avi_recording_active)
                 continue
 
