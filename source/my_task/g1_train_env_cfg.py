@@ -16,7 +16,9 @@ import os
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
-from isaaclab.envs import ManagerBasedRLEnvCfg, ViewerCfg
+from isaaclab.envs import ManagerBasedRLEnvCfg
+from isaaclab.visualizers import VisualizerCfg
+from isaaclab_physx.physics import PhysxCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -27,7 +29,7 @@ from isaaclab.scene import InteractiveSceneCfg
 from source.my_task.terrain import LoweredGroundTerrainImporter, LoweredGroundTerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR, ISAAC_NUCLEUS_DIR
-from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
+from isaaclab.utils.noise import UniformNoiseCfg as Unoise
 
 from source.my_task import mdp
 from source.my_task.robots.g1_29dof_o6_cfg import G1_29DOF_O6_CFG
@@ -324,22 +326,19 @@ class G1VmdTrainBaseEnvCfg(ManagerBasedRLEnvCfg):
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
 
-    viewer: ViewerCfg = ViewerCfg(
-        eye=(0, 11.0, 5.0),
-        lookat=(0.0, 0.0, -5.0),
-        resolution=(640, 360),
-    )
-
     def __post_init__(self) -> None:
         super().__post_init__()
-        # Control loop: dt=1/60 physics, decimation=2 -> 30Hz control.
+        # Preserve the original 60 Hz physics/control loop (decimation=1).
         self.sim.dt = 1.0 / 60.0   # 物理 60 Hz
-        self.decimation = 1        # 控制 30 Hz
-        self.sim.render_interval = self.decimation / 2
+        self.decimation = 1        # 控制 60 Hz
+        self.sim.render_interval = 1
+        self.sim.physics = PhysxCfg()
+        self.sim.use_newton_actuators = False
+        self.sim.default_visualizer_cfg = VisualizerCfg(eye=(0.0, 11.0, 5.0), lookat=(0.0, 0.0, -5.0))
         # Increase PhysX GPU contact buffers for large-scale dance training
         # (high num_envs and optional self-collision can overflow default patch buffers).
-        self.sim.physx.gpu_max_rigid_patch_count = 2**20
-        self.sim.physx.gpu_max_rigid_contact_count = 2**24
+        self.sim.physics.gpu_max_rigid_patch_count = 2**20
+        self.sim.physics.gpu_max_rigid_contact_count = 2**24
         self.sim.physics_material = self.scene.terrain.physics_material
         # Window length must match the reference buffer window seconds.
         self.episode_length_s = DEFAULT_WINDOW_SECONDS

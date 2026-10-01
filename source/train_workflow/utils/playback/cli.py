@@ -6,6 +6,7 @@ import argparse
 from typing import TYPE_CHECKING
 
 from isaaclab.app import AppLauncher
+from source import sim_compat
 
 if TYPE_CHECKING:
     from source.train_workflow.utils.format.csv_loader import FootIkConfig
@@ -61,6 +62,7 @@ def build_arg_parser(pose_dir: str) -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(description="宇树 G1 站立 - 零动作运行。")
     parser.add_argument("--num_envs", type=int, default=1, help="环境数量（默认 1）")
+    parser.add_argument("--max_steps", type=int, default=0, help="自动退出前的循环次数；0 持续运行")
     parser.add_argument("--disable_fabric", action="store_true", help="禁用 fabric，使用 USD I/O")
     parser.add_argument(
         "--pose_cycle_key",
@@ -128,6 +130,7 @@ def build_arg_parser(pose_dir: str) -> argparse.ArgumentParser:
         ),
     )
     AppLauncher.add_app_launcher_args(parser)
+    sim_compat.add_legacy_headless_arg(parser)
     return parser
 
 

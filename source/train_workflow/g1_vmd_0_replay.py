@@ -18,6 +18,8 @@ G1 MMD 动作回放主入口（Isaac Sim）。
 
 from __future__ import annotations
 
+from source import sim_compat
+
 import os
 import sys
 import time
@@ -48,6 +50,7 @@ DANCES_CONFIG_PATH = os.path.join(_SCRIPT_DIR, "dances_config.yaml")
 
 parser = build_arg_parser(POSE_DIR)
 args_cli = parser.parse_args()
+sim_compat.prepare_launcher_args(args_cli)
 args_cli.device = "cpu"
 
 try:
@@ -1180,7 +1183,7 @@ def main():
             joint_ids = action_term._joint_ids
             default_joint_pos = (
                 env.unwrapped.scene["robot"]
-                .data.default_joint_pos[0, action_term._joint_ids]
+                .data.default_joint_pos.torch[0, action_term._joint_ids]
                 .cpu()
                 .numpy()
             )
@@ -1262,12 +1265,12 @@ def main():
 
     def _read_sim_root_pose() -> tuple[tuple[float, float, float] | None, list[float] | None]:
         try:
-            root_state = getattr(env.unwrapped.scene["robot"].data, "root_state_w", None)
+            root_state = sim_compat.as_torch(getattr(env.unwrapped.scene["robot"].data, "root_state_w", None))
             if torch.is_tensor(root_state) and root_state.shape[1] >= 7:
                 # One GPU->CPU copy for pos+quat (avoids 7 scalar .item() syncs).
                 vals = root_state[0, :7].detach().cpu().tolist()
                 pos = (float(vals[0]), float(vals[1]), float(vals[2]))
-                quat = [float(vals[3]), float(vals[4]), float(vals[5]), float(vals[6])]
+                quat = [float(vals[6]), float(vals[3]), float(vals[4]), float(vals[5])]
                 return pos, quat
         except Exception:
             return None, None
@@ -1357,7 +1360,7 @@ def main():
         try:
             robot = env.unwrapped.scene["robot"]
             if hasattr(robot.data, "default_joint_pos"):
-                robot_default = robot.data.default_joint_pos
+                robot_default = robot.data.default_joint_pos.torch
                 if torch.is_tensor(robot_default) and robot_default.ndim == 2:
                     robot_default[:, joint_ids] = new_default.unsqueeze(0).repeat(robot_default.shape[0], 1)
         except Exception as exc:
@@ -1523,7 +1526,7 @@ def main():
             apply_root_pos_instant(
                 env,
                 (float(row[0]), float(row[1]), float(row[2])),
-                [float(row[3]), float(row[4]), float(row[5]), float(row[6])],
+                [float(row[6]), float(row[3]), float(row[4]), float(row[5])],
             )
         if initial_default_joint_pos is None:
             return
@@ -1635,10 +1638,10 @@ def main():
                 baseline_joint_pos=playback_default_joint_pos,
                 root_anchor_pos=(float(row[0]), float(row[1]), float(row[2])),
                 root_anchor_quat_wxyz=[
+                    float(row[6]),
                     float(row[3]),
                     float(row[4]),
                     float(row[5]),
-                    float(row[6]),
                 ],
                 max_frame=int(frame_list[-1]),
                 has_hand_data=bool(motion_bundle.get("has_hand_data", False)),
@@ -1726,7 +1729,12 @@ def main():
             foot_ik_viz_cfg=foot_ik_viz_cfg,
         )
 
+    completed_loops = 0
     while simulation_app.is_running():
+        if args_cli.max_steps and completed_loops >= args_cli.max_steps:
+            print(f"ISAAC61_REPLAY_PASS loops={completed_loops}", flush=True)
+            break
+        completed_loops += 1
         with torch.inference_mode():
             if reset_requested:
                 reset_requested = False
@@ -2011,7 +2019,7 @@ def main():
                     last_printed_frame = frame // PLAYBACK_LOG_FRAME_STRIDE
                     tag = format_playback_log_label(current_motion_label)
                     root_suffix = ""
-                    root_state_now = getattr(robot.data, "root_state_w", None)
+                    root_state_now = sim_compat.as_torch(getattr(robot.data, "root_state_w", None))
                     if torch.is_tensor(root_state_now) and root_state_now.shape[1] >= 7:
                         px = float(root_state_now[0, 0].item())
                         py = float(root_state_now[0, 1].item())

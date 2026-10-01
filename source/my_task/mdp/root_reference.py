@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from source import sim_compat
+
 from typing import TYPE_CHECKING
 
 import torch
@@ -17,11 +19,7 @@ if TYPE_CHECKING:
 
 def cloner_env_origins(env: "ManagerBasedRLEnv") -> torch.Tensor:
     """Env origins used by GridCloner (actual robot spawn grid when available)."""
-    scene = env.scene
-    cloner_origins = scene._default_env_origins  # noqa: SLF001 — intentional
-    if cloner_origins is not None:
-        return cloner_origins
-    return scene.env_origins
+    return env.scene.sim.get_clone_plan().positions
 
 
 def root_reference_pose_w(
@@ -33,7 +31,7 @@ def root_reference_pose_w(
     asset_name: str = "robot",
     steps: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return world-frame root position and quaternion (wxyz) from the motion buffer."""
+    """Return world-frame root position and native Lab quaternion (xyzw)."""
     buf = get_or_create_motion_buffer(
         env,
         h5_path,
@@ -44,12 +42,12 @@ def root_reference_pose_w(
         steps = motion_steps(env)
 
     env_origin = cloner_env_origins(env)
-    p_anchor = asset.data.default_root_state[:, 0:3]
+    p_anchor = asset.data.default_root_state.torch[:, 0:3]
     p_delta = buf.root_pos_delta(steps)
     target_pos = p_anchor + env_origin + p_delta
 
-    q_anchor = math_utils.quat_unique(asset.data.default_root_state[:, 3:7])
-    q_delta = math_utils.quat_unique(buf.root_quat_wxyz(steps))
+    q_anchor = math_utils.quat_unique(asset.data.default_root_state.torch[:, 3:7])
+    q_delta = math_utils.quat_unique(sim_compat.wxyz_to_xyzw(buf.root_quat_wxyz(steps)))
     target_quat = math_utils.quat_unique(math_utils.quat_mul(q_delta, q_anchor))
     return target_pos, target_quat
 
@@ -64,7 +62,7 @@ def root_yaw_error_rad(
     steps: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Signed root yaw error (current - reference) in ``[-pi, pi]``, shape ``[num_envs]``."""
-    _, q_ref_wxyz = root_reference_pose_w(
+    _, q_ref_xyzw = root_reference_pose_w(
         asset,
         env,
         h5_path=h5_path,
@@ -72,9 +70,9 @@ def root_yaw_error_rad(
         asset_name=asset_name,
         steps=steps,
     )
-    q_cur_wxyz = math_utils.quat_unique(asset.data.root_quat_w)
-    _, _, yaw_cur = math_utils.euler_xyz_from_quat(q_cur_wxyz)
-    _, _, yaw_ref = math_utils.euler_xyz_from_quat(q_ref_wxyz)
+    q_cur_xyzw = math_utils.quat_unique(asset.data.root_quat_w.torch)
+    _, _, yaw_cur = math_utils.euler_xyz_from_quat(q_cur_xyzw)
+    _, _, yaw_ref = math_utils.euler_xyz_from_quat(q_ref_xyzw)
     return torch.atan2(torch.sin(yaw_cur - yaw_ref), torch.cos(yaw_cur - yaw_ref))
 
 
@@ -97,7 +95,7 @@ def write_root_reference_from_motion(
         steps=steps,
     )
     root_pose = torch.cat([target_pos, target_quat], dim=-1)
-    asset.write_root_pose_to_sim(root_pose)
-    asset.write_root_velocity_to_sim(
-        torch.zeros((asset.data.root_state_w.shape[0], 6), device=asset.device, dtype=torch.float32)
+    sim_compat.write_root_pose(asset, root_pose)
+    sim_compat.write_root_velocity(asset,
+        torch.zeros((asset.data.root_state_w.torch.shape[0], 6), device=asset.device, dtype=torch.float32)
     )

@@ -5,7 +5,9 @@
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
-from isaaclab.envs import ManagerBasedRLEnvCfg, ViewerCfg
+from isaaclab.envs import ManagerBasedRLEnvCfg
+from isaaclab.visualizers import VisualizerCfg
+from isaaclab_physx.physics import PhysxCfg
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
@@ -15,8 +17,8 @@ from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR, ISAAC_NUCLEUS_DIR
 
-import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
-from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
+import isaaclab.envs.mdp as mdp
+from isaaclab.utils.noise import UniformNoiseCfg as Unoise
 
 from isaaclab_assets import G1_29DOF_CFG, G1_INSPIRE_FTP_CFG  # isort: skip
 
@@ -24,7 +26,7 @@ from isaaclab_assets import G1_29DOF_CFG, G1_INSPIRE_FTP_CFG  # isort: skip
 G1_TPOSE_INIT_STATE = ArticulationCfg.InitialStateCfg(
     pos=(0.0, 0.0, 0.76),
     # pos=(0.0, 0.0, 1.0),
-    rot=(0.7071, 0, 0, 0.7071),
+    rot=(0, 0, 0.7071, 0.7071),  # Lab 3: XYZW (same 90-degree yaw)
     joint_pos={
         # 腿部：直立
         ".*_hip_pitch_joint": 0.0,
@@ -162,19 +164,17 @@ class G1VmdReplayEnvCfg(ManagerBasedRLEnvCfg):
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     # 初始默认视角：从斜上方看向机器人站立位置
-    viewer: ViewerCfg = ViewerCfg(
-        eye=(0.0, 4.0, 1.0),
-        lookat=(0.0, 0.0, 1.0),
-    )
-
     def __post_init__(self):
         super().__post_init__()
         # 单环境，位于原点
         self.scene.num_envs = 1
-        # Align with G1VmdTrainBaseEnvCfg: physics 60 Hz, control 30 Hz (decimation=2).
+        # Preserve the existing 60 Hz physics AND control frequency.
         self.sim.dt = 1.0 / 60.0
         self.decimation = 1
-        self.sim.render_interval = 0.5
+        self.sim.render_interval = 1
+        self.sim.physics = PhysxCfg()
+        self.sim.use_newton_actuators = False
+        self.sim.default_visualizer_cfg = VisualizerCfg(eye=(0.0, 4.0, 1.0), lookat=(0.0, 0.0, 1.0))
         # 原 60s 会与 MDP time_out 一致，交互脚本里每 ~60s 仿真时间会自动 reset。
         # 长时间站姿/动作演示请用大值；需要按回合切场景时再改小。
         self.episode_length_s = 86400.0

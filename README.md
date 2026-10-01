@@ -94,22 +94,39 @@ flowchart LR
 | `[media/](media/)`                                                | **仅本地**（gitignore）：`dance/`、`pose/`、VMD/CSV/H5/WAV |
 | `[docs/](docs/)`                                                  | 项目文档（本地，gitignore）                                 |
 | `[assets/](assets/)`                                              | G1 29-DOF O6 手 USD 资产；`demo/` 存放 README 演示 GIF     |
-| `[setup_env.sh](setup_env.sh)` / `[setup_env.bat](setup_env.bat)` | Isaac Sim **5.1.0** + Isaac Lab **2.3.0** 安装       |
+| `[setup_env.sh](setup_env.sh)` / `[setup_env.bat](setup_env.bat)` | Windows 6.1 安装；`.sh` 保留旧版 5.1 安装       |
 
 
 ---
 
-## 环境要求
+## 环境要求（Windows 11 / Isaac Sim 6.1）
 
-- **NVIDIA Isaac Sim 5.1.0** — [需自行下载](https://developer.nvidia.com/isaac-sim)
-- **Isaac Lab 2.3.0** — 通过 [setup_env.sh](setup_env.sh) 或 [setup_env.bat](setup_env.bat) 安装
-- **Conda 环境** `env_isaaclab_mmd`（安装脚本创建）
-- **Python ≥ 3.11**
+- **NVIDIA Isaac Sim 6.1.0** — 独立安装包位于 `I:\isaac61\IsaacSim`
+- **Isaac Lab v3.0.0-EA** — 位于 `I:\isaac61\IsaacLab`，固定官方抢先体验标签
+- **Python 3.12** — 使用 Isaac Sim 自带 Python；不要激活原来的 Conda 环境
+- **安装入口**：`setup_env.bat` / `setup_isaac61.ps1`；下载和依赖缓存均配置在 I 盘
 - **PyYAML**（读取 `dances_config.yaml`）
 
+原 5.1 安装目录保留。`setup_env_legacy51.bat` 和 `setup_env.sh` 是旧版安装脚本，只适用于旧版源代码。
+
+Windows 快速验证和启动：
+
+```powershell
+.\run_isaac61.bat
+.\run_isaac61.bat source\train_workflow\smoke_isaac61.py --viz kit --steps 0
+.\run_isaac61.bat source\train_workflow\smoke_isaac61.py --viz none --steps 60
+.\run_isaac61.bat source\train_workflow\g1_vmd_0_replay.py
+.\run_isaac61.bat source\train_workflow\g1_vmd_1_train.py --dance IRIS_OUT --window_frames 30 --num_envs 4 --max_iterations 1 --headless --episode_seconds 1 --experiment_suffix isaac61_smoke
+.\run_isaac61.bat source\train_workflow\g1_vmd_2_eval.py --dance IRIS_OUT --num_envs 1
+```
+
+不带参数的启动运行 300 步后自动退出；`--steps 0` 保持窗口开启。2026-10-01 已在本机 RTX 5090 D v2 / 驱动 617.14 上验证 GUI、无窗口仿真、一次 PPO 更新、新 checkpoint 加载和原回放 UI 启动。安装版本、测试命令、日志路径和兼容性范围见 [ISAAC61_MIGRATION.md](ISAAC61_MIGRATION.md)。
+
+CSV/H5 中的四元数继续使用 WXYZ；仿真 API 使用 XYZW，转换由项目边界代码完成。旧 RSL-RL checkpoint 需要另行迁移和验证，建议先用新版生成一个短训练 checkpoint。
+
 ---
 
-## 快速开始
+## 旧版快速开始（仅供迁移前环境参考）
 
 ```bash
 # 1) 安装 Isaac Sim + Isaac Lab，然后在仓库根目录：
@@ -141,7 +158,7 @@ Windows 上将 `isaaclab.sh` 替换为 `isaaclab.bat`。步骤 5 也可直接用
 
 ```bash
 cp pyrightconfig.example.json pyrightconfig.json
-# 将 venvPath 改为你的 Conda envs 目录
+# 示例已指向 isaac_workspace_61 和 Sim 自带的 Python 3.12，无需 Conda
 ```
 
 ---

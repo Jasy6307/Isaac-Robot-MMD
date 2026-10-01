@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from source import sim_compat
+
 from typing import TYPE_CHECKING
 
 import torch
@@ -115,18 +117,18 @@ class ReferenceFrozenJointPositionAction(JointPositionAction):
 
     def apply_actions(self) -> None:
         self._apply_root_reference()
-        self._asset.set_joint_position_target(self.processed_actions, joint_ids=self._joint_ids)
+        sim_compat.set_joint_position_target(self._asset, self.processed_actions, joint_ids=self._joint_ids)
         if self._frozen_joint_ids.numel() == 0:
             return
         q_ref = self._get_reference_joint_targets()
-        self._asset.set_joint_position_target(
+        sim_compat.set_joint_position_target(self._asset,
             q_ref[:, self._frozen_action_cols],
             joint_ids=self._frozen_joint_ids,
         )
         if self._reference_only_joint_ids.numel() == 0:
             return
         q_ref_all = self._get_reference_joint_targets_all()
-        self._asset.set_joint_position_target(
+        sim_compat.set_joint_position_target(self._asset,
             q_ref_all[:, self._reference_only_joint_ids],
             joint_ids=self._reference_only_joint_ids,
         )

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from source import sim_compat
+
 import math
 from dataclasses import dataclass, field
 from typing import Any
@@ -198,7 +200,7 @@ def _ensure_root_anchor(
         )
         state.root_quat_wxyz = root_quat_from_state_row(root_snapshot_row)
         return
-    root_state = getattr(robot.data, "root_state_w", None)
+    root_state = sim_compat.as_torch(getattr(robot.data, "root_state_w", None))
     if torch.is_tensor(root_state) and root_state.shape[1] >= 7:
         state.root_origin_pos = (
             float(root_state[0, 0].item()),

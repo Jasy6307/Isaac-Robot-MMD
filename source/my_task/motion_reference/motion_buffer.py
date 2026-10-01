@@ -299,7 +299,7 @@ def get_or_create_motion_buffer(
 
     asset: Articulation = env.scene[asset_name]
     joint_names: list[str] = list(asset.joint_names)
-    default_joint_pos = asset.data.default_joint_pos[0].detach().cpu().numpy()
+    default_joint_pos = asset.data.default_joint_pos.torch[0].detach().cpu().numpy()
     control_hz = 1.0 / float(env.step_dt)
 
     buf = DanceMotionReferenceBuffer(

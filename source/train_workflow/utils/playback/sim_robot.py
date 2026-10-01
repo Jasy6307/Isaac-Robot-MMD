@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from source import sim_compat
+
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -25,7 +27,7 @@ ROOT_PD_BODY_ID = 0
 
 def robot_root_row_clone(env: Any) -> Any | None:
     """Return CPU clone of robot root_state_w row 0, or None."""
-    rs = getattr(env.unwrapped.scene["robot"].data, "root_state_w", None)
+    rs = sim_compat.as_torch(getattr(env.unwrapped.scene["robot"].data, "root_state_w", None))
     if torch.is_tensor(rs) and rs.shape[1] >= 7:
         return rs[0].detach().cpu().clone()
     return None
@@ -35,13 +37,13 @@ def apply_joint_state_instant(env: Any, joint_pos_cmd: Any, joint_ids: Any) -> b
     """Write joint positions directly into simulation. Returns True on success."""
     robot: Articulation = env.unwrapped.scene["robot"]
     device = env.unwrapped.device
-    num_envs = robot.data.joint_pos.shape[0]
+    num_envs = robot.data.joint_pos.torch.shape[0]
     joint_pos_tensor = torch.tensor(joint_pos_cmd, dtype=torch.float32, device=device).unsqueeze(0)
     joint_pos_tensor = joint_pos_tensor.repeat(num_envs, 1)
     joint_vel_tensor = torch.zeros_like(joint_pos_tensor)
 
     try:
-        robot.write_joint_state_to_sim(joint_pos_tensor, joint_vel_tensor, joint_ids=joint_ids)
+        sim_compat.write_joint_state(robot, joint_pos_tensor, joint_vel_tensor, joint_ids=joint_ids)
         return True
     except (TypeError, RuntimeError):
         return False
@@ -55,20 +57,20 @@ def apply_root_pos_instant(
     """Write robot root pose into simulation while preserving root velocities."""
     robot: Articulation = env.unwrapped.scene["robot"]
     device = env.unwrapped.device
-    num_envs = robot.data.joint_pos.shape[0]
+    num_envs = robot.data.joint_pos.torch.shape[0]
 
-    root_state = robot.data.root_state_w
-    fallback_wxyz = root_state[0, 3:7].detach().cpu().tolist()
+    root_state = robot.data.root_state_w.torch
+    fallback_wxyz = sim_compat.xyzw_to_wxyz(root_state[0, 3:7]).detach().cpu().tolist()
     qwxyz = quat_normalize(coerce_quat(root_quat_wxyz, fallback_wxyz))
 
     root_pose = torch.tensor(
-        [root_pos_xyz[0], root_pos_xyz[1], root_pos_xyz[2], qwxyz[0], qwxyz[1], qwxyz[2], qwxyz[3]],
+        [root_pos_xyz[0], root_pos_xyz[1], root_pos_xyz[2], qwxyz[1], qwxyz[2], qwxyz[3], qwxyz[0]],
         dtype=torch.float32,
         device=device,
     ).unsqueeze(0)
     root_pose = root_pose.repeat(num_envs, 1)
 
-    state = robot.data.root_state_w.clone()
+    state = robot.data.root_state_w.torch.clone()
     state[:, 0:3] = root_pose[:, 0:3]
     state[:, 3:7] = root_pose[:, 3:7]
     if state[:, 3:7].abs().sum() < 1e-6:
@@ -77,7 +79,7 @@ def apply_root_pos_instant(
     # Kinematic teleport: zero root velocity so the next physics substep does not
     # integrate stale angular momentum into orientation drift (blue vs cyan root debug).
     state[:, 7:13] = 0.0
-    robot.write_root_state_to_sim(state)
+    sim_compat.write_root_state(robot, state)
     return True
 
 
@@ -99,7 +101,7 @@ def clear_root_pd_wrench(env: Any) -> None:
     """Disable external root wrench buffers (call when playback stops/resets)."""
     robot: Articulation = env.unwrapped.scene["robot"]
     device = env.unwrapped.device
-    num_envs = robot.data.root_state_w.shape[0]
+    num_envs = robot.data.root_state_w.torch.shape[0]
     zero_f = torch.zeros((num_envs, 1, 3), dtype=torch.float32, device=device)
     zero_t = torch.zeros_like(zero_f)
     try:
@@ -125,10 +127,10 @@ def apply_root_pd_track(
     """Track root pose through physics via external wrench PD on the pelvis."""
     robot: Articulation = env.unwrapped.scene["robot"]
     device = env.unwrapped.device
-    num_envs = robot.data.root_state_w.shape[0]
+    num_envs = robot.data.root_state_w.torch.shape[0]
     kp_p, kd_p, kp_r, kd_r = _root_pd_gains(kp_pos, kd_pos, kp_rot, kd_rot)
 
-    root_state = robot.data.root_state_w
+    root_state = robot.data.root_state_w.torch
     cur_pos = root_state[:, 0:3]
     cur_quat = math_utils.quat_unique(root_state[:, 3:7])
     cur_lin_vel = root_state[:, 7:10]
@@ -139,10 +141,10 @@ def apply_root_pd_track(
         dtype=torch.float32,
         device=device,
     ).repeat(num_envs, 1)
-    fallback_wxyz = cur_quat[0].detach().cpu().tolist()
+    fallback_wxyz = sim_compat.xyzw_to_wxyz(cur_quat[0]).detach().cpu().tolist()
     qwxyz = quat_normalize(coerce_quat(root_quat_wxyz, fallback_wxyz))
     target_quat = torch.tensor(
-        [[qwxyz[0], qwxyz[1], qwxyz[2], qwxyz[3]]],
+        [[qwxyz[1], qwxyz[2], qwxyz[3], qwxyz[0]]],
         dtype=torch.float32,
         device=device,
     ).repeat(num_envs, 1)
@@ -171,7 +173,7 @@ def apply_root_pd_track(
         ang_vel_cmd = kp_r * axis_angle - kd_r * cur_ang_vel
         root_vel = torch.cat([lin_vel_cmd, ang_vel_cmd], dim=-1)
         try:
-            robot.write_root_velocity_to_sim(root_vel)
+            sim_compat.write_root_velocity(robot, root_vel)
             return True
         except Exception:
             return False

@@ -7,9 +7,13 @@ name = "source"
 version = "0.1.0"
 description = "Unitree G1 MMD retargeting and dance tracking on Isaac Lab"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 authors = [{ name = "jasy" }]
+dependencies = ["numpy>=2", "h5py>=3.15", "PyYAML>=6"]
+
+[project.optional-dependencies]
+audio = ["pygame>=2.6"]
 
 [tool.setuptools.packages.find]
 where = ["."]

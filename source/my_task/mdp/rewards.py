@@ -19,11 +19,7 @@ if TYPE_CHECKING:
 
 def _cloner_env_origins(env: "ManagerBasedRLEnv") -> torch.Tensor:
     """Env origins used by GridCloner (actual robot spawn grid when available)."""
-    scene = env.scene
-    cloner_origins = scene._default_env_origins  # noqa: SLF001 — intentional
-    if cloner_origins is not None:
-        return cloner_origins
-    return scene.env_origins
+    return env.scene.sim.get_clone_plan().positions
 
 
 def joint_pos_tracking_exp(
@@ -43,7 +39,7 @@ def joint_pos_tracking_exp(
     buf = get_or_create_motion_buffer(env, h5_path, window_seconds, asset_name=asset_cfg.name)
     asset: Articulation = env.scene[asset_cfg.name]
     q_ref_abs = buf.q_ref_abs(motion_steps(env))
-    q_cur = asset.data.joint_pos
+    q_cur = asset.data.joint_pos.torch
     if asset_cfg.joint_ids != slice(None):
         q_cur = q_cur[:, asset_cfg.joint_ids]
         q_ref_abs = q_ref_abs[:, asset_cfg.joint_ids]
@@ -96,7 +92,7 @@ def joint_pos_tracking_l2(
     buf = get_or_create_motion_buffer(env, h5_path, window_seconds, asset_name=asset_cfg.name)
     asset: Articulation = env.scene[asset_cfg.name]
     q_ref_abs = buf.q_ref_abs(motion_steps(env))
-    q_cur = asset.data.joint_pos
+    q_cur = asset.data.joint_pos.torch
     if asset_cfg.joint_ids != slice(None):
         q_cur = q_cur[:, asset_cfg.joint_ids]
         q_ref_abs = q_ref_abs[:, asset_cfg.joint_ids]
@@ -148,8 +144,8 @@ def root_xy_tracking_exp(
     buf = get_or_create_motion_buffer(env, h5_path, window_seconds, asset_name=asset_cfg.name)
     asset: Articulation = env.scene[asset_cfg.name]
 
-    p_cur_xy = asset.data.root_state_w[:, 0:2]
-    p_anchor_xy = asset.data.default_root_state[:, 0:2]
+    p_cur_xy = asset.data.root_state_w.torch[:, 0:2]
+    p_anchor_xy = asset.data.default_root_state.torch[:, 0:2]
     env_origin_xy = _cloner_env_origins(env)[:, 0:2]
     p_delta_xy = buf.root_pos_delta(motion_steps(env))[:, 0:2]
     p_ref_xy = p_anchor_xy + env_origin_xy + p_delta_xy
@@ -178,8 +174,8 @@ def root_z_tracking_exp(
     buf = get_or_create_motion_buffer(env, h5_path, window_seconds, asset_name=asset_cfg.name)
     asset: Articulation = env.scene[asset_cfg.name]
 
-    p_cur_z = asset.data.root_state_w[:, 2]
-    p_anchor_z = asset.data.default_root_state[:, 2]
+    p_cur_z = asset.data.root_state_w.torch[:, 2]
+    p_anchor_z = asset.data.default_root_state.torch[:, 2]
     env_origin_z = _cloner_env_origins(env)[:, 2]
     p_delta_z = buf.root_pos_delta(motion_steps(env))[:, 2]
     p_ref_z = p_anchor_z + env_origin_z + p_delta_z

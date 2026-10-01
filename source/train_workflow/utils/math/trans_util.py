@@ -3,7 +3,7 @@
 
 """标量四元数与 MMD→仿真轴向的旋转工具。
 
-约定：四元数均为 Isaac ``root_state_w`` 使用的 (w, x, y, z) 顺序。
+约定：动作文件和标量数学使用 WXYZ；Isaac Lab 3 仿真数据使用 XYZW。
 """
 
 from __future__ import annotations
@@ -26,8 +26,8 @@ def coerce_quat(q: Any, fallback_wxyz4: list[float]) -> list[float]:
 
 
 def root_quat_from_state_row(state_row: Any) -> list[float]:
-    """单环境 root_state 一行：索引 3:7 为 wxyz。"""
-    return [float(state_row[i].item()) for i in (3, 4, 5, 6)]
+    """Convert a native Lab 3 root-state row from XYZW to motion WXYZ."""
+    return [float(state_row[i].item()) for i in (6, 3, 4, 5)]
 
 
 def quat_normalize(q: list[float]) -> list[float]:

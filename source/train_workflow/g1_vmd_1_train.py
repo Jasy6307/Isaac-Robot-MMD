@@ -39,6 +39,7 @@ from source.train_workflow.utils.motion.resolve import (  # noqa: E402
     resolve_training_log_root,
 )
 from isaaclab.app import AppLauncher  # noqa: E402
+from source import sim_compat
 
 parser = argparse.ArgumentParser(description="Train G1 dance tracking PPO with RSL-RL.")
 parser.add_argument(
@@ -196,7 +197,7 @@ parser.add_argument(
     "--video_length",
     type=int,
     default=300,
-    help="Recorded clip length in env steps (300 ≈ 10s at 30Hz control).",
+    help="Recorded clip length in env steps (300 = 5s at the default 60Hz control).",
 )
 parser.add_argument(
     "--video_interval",
@@ -211,7 +212,11 @@ parser.add_argument(
     help="Record once per checkpoint save (interval = save_interval * num_steps_per_env).",
 )
 AppLauncher.add_app_launcher_args(parser)
+sim_compat.add_legacy_headless_arg(parser)
 args_cli = parser.parse_args()
+sim_compat.prepare_launcher_args(args_cli, default_visualizer="kit" if args_cli.video else "none")
+if args_cli.video and args_cli.headless:
+    parser.error("--video requires the Kit visualizer; omit --headless/--viz none")
 
 DANCE_NAME: str | None = None
 MOTION_H5_PATH: str | None = None
@@ -232,11 +237,12 @@ from datetime import datetime  # noqa: E402
 from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 
 from isaaclab.envs import ManagerBasedRLEnvCfg  # noqa: E402
+from isaaclab.envs.utils.video_recorder_cfg import VideoRecorderCfg  # noqa: E402
 from isaaclab.utils.dict import print_dict  # noqa: E402
 from isaaclab.utils.io import dump_yaml  # noqa: E402
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper  # noqa: E402
 from isaaclab_tasks.utils import get_checkpoint_path  # noqa: E402
-from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry  # noqa: E402
+from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry, parse_env_cfg  # noqa: E402
 
 import source.my_task  # noqa: F401, E402  -- register Isaac-G1-* tasks
 from source.my_task.g1_train_env_cfg import C1_FULL_WINDOW_HOLD_SECONDS  # noqa: E402
@@ -488,12 +494,11 @@ def main() -> None:
     torch.backends.cudnn.allow_tf32 = True
     torch.backends.cudnn.benchmark = False
 
-    env_cfg: ManagerBasedRLEnvCfg = load_cfg_from_registry(  # type: ignore[assignment]
-        args_cli.task, "env_cfg_entry_point"
-    )
+    env_cfg: ManagerBasedRLEnvCfg = parse_env_cfg(args_cli.task)
     agent_cfg: RslRlOnPolicyRunnerCfg = load_cfg_from_registry(  # type: ignore[assignment]
         args_cli.task, "rsl_rl_cfg_entry_point"
     )
+    agent_cfg = sim_compat.prepare_rsl_rl_cfg(agent_cfg)
 
     env_cfg.scene.num_envs = int(args_cli.num_envs)
     env_cfg.seed = int(args_cli.seed)
@@ -536,6 +541,18 @@ def main() -> None:
         env_cfg.export_io_descriptors = False
         env_cfg.io_descriptors_output_dir = log_dir
 
+    if args_cli.video:
+        if args_cli.video_interval is not None:
+            video_interval = int(args_cli.video_interval)
+        elif args_cli.video_every_save:
+            video_interval = int(agent_cfg.save_interval) * int(agent_cfg.num_steps_per_env)
+        else:
+            video_interval = 2000
+        env_cfg.video_recorders = [VideoRecorderCfg(
+            source="visualizer:kit", output_dir=os.path.join(log_dir, "videos", "train"),
+            video_interval=video_interval, video_length=int(args_cli.video_length),
+        )]
+
     env = gym.make(
         args_cli.task,
         cfg=env_cfg,
@@ -548,23 +565,6 @@ def main() -> None:
         )
     else:
         resume_path = None
-
-    if args_cli.video:
-        if args_cli.video_interval is not None:
-            video_interval = int(args_cli.video_interval)
-        elif args_cli.video_every_save:
-            video_interval = int(agent_cfg.save_interval) * int(agent_cfg.num_steps_per_env)
-        else:
-            video_interval = 2000
-        video_kwargs = {
-            "video_folder": os.path.join(log_dir, "videos", "train"),
-            "step_trigger": lambda step, interval=video_interval: step % interval == 0,
-            "video_length": int(args_cli.video_length),
-            "disable_logger": True,
-        }
-        print("[INFO] Recording videos during training.")
-        print_dict(video_kwargs, nesting=4)
-        env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 

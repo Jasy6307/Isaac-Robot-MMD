@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from source import sim_compat
+
 from typing import TYPE_CHECKING
 
 import torch
@@ -38,11 +40,7 @@ _ENV_START_WEIGHT_LOGGED_KEYS_ATTR = "_g1_motion_start_weight_logged_keys"
 
 def _cloner_env_origins(env: "ManagerBasedRLEnv") -> torch.Tensor:
     """Env origins used by GridCloner (actual robot spawn grid when available)."""
-    scene = env.scene
-    cloner_origins = scene._default_env_origins  # noqa: SLF001 — intentional
-    if cloner_origins is not None:
-        return cloner_origins
-    return scene.env_origins
+    return env.scene.sim.get_clone_plan().positions
 
 
 def _get_or_build_motion_start_weights(
@@ -112,10 +110,10 @@ def reset_root_to_spawn(
     if env_ids.numel() == 0:
         return
     asset: Articulation = env.scene[asset_cfg.name]
-    root_state = asset.data.default_root_state[env_ids].clone()
+    root_state = asset.data.default_root_state.torch[env_ids].clone()
     root_state[:, 0:3] += _cloner_env_origins(env)[env_ids]
-    asset.write_root_pose_to_sim(root_state[:, :7], env_ids=env_ids)
-    asset.write_root_velocity_to_sim(root_state[:, 7:], env_ids=env_ids)
+    sim_compat.write_root_pose(asset, root_state[:, :7], env_ids=env_ids)
+    sim_compat.write_root_velocity(asset, root_state[:, 7:], env_ids=env_ids)
 
 
 def reset_to_motion_start(
@@ -215,16 +213,16 @@ def reset_to_motion_start(
         start_steps = torch.zeros((env_ids.numel(),), device=asset.device, dtype=torch.long)
 
     if reset_root_to_motion_pose or reset_root_to_motion_quat:
-        root_pose = asset.data.root_state_w[env_ids, :7].clone()
+        root_pose = asset.data.root_state_w.torch[env_ids, :7].clone()
         env_origin = _cloner_env_origins(env)[env_ids]
 
         if reset_root_to_motion_pose:
-            p_anchor = asset.data.default_root_state[env_ids, 0:3]
+            p_anchor = asset.data.default_root_state.torch[env_ids, 0:3]
             p_delta = buf.root_pos_delta(start_steps).to(asset.device)
             root_pose[:, 0:3] = p_anchor + env_origin + p_delta
 
         if reset_root_to_motion_quat:
-            default_root_quat = asset.data.default_root_state[env_ids, 3:7]
+            default_root_quat = sim_compat.xyzw_to_wxyz(asset.data.default_root_state.torch[env_ids, 3:7])
             q_delta0 = buf.root_quat_wxyz(start_steps)
             q_target = torch.stack(
                 (
@@ -248,10 +246,10 @@ def reset_to_motion_start(
                 dim=-1,
             )
             q_target = q_target / torch.linalg.norm(q_target, dim=-1, keepdim=True).clamp_min(1e-8)
-            root_pose[:, 3:7] = q_target
+            root_pose[:, 3:7] = sim_compat.wxyz_to_xyzw(q_target)
 
-        asset.write_root_pose_to_sim(root_pose, env_ids=env_ids)
-        asset.write_root_velocity_to_sim(
+        sim_compat.write_root_pose(asset, root_pose, env_ids=env_ids)
+        sim_compat.write_root_velocity(asset,
             torch.zeros((env_ids.numel(), 6), device=asset.device, dtype=torch.float32),
             env_ids=env_ids,
         )
@@ -271,7 +269,7 @@ def reset_to_motion_start(
             delta = delta * scales.unsqueeze(0)
         target_q = target_q + delta
     # Clamp to soft joint position limits.
-    soft_limits = asset.data.soft_joint_pos_limits[env_ids]
+    soft_limits = asset.data.soft_joint_pos_limits.torch[env_ids]
     target_q = torch.clamp(target_q, soft_limits[..., 0], soft_limits[..., 1])
 
     target_qd = torch.zeros_like(target_q)
@@ -280,4 +278,4 @@ def reset_to_motion_start(
             torch.rand_like(target_qd) * (2.0 * joint_vel_noise) - joint_vel_noise
         )
 
-    asset.write_joint_state_to_sim(target_q, target_qd, env_ids=env_ids)
+    sim_compat.write_joint_state(asset, target_q, target_qd, env_ids=env_ids)

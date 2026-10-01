@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from source import sim_compat
+
 import bisect
 import csv
 import os
@@ -136,7 +138,7 @@ def _resolve_body_indices(robot: Any, needed_names: list[str]) -> dict[str, int]
 def _body_pos_world_tensor(robot: Any) -> torch.Tensor | None:
     data = robot.data
     for pos_name in ("body_pos_w", "body_link_pos_w", "link_pos_w"):
-        v = getattr(data, pos_name, None)
+        v = sim_compat.as_torch(getattr(data, pos_name, None))
         if torch.is_tensor(v):
             return v
     return None
@@ -146,7 +148,7 @@ def _extract_body_pose_wxyz(robot: Any, body_idx: int) -> tuple[tuple[float, flo
     data = robot.data
     state = None
     for field in ("body_state_w", "body_link_state_w", "link_state_w"):
-        v = getattr(data, field, None)
+        v = sim_compat.as_torch(getattr(data, field, None))
         if torch.is_tensor(v):
             state = v
             break
@@ -158,18 +160,18 @@ def _extract_body_pose_wxyz(robot: Any, body_idx: int) -> tuple[tuple[float, flo
         else:
             raise RuntimeError(f"Unsupported body state shape: {tuple(state.shape)}")
         pos = (float(row[0].item()), float(row[1].item()), float(row[2].item()))
-        quat = [float(row[3].item()), float(row[4].item()), float(row[5].item()), float(row[6].item())]
+        quat = [float(row[i].item()) for i in (6, 3, 4, 5)]
         return pos, quat
 
     pos_t = None
     quat_t = None
     for pos_name in ("body_pos_w", "body_link_pos_w", "link_pos_w"):
-        v = getattr(data, pos_name, None)
+        v = sim_compat.as_torch(getattr(data, pos_name, None))
         if torch.is_tensor(v):
             pos_t = v
             break
     for quat_name in ("body_quat_w", "body_link_quat_w", "link_quat_w"):
-        v = getattr(data, quat_name, None)
+        v = sim_compat.as_torch(getattr(data, quat_name, None))
         if torch.is_tensor(v):
             quat_t = v
             break
@@ -189,7 +191,7 @@ def _extract_body_pose_wxyz(robot: Any, body_idx: int) -> tuple[tuple[float, flo
     else:
         raise RuntimeError(f"Unsupported body quat shape: {tuple(quat_t.shape)}")
     pos = (float(prow[0].item()), float(prow[1].item()), float(prow[2].item()))
-    quat = [float(qrow[0].item()), float(qrow[1].item()), float(qrow[2].item()), float(qrow[3].item())]
+    quat = [float(qrow[i].item()) for i in (3, 0, 1, 2)]
     return pos, quat
 
 
@@ -458,7 +460,7 @@ def generate_z_editted_motion(
     joint_ids = action_term._joint_ids
     default_joint_pos = (
         env.unwrapped.scene["robot"]
-        .data.default_joint_pos[0, action_term._joint_ids]
+        .data.default_joint_pos.torch[0, action_term._joint_ids]
         .cpu()
         .numpy()
     )

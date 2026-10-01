@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from source import sim_compat
+
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -36,9 +38,9 @@ class PolicyRolloutPoseLog:
 
     def append_from_env(self, env: Any) -> None:
         robot = env.unwrapped.scene["robot"]
-        joint_pos = robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32, copy=True)
+        joint_pos = robot.data.joint_pos.torch[0].detach().cpu().numpy().astype(np.float32, copy=True)
         root_state_w = (
-            robot.data.root_state_w[0, :7].detach().cpu().numpy().astype(np.float32, copy=True)
+            robot.data.root_state_w.torch[0, :7].detach().cpu().numpy().astype(np.float32, copy=True)
         )
         self._frames.append(_PoseSnapshot(joint_pos=joint_pos, root_state_w=root_state_w))
 
@@ -63,8 +65,8 @@ def export_pose_log_to_avi(
 
     robot = env.unwrapped.scene["robot"]
     device = env.unwrapped.device
-    num_envs = int(robot.data.joint_pos.shape[0])
-    num_joints = int(robot.data.joint_pos.shape[1])
+    num_envs = int(robot.data.joint_pos.torch.shape[0])
+    num_joints = int(robot.data.joint_pos.torch.shape[1])
 
     written = 0
     for vi in range(n_video):
@@ -78,12 +80,12 @@ def export_pose_log_to_avi(
             .repeat(num_envs, 1)
         )
         qd = torch.zeros_like(q)
-        robot.write_joint_state_to_sim(q, qd)
+        sim_compat.write_joint_state(robot, q, qd)
         rs = snap.root_state_w
         apply_root_pos_instant(
             env,
             (float(rs[0]), float(rs[1]), float(rs[2])),
-            [float(rs[3]), float(rs[4]), float(rs[5]), float(rs[6])],
+            [float(rs[6]), float(rs[3]), float(rs[4]), float(rs[5])],
         )
         if pre_render is not None:
             try:

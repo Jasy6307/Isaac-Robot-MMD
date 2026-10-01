@@ -5,7 +5,7 @@
 
 from isaaclab.utils import configclass
 
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlMLPModelCfg, RslRlPpoAlgorithmCfg
 
 
 @configclass
@@ -15,15 +15,20 @@ class G1VmdReplayPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 1
     experiment_name = "g1_stand"
-    policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
-        actor_obs_normalization=False,
-        critic_obs_normalization=False,
-        actor_hidden_dims=[64, 32],
-        critic_hidden_dims=[64, 32],
+    obs_groups = {"actor": ["policy"], "critic": ["policy"]}
+    actor = RslRlMLPModelCfg(
+        hidden_dims=[64, 32],
+        obs_normalization=False,
         activation="elu",
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=1.0),
     )
-    algorithm = RslRlPpoAlgorithmCfg()
+    critic = RslRlMLPModelCfg(hidden_dims=[64, 32], activation="elu", obs_normalization=False)
+    algorithm = RslRlPpoAlgorithmCfg(
+        value_loss_coef=1.0, use_clipped_value_loss=True, clip_param=0.2,
+        entropy_coef=0.005, num_learning_epochs=5, num_mini_batches=4,
+        learning_rate=1e-3, schedule="adaptive", gamma=0.99, lam=0.95,
+        desired_kl=0.01, max_grad_norm=1.0,
+    )
 
 
 @configclass
@@ -34,15 +39,14 @@ class G1VmdTrainPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     max_iterations = 3000
     save_interval = 200
     experiment_name = "g1_dance_track"
-    empirical_normalization = False
-    policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
-        actor_obs_normalization=True,
-        critic_obs_normalization=True,
-        actor_hidden_dims=[512, 256, 128],
-        critic_hidden_dims=[512, 256, 128],
+    obs_groups = {"actor": ["policy"], "critic": ["policy"]}
+    actor = RslRlMLPModelCfg(
+        hidden_dims=[512, 256, 128],
+        obs_normalization=True,
         activation="elu",
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=1.0),
     )
+    critic = RslRlMLPModelCfg(hidden_dims=[512, 256, 128], activation="elu", obs_normalization=True)
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,
         use_clipped_value_loss=True,

@@ -148,7 +148,7 @@ def root_xy_error(
         window_seconds=window_seconds,
         asset_name=asset_cfg.name,
     )
-    return asset.data.root_state_w[:, 0:2] - p_ref_w[:, 0:2]
+    return asset.data.root_state_w.torch[:, 0:2] - p_ref_w[:, 0:2]
 
 
 def joint_pos_tracking_error(
@@ -161,7 +161,7 @@ def joint_pos_tracking_error(
     buf = get_or_create_motion_buffer(env, h5_path, window_seconds, asset_name=asset_cfg.name)
     asset: Articulation = env.scene[asset_cfg.name]
     q_ref_abs = buf.q_ref_abs(motion_steps(env))
-    q_cur = asset.data.joint_pos
+    q_cur = asset.data.joint_pos.torch
     err = q_cur - q_ref_abs
     if asset_cfg.joint_ids != slice(None):
         err = err[:, asset_cfg.joint_ids]

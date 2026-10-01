@@ -25,6 +25,8 @@ By default ``media/stage/station.usdz`` is spawned as the scene backdrop; use
 
 from __future__ import annotations
 
+from source import sim_compat
+
 import argparse
 import glob
 import os
@@ -226,7 +228,9 @@ parser.add_argument(
     help="Do not spawn the stage background asset.",
 )
 AppLauncher.add_app_launcher_args(parser)
+sim_compat.add_legacy_headless_arg(parser)
 args_cli = parser.parse_args()
+sim_compat.prepare_launcher_args(args_cli)
 
 DANCE_NAME: str | None = None
 MOTION_H5_PATH: str | None = None
@@ -253,7 +257,7 @@ from isaaclab.assets import AssetBaseCfg  # noqa: E402
 from isaaclab.envs import ManagerBasedRLEnvCfg  # noqa: E402
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper  # noqa: E402
 from isaaclab_tasks.utils import get_checkpoint_path  # noqa: E402
-from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry  # noqa: E402
+from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry, parse_env_cfg  # noqa: E402
 
 import source.my_task  # noqa: F401, E402
 
@@ -403,11 +407,11 @@ def _reset_to_standing_pose(env_unwrapped) -> None:
         env_ids = torch.arange(env_unwrapped.num_envs, device=env_unwrapped.device)
         reset_root_to_spawn(env_unwrapped, env_ids)
         asset = env_unwrapped.scene["robot"]
-        q = asset.data.default_joint_pos[env_ids].clone()
+        q = asset.data.default_joint_pos.torch[env_ids].clone()
         qd = torch.zeros_like(q)
-        asset.write_joint_state_to_sim(q, qd, env_ids=env_ids)
-        asset.set_joint_position_target(q, env_ids=env_ids)
-        asset.write_root_velocity_to_sim(
+        sim_compat.write_joint_state(asset, q, qd, env_ids=env_ids)
+        sim_compat.set_joint_position_target(asset, q, env_ids=env_ids)
+        sim_compat.write_root_velocity(asset,
             torch.zeros((env_ids.numel(), 6), device=env_unwrapped.device, dtype=torch.float32),
             env_ids=env_ids,
         )
@@ -993,8 +997,8 @@ def _apply_stage_background(env_cfg: ManagerBasedRLEnvCfg, stage_path: str) -> N
 
 def _apply_play_viewer(env_cfg: ManagerBasedRLEnvCfg) -> None:
     """Override Isaac Lab viewer camera for policy playback."""
-    env_cfg.viewer.eye = _PLAY_VIEWER_EYE
-    env_cfg.viewer.lookat = _PLAY_VIEWER_LOOKAT
+    env_cfg.sim.default_visualizer_cfg.eye = _PLAY_VIEWER_EYE
+    env_cfg.sim.default_visualizer_cfg.lookat = _PLAY_VIEWER_LOOKAT
 
 
 def _apply_play_mode(env_cfg: ManagerBasedRLEnvCfg) -> None:
@@ -1025,12 +1029,11 @@ def _apply_play_mode(env_cfg: ManagerBasedRLEnvCfg) -> None:
 def main() -> None:
     global DANCE_NAME, MOTION_H5_PATH, WINDOW_FRAMES_OVERRIDE
 
-    env_cfg: ManagerBasedRLEnvCfg = load_cfg_from_registry(  # type: ignore[assignment]
-        args_cli.task, "env_cfg_entry_point"
-    )
+    env_cfg: ManagerBasedRLEnvCfg = parse_env_cfg(args_cli.task)
     agent_cfg: RslRlOnPolicyRunnerCfg = load_cfg_from_registry(  # type: ignore[assignment]
         args_cli.task, "rsl_rl_cfg_entry_point"
     )
+    agent_cfg = sim_compat.prepare_rsl_rl_cfg(agent_cfg)
 
     dance_options = _collect_available_dances()
     if not dance_options:

@@ -14,6 +14,7 @@ if _WORKSPACE_ROOT not in sys.path:
     sys.path.insert(0, _WORKSPACE_ROOT)
 
 from isaaclab.app import AppLauncher
+from source import sim_compat
 
 from source.train_workflow.utils.retarget.joint_axis_map import (
     MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
@@ -108,6 +109,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.set_defaults(mmd_foot_ik_enable=True)
     p.add_argument("--sim-fps", type=int, default=0, help="仿真控制频率 FPS（0 使用默认）")
     AppLauncher.add_app_launcher_args(p)
+    sim_compat.add_legacy_headless_arg(p)
     return p
 
 
@@ -117,6 +119,7 @@ TASK_ID = "Isaac-G1-Vmd-Replay-v0"
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
+    sim_compat.prepare_launcher_args(args)
     args.device = "cpu"
     app = AppLauncher(args).app
 
