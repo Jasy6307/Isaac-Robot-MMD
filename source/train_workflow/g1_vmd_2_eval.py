@@ -8,10 +8,10 @@ Example
 -------
 .. code-block:: powershell
 
-    ./isaac_workspace/IsaacLab/isaaclab.bat -p source/train_workflow/g1_vmd_2_eval.py `
+    python source/train_workflow/g1_vmd_2_eval.py `
       --task Isaac-G1-Vmd-Train-C1-v0 `
       --dance IRIS_OUT `
-      --window_frames 460 `
+      --window_frames 230 `
       --num_envs 16
 
 Press ``--start_key`` (default ``P``) or the **G1 Policy Eval** UI Play button to begin
@@ -21,6 +21,8 @@ run immediately without waiting for Play. Enable **Record AVI** to capture the v
 live during rollout at 30 fps (with dance WAV muxed when available).
 By default ``media/stage/station.usdz`` is spawned as the scene backdrop; use
 ``--no_stage`` to disable or ``--stage <path>`` to override.
+When a backdrop is loaded, the default ground is hidden but still collidable.
+Passing ``--dance`` limits this eval run to that dance; other motions are not loaded.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from source import sim_compat
 
 import argparse
 import glob
+import math
 import os
 import random
 import sys
@@ -49,6 +52,10 @@ from isaaclab.app import AppLauncher  # noqa: E402
 parser = argparse.ArgumentParser(description="Play a G1 dance tracking checkpoint.")
 parser.add_argument("--task", type=str, default="Isaac-G1-Vmd-Train-C1-v0")
 parser.add_argument("--num_envs", type=int, default=16)
+parser.add_argument(
+    "--seed", type=int, default=None,
+    help="Optional reproducible rollout reset seed (incremented per episode).",
+)
 parser.add_argument(
     "--benchmark_inference",
     action="store_true",
@@ -80,7 +87,8 @@ parser.add_argument(
     default=None,
     help=(
         "Dance name under media/dance/ (e.g. IRIS_OUT). "
-        "Resolves HDF5 and checkpoint log subfolder logs/rsl_rl/<exp>/<dance>/."
+        "Loads only this dance; resolves HDF5 and checkpoint log subfolder "
+        "logs/rsl_rl/<exp>/<dance>/."
     ),
 )
 parser.add_argument(
@@ -128,7 +136,7 @@ parser.add_argument(
     "--num_episodes",
     type=int,
     default=0,
-    help="Number of episodes to play. Use <= 0 for infinite loop playback.",
+    help="Number of rollouts to play, including early terminations. Use <= 0 for unlimited playback.",
 )
 parser.add_argument(
     "--real_time",
@@ -227,9 +235,45 @@ parser.add_argument(
     default=False,
     help="Do not spawn the stage background asset.",
 )
+parser.add_argument(
+    "--physics_hz",
+    type=float,
+    default=None,
+    help="Override eval physics frequency (sim.dt = 1 / physics_hz).",
+)
+parser.add_argument(
+    "--decimation",
+    type=int,
+    default=None,
+    help="Override physics steps per policy action (120 Hz physics / 4 = 30 Hz control).",
+)
+parser.add_argument(
+    "--render_interval",
+    type=int,
+    default=None,
+    help="Render every N physics steps without changing physics/control timing (2 = 60 Hz at 120 Hz physics).",
+)
+parser.add_argument(
+    "--viewport_resolution", type=int, nargs=2, metavar=("WIDTH", "HEIGHT"),
+    help="Fix viewport render resolution independently of window size (e.g. 960 540).",
+)
+parser.add_argument(
+    "--profile_render", action="store_true",
+    help="Report environment-step and render/UI wall times (no GPU synchronization).",
+)
 AppLauncher.add_app_launcher_args(parser)
 sim_compat.add_legacy_headless_arg(parser)
 args_cli = parser.parse_args()
+if args_cli.physics_hz is not None and (
+    not math.isfinite(args_cli.physics_hz) or args_cli.physics_hz <= 0.0
+):
+    parser.error("--physics_hz must be finite and > 0")
+if args_cli.decimation is not None and args_cli.decimation < 1:
+    parser.error("--decimation must be >= 1")
+if args_cli.render_interval is not None and args_cli.render_interval < 1:
+    parser.error("--render_interval must be >= 1")
+if args_cli.viewport_resolution is not None and min(args_cli.viewport_resolution) < 1:
+    parser.error("--viewport_resolution dimensions must be >= 1")
 sim_compat.prepare_launcher_args(args_cli)
 
 DANCE_NAME: str | None = None
@@ -291,7 +335,7 @@ from source.train_workflow.utils.media.viewport_avi_recorder import (  # noqa: E
 
 _DANCES_CONFIG_PATH = os.path.join(_SCRIPT_DIR, "dances_config.yaml")
 _POLICY_AUTO_KEY = "__AUTO_LATEST__"
-_DANCE_WAV_INDEX: dict[str, str] | None = None
+_DANCE_ASSET_CATALOG: dict[str, tuple[str, str | None]] | None = None
 
 
 def _wait_until_wall_deadline(deadline: float) -> None:
@@ -350,6 +394,136 @@ class _PlayPerfTracker:
             f"control_hz={self.control_hz:.1f}  realtime_ratio={ratio:.2f}x  "
             f"avg_step_ms={1000.0 * elapsed / steps:.1f}"
         )
+
+
+def _apply_viewport_performance_options() -> None:
+    if args_cli.headless:
+        return
+    if args_cli.viewport_resolution is not None:
+        from omni.kit.viewport.utility import get_active_viewport
+
+        viewport = get_active_viewport()
+        if viewport is None:
+            print("[WARN] No active viewport; resolution override skipped.")
+        else:
+            viewport.resolution = tuple(args_cli.viewport_resolution)
+            print(f"[INFO] Viewport render resolution = {viewport.resolution}")
+
+
+class _EvalStepProfiler:
+    """Measure wall time spent inside env.step and its render/UI calls.
+
+    GPU work is asynchronous: these numbers identify host-side waits/costs,
+    rather than independent GPU kernel durations. Policy inference is outside step.
+    """
+
+    def __init__(self, wrapped, env) -> None:
+        self.wrapped, self.sim = wrapped, env.sim
+        self.original_step, self.original_render = wrapped.step, env.sim.render
+        self.started = time.perf_counter()
+        self.steps = self.frames = 0
+        self.step_seconds = self.render_seconds = 0.0
+        self.stage_seconds = {}
+        self.stage_originals = []
+        for name, obj, attr in (
+            ("actions", env.action_manager, "process_action"),
+            ("actions", env.action_manager, "apply_action"),
+            ("scene_write", env.scene, "write_data_to_sim"),
+            ("physics", env.sim, "step"),
+            ("scene_update", env.scene, "update"),
+            ("obs", env.observation_manager, "compute"),
+            ("terms", env.termination_manager, "compute"),
+            ("rewards", env.reward_manager, "compute"),
+        ):
+            self.stage_seconds.setdefault(name, 0.0)
+            original = getattr(obj, attr)
+            self.stage_originals.append((obj, attr, original))
+            setattr(obj, attr, self._time_stage(name, original))
+        self.detail_seconds = {}
+        for group, names in env.observation_manager.active_terms.items():
+            configs = env.observation_manager._group_obs_term_cfgs[group]
+            for name, cfg in zip(names, configs):
+                original = cfg.func
+                key = f"obs_{name}"
+                self.detail_seconds[key] = 0.0
+                self.stage_originals.append((cfg, "func", original))
+                cfg.func = self._time_stage(key, original, self.detail_seconds)
+        if type(env.sim.physics_manager).__module__.startswith("isaaclab_physx") or getattr(
+            env.sim.physics_manager, "__module__", ""
+        ).startswith("isaaclab_physx"):
+            import omni.physx
+
+            original_get = omni.physx.get_physx_simulation_interface
+            native_interface = original_get()
+            # Native bindings need not allow method assignment. Intercept the
+            # Python accessor only while profiling; all other calls forward.
+            class TimedPhysxInterface:
+                def __getattr__(proxy_self, name):
+                    value = getattr(native_interface, name)
+                    if name in ("simulate", "fetch_results"):
+                        return self._time_stage(f"physx_{name}", value, self.detail_seconds)
+                    return value
+
+            for name in ("simulate", "fetch_results"):
+                self.detail_seconds[f"physx_{name}"] = 0.0
+            proxy = TimedPhysxInterface()
+            self.stage_originals.append((omni.physx, "get_physx_simulation_interface", original_get))
+            omni.physx.get_physx_simulation_interface = lambda: proxy
+        wrapped.step, env.sim.render = self.step, self.render
+
+    def _time_stage(self, name, original, counters=None):
+        if counters is None:
+            counters = self.stage_seconds
+        def timed(*args, **kwargs):
+            started = time.perf_counter()
+            try:
+                return original(*args, **kwargs)
+            finally:
+                counters[name] += time.perf_counter() - started
+        return timed
+
+    def render(self, *args, **kwargs):
+        started = time.perf_counter()
+        try:
+            return self.original_render(*args, **kwargs)
+        finally:
+            self.render_seconds += time.perf_counter() - started
+            self.frames += 1
+
+    def step(self, *args, **kwargs):
+        started = time.perf_counter()
+        result = self.original_step(*args, **kwargs)
+        self.step_seconds += time.perf_counter() - started
+        self.steps += 1
+        now = time.perf_counter()
+        if now - self.started >= 2.0:
+            print(
+                f"[PROFILE] env_step_ms={1000 * self.step_seconds / self.steps:.2f} "
+                f"render_ui_ms/frame={1000 * self.render_seconds / max(self.frames, 1):.2f} "
+                f"render_calls={self.frames} steps={self.steps} "
+                "(wall time; GPU async; policy/wall pacing excluded)"
+            )
+            print("[PROFILE] stages_ms/step: " + " ".join(
+                f"{name}={1000.0 * seconds / self.steps:.2f}"
+                for name, seconds in self.stage_seconds.items()
+            ))
+            print("[PROFILE] details_ms/step (nested within stages): " + " ".join(
+                f"{name}={1000.0 * seconds / self.steps:.2f}"
+                for name, seconds in self.detail_seconds.items()
+            ))
+            self.started = now
+            self.steps = self.frames = 0
+            self.step_seconds = self.render_seconds = 0.0
+            for name in self.stage_seconds:
+                self.stage_seconds[name] = 0.0
+            for name in self.detail_seconds:
+                self.detail_seconds[name] = 0.0
+        return result
+
+    def close(self) -> None:
+        self.wrapped.step, self.sim.render = self.original_step, self.original_render
+        for obj, attr, original in self.stage_originals:
+            setattr(obj, attr, original)
 
 
 class _StartKeyListener:
@@ -459,31 +633,49 @@ def _active_termination_terms_for_env(env_unwrapped, env_idx: int) -> list[str]:
     return terms
 
 
+def _read_dance_asset_catalog() -> dict[str, tuple[str, str | None]]:
+    """Read motion/audio paths from YAML without opening any motion or audio files."""
+    global _DANCE_ASSET_CATALOG
+    if _DANCE_ASSET_CATALOG is not None:
+        return _DANCE_ASSET_CATALOG
+
+    import yaml
+
+    catalog: dict[str, tuple[str, str | None]] = {}
+    if os.path.isfile(_DANCES_CONFIG_PATH):
+        with open(_DANCES_CONFIG_PATH, encoding="utf-8") as stream:
+            doc = yaml.safe_load(stream) or {}
+        items = doc.get("dances", [])
+        if not isinstance(items, list):
+            raise ValueError("Dance YAML must contain a dances list.")
+        for entry in items:
+            if not isinstance(entry, dict):
+                continue
+            motion = str(entry.get("motion") or "").strip().replace("\\", "/")
+            if not motion:
+                continue
+            name = infer_dance_name_from_motion_path(motion)
+            motion_path = os.path.normpath(os.path.join(MEDIA_DIR, motion))
+            audio = str(entry.get("audio") or "").strip().replace("\\", "/")
+            wav_path = os.path.normpath(os.path.join(MEDIA_DIR, audio)) if audio else None
+            catalog.setdefault(name, (motion_path, wav_path))
+    _DANCE_ASSET_CATALOG = catalog
+    return catalog
+
+
 def _resolve_dance_wav_path(dance_name: str | None) -> str | None:
-    """Resolve companion WAV for ``--dance`` from dances_config.yaml or media/dance/."""
-    global _DANCE_WAV_INDEX
+    """Resolve only this dance's companion WAV using path metadata."""
     if not dance_name:
         return None
     stem = normalize_dance_stem(dance_name)
-    if _DANCE_WAV_INDEX is None:
-        _DANCE_WAV_INDEX = {}
-        try:
-            from source.train_workflow.utils.motion.loader import load_dances_from_yaml
+    try:
+        entry = _read_dance_asset_catalog().get(stem)
+        configured = entry[1] if entry else None
+        if configured and os.path.isfile(configured):
+            return configured
+    except Exception as exc:
+        print(f"[WARN] Failed to read dance WAV path from YAML: {exc}")
 
-            _motion_by_key, wav_by_key = load_dances_from_yaml(
-                _DANCES_CONFIG_PATH,
-                media_dir=MEDIA_DIR,
-                script_dir=_SCRIPT_DIR,
-            )
-            for key, path in wav_by_key.items():
-                if os.path.isfile(path):
-                    _DANCE_WAV_INDEX[normalize_dance_stem(key)] = path
-        except Exception as exc:
-            print(f"[WARN] Failed to build dance WAV index from YAML: {exc}")
-
-    cached = _DANCE_WAV_INDEX.get(stem)
-    if cached and os.path.isfile(cached):
-        return cached
     direct = os.path.join(DANCE_DIR, f"{stem}.wav")
     if os.path.isfile(direct):
         return direct
@@ -494,19 +686,9 @@ def _collect_available_dances() -> list[str]:
     """Collect dance names from dances_config.yaml and media/dance assets."""
     out: set[str] = set()
     try:
-        from source.train_workflow.utils.motion.loader import load_dances_from_yaml
-
-        motion_by_key, _wav_by_key = load_dances_from_yaml(
-            _DANCES_CONFIG_PATH,
-            media_dir=MEDIA_DIR,
-            script_dir=_SCRIPT_DIR,
-        )
-        for _key, (_filename, data) in motion_by_key.items():
-            path = str(data.get("path", "")).strip()
-            if path:
-                name = infer_dance_name_from_motion_path(path)
-                if name:
-                    out.add(str(name))
+        for name, (path, _wav_path) in _read_dance_asset_catalog().items():
+            if name and os.path.isfile(path):
+                out.add(name)
     except Exception as exc:
         print(f"[WARN] Failed to read dances from YAML: {exc}")
 
@@ -731,6 +913,22 @@ def _benchmark_policy_forward(policy, obs_obj, *, warmup: int, steps: int) -> No
     ms = 1000.0 * elapsed / steps_i
     hz = steps_i / elapsed
     print(f"[BENCH] policy_forward: avg={ms:.3f} ms  hz={hz:.1f}")
+    if is_cuda:
+        # Isolated per-call wall latency, including a CUDA completion wait.
+        # Unlike the throughput measurement above, each call must finish
+        # before the next is submitted; this is a diagnostic, not rollout pacing.
+        latency_steps = min(steps_i, 200)
+        with torch.inference_mode():
+            torch.cuda.synchronize(device=device)
+            t0 = time.perf_counter()
+            for _ in range(latency_steps):
+                _ = policy(obs_obj)
+                torch.cuda.synchronize(device=device)
+            elapsed = time.perf_counter() - t0
+        print(
+            f"[BENCH] policy_forward_sync: avg={1000.0 * elapsed / latency_steps:.3f} ms "
+            f"(isolated latency including CUDA wait; samples={latency_steps})"
+        )
 
 
 def _build_policy_obs_adapter(policy, sample_obs, sample_tensor: torch.Tensor):
@@ -976,12 +1174,12 @@ def _resolve_stage_usd_path(stage_path: str) -> str:
     return os.path.abspath(os.path.join(REPO_ROOT, stage_path))
 
 
-def _apply_stage_background(env_cfg: ManagerBasedRLEnvCfg, stage_path: str) -> None:
+def _apply_stage_background(env_cfg: ManagerBasedRLEnvCfg, stage_path: str) -> bool:
     """Spawn a shared USD/USDZ stage backdrop at /World/station."""
     resolved = _resolve_stage_usd_path(stage_path)
     if not os.path.isfile(resolved):
         print(f"[WARN] Stage background not found, skipping: {resolved}")
-        return
+        return False
 
     env_cfg.scene.stage = AssetBaseCfg(
         prim_path="/World/station",
@@ -993,6 +1191,23 @@ def _apply_stage_background(env_cfg: ManagerBasedRLEnvCfg, stage_path: str) -> N
         init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0)),
     )
     print(f"[INFO] Stage background: {resolved}")
+    return True
+
+
+def _hide_default_ground_visuals(env_unwrapped) -> None:
+    """Hide the default plane's rendering while retaining its physics collider."""
+    from pxr import UsdGeom
+
+    terrain = env_unwrapped.scene.terrain
+    if terrain is None or terrain.cfg.terrain_type != "plane":
+        return
+    for prim_path in terrain.terrain_prim_paths:
+        imageable = UsdGeom.Imageable(env_unwrapped.sim.stage.GetPrimAtPath(prim_path))
+        if not imageable:
+            print(f"[WARN] Cannot hide default ground: {prim_path}")
+            continue
+        imageable.MakeInvisible()
+        print(f"[INFO] Default ground hidden (collision retained): {prim_path}")
 
 
 def _apply_play_viewer(env_cfg: ManagerBasedRLEnvCfg) -> None:
@@ -1030,12 +1245,21 @@ def main() -> None:
     global DANCE_NAME, MOTION_H5_PATH, WINDOW_FRAMES_OVERRIDE
 
     env_cfg: ManagerBasedRLEnvCfg = parse_env_cfg(args_cli.task)
+    # Timing overrides must precede motion-window resolution and env creation.
+    if args_cli.physics_hz is not None:
+        env_cfg.sim.dt = 1.0 / args_cli.physics_hz
+    if args_cli.decimation is not None:
+        env_cfg.decimation = args_cli.decimation
     agent_cfg: RslRlOnPolicyRunnerCfg = load_cfg_from_registry(  # type: ignore[assignment]
         args_cli.task, "rsl_rl_cfg_entry_point"
     )
     agent_cfg = sim_compat.prepare_rsl_rl_cfg(agent_cfg)
 
-    dance_options = _collect_available_dances()
+    if args_cli.dance:
+        dance_options = [normalize_dance_stem(args_cli.dance)]
+        print(f"[INFO] Single-dance eval: {dance_options[0]} (other dance assets skipped).")
+    else:
+        dance_options = _collect_available_dances()
     if not dance_options:
         raise ValueError(f"No dances found under {DANCE_DIR}.")
     selected_dance = normalize_dance_stem(DANCE_NAME or dance_options[0])
@@ -1046,16 +1270,30 @@ def main() -> None:
     env_cfg.scene.num_envs = int(args_cli.num_envs)
     if args_cli.device is not None:
         env_cfg.sim.device = args_cli.device
+        # Keep inference on the selected device as well (especially for the
+        # single-env CPU diagnostic; avoid implicit CPU/CUDA transfers).
+        agent_cfg.device = args_cli.device
     env_cfg.scene.robot = apply_pd_profile_to_scene_robot(
         env_cfg.scene.robot, args_cli.pd_profile, o6_hands=True
     )
     log_pd_profile_summary(args_cli.pd_profile, o6_hands=True)
     _apply_motion_overrides(env_cfg)
     _apply_play_viewer(env_cfg)
+    stage_background_loaded = False
     if not args_cli.no_stage:
-        _apply_stage_background(env_cfg, args_cli.stage)
+        stage_background_loaded = _apply_stage_background(env_cfg, args_cli.stage)
     if args_cli.play:
         _apply_play_mode(env_cfg)
+
+    if args_cli.render_interval is not None:
+        env_cfg.sim.render_interval = args_cli.render_interval
+    print(
+        f"[INFO] Eval timing: sim.dt = {env_cfg.sim.dt:.9f}s; "
+        f"physics_hz = {1.0 / env_cfg.sim.dt:.1f}; decimation = {env_cfg.decimation}; "
+        f"render_interval = {env_cfg.sim.render_interval}; "
+        f"render_hz = {1.0 / (env_cfg.sim.dt * env_cfg.sim.render_interval):.1f}; "
+        f"control_hz = {control_hz_from_env_cfg(env_cfg):.1f}"
+    )
 
     log_root_path = resolve_training_log_root(agent_cfg.experiment_name, DANCE_NAME)
     print(f"[INFO] Looking for checkpoints under: {log_root_path}")
@@ -1080,7 +1318,11 @@ def main() -> None:
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
     env_unwrapped = env.unwrapped
+    if stage_background_loaded:
+        _hide_default_ground_visuals(env_unwrapped)
     wrapped = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+
+    _apply_viewport_performance_options()
 
     runner = OnPolicyRunner(wrapped, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     obs_raw = wrapped.get_observations()
@@ -1463,6 +1705,8 @@ def main() -> None:
 
     def _next_play_seed(*, episode_idx: int) -> int:
         nonlocal play_seed_counter
+        if args_cli.seed is not None:
+            return (int(args_cli.seed) + int(episode_idx)) & 0x7FFFFFFF
         play_seed_counter += 1
         seed = (time.time_ns() + int(episode_idx) * 131 + play_seed_counter * 1009) & 0x7FFFFFFF
         return int(seed if seed > 0 else 1)
@@ -1519,6 +1763,7 @@ def main() -> None:
         _begin_rollout(episode_idx=0)
 
     episode = 0
+    step_profiler = _EvalStepProfiler(wrapped, env_unwrapped) if args_cli.profile_render else None
     try:
         while simulation_app.is_running() and (
             int(args_cli.num_episodes) <= 0 or episode < int(args_cli.num_episodes)
@@ -1612,6 +1857,14 @@ def main() -> None:
                 if aborted_by_done:
                     print(done_warn_msg)
                 _abort_rollout(export_avi=avi_recording_active)
+                print(f"[EVAL] episode={episode} aborted steps={steps_done}/{rollout_steps}")
+                perf.on_episode_end(episode)
+                episode += 1
+                if int(args_cli.num_episodes) > 0:
+                    if episode >= int(args_cli.num_episodes):
+                        break
+                    if not wait_for_key:
+                        _begin_rollout(episode_idx=episode)
                 continue
 
             audio_util.stop_wav()
@@ -1654,6 +1907,8 @@ def main() -> None:
             else:
                 _begin_rollout(episode_idx=episode)
     finally:
+        if step_profiler is not None:
+            step_profiler.close()
         audio_util.stop_wav()
         if avi_recording_active:
             _finalize_live_avi_recording(reason="shutdown")

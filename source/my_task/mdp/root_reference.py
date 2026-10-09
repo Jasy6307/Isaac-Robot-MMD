@@ -32,24 +32,56 @@ def root_reference_pose_w(
     steps: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return world-frame root position and native Lab quaternion (xyzw)."""
-    buf = get_or_create_motion_buffer(
-        env,
-        h5_path,
-        window_seconds,
-        asset_name=asset_name,
+    if steps is None:
+        steps = motion_steps(env)
+    return (
+        root_reference_position_w(
+            asset, env, h5_path=h5_path, window_seconds=window_seconds,
+            asset_name=asset_name, steps=steps,
+        ),
+        root_reference_quat_w(
+            asset, env, h5_path=h5_path, window_seconds=window_seconds,
+            asset_name=asset_name, steps=steps,
+        ),
     )
+
+
+def root_reference_position_w(
+    asset: Articulation,
+    env: "ManagerBasedRLEnv",
+    *,
+    h5_path: str,
+    window_seconds: float,
+    asset_name: str = "robot",
+    steps: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Reference world position without computing an unused quaternion."""
+    buf = get_or_create_motion_buffer(env, h5_path, window_seconds, asset_name=asset_name)
     if steps is None:
         steps = motion_steps(env)
 
     env_origin = cloner_env_origins(env)
     p_anchor = asset.data.default_root_state.torch[:, 0:3]
     p_delta = buf.root_pos_delta(steps)
-    target_pos = p_anchor + env_origin + p_delta
+    return p_anchor + env_origin + p_delta
 
+
+def root_reference_quat_w(
+    asset: Articulation,
+    env: "ManagerBasedRLEnv",
+    *,
+    h5_path: str,
+    window_seconds: float,
+    asset_name: str = "robot",
+    steps: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Reference native Lab quaternion without computing an unused position."""
+    buf = get_or_create_motion_buffer(env, h5_path, window_seconds, asset_name=asset_name)
+    if steps is None:
+        steps = motion_steps(env)
     q_anchor = math_utils.quat_unique(asset.data.default_root_state.torch[:, 3:7])
     q_delta = math_utils.quat_unique(sim_compat.wxyz_to_xyzw(buf.root_quat_wxyz(steps)))
-    target_quat = math_utils.quat_unique(math_utils.quat_mul(q_delta, q_anchor))
-    return target_pos, target_quat
+    return math_utils.quat_unique(math_utils.quat_mul(q_delta, q_anchor))
 
 
 def root_yaw_error_rad(
@@ -62,7 +94,7 @@ def root_yaw_error_rad(
     steps: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Signed root yaw error (current - reference) in ``[-pi, pi]``, shape ``[num_envs]``."""
-    _, q_ref_xyzw = root_reference_pose_w(
+    q_ref_xyzw = root_reference_quat_w(
         asset,
         env,
         h5_path=h5_path,

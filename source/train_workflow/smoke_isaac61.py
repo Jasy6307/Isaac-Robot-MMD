@@ -5,6 +5,7 @@ Run ``run_isaac61.bat`` for a window, or pass this file with ``--viz none``.
 from __future__ import annotations
 
 import argparse
+from importlib.metadata import version
 import json
 import os
 import sys
@@ -23,6 +24,7 @@ parser.add_argument("--task", choices=("replay", "train"), default="replay")
 parser.add_argument("--h5", help="Optional H5 reference for a small training-task smoke test.")
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--screenshot", action="store_true", help="Save the Kit viewport to output/isaac61/smoke.png.")
+parser.add_argument("--output_dir", type=Path, default=REPO_ROOT / "output" / "isaac61", help="Directory for reports and screenshots.")
 AppLauncher.add_app_launcher_args(parser)
 sim_compat.add_legacy_headless_arg(parser)
 args = parser.parse_args()
@@ -31,6 +33,7 @@ app_launcher = AppLauncher(args)
 app = app_launcher.app
 
 import gymnasium as gym
+import isaacsim
 import torch
 import isaaclab.sim as sim_utils
 import source.my_task
@@ -64,7 +67,7 @@ def main():
         # A single environment does not need the large training contact allocation.
         cfg.sim.physics.gpu_max_rigid_patch_count = 2**16
         cfg.sim.physics.gpu_max_rigid_contact_count = 2**20
-    cfg.sim.log_dir = str(REPO_ROOT / "output" / "isaac61")
+    cfg.sim.log_dir = str(args.output_dir.resolve())
     env = gym.make(task_id, cfg=cfg)
     try:
         obs, _ = env.reset()
@@ -91,17 +94,21 @@ def main():
                 time.sleep(cfg.sim.dt)
         if args.steps and completed < args.steps:
             raise RuntimeError(f"Window closed before smoke test finished: {completed}/{args.steps}")
+        sim_version_file = Path(os.environ.get("ISAACSIM_PATH", str(Path(isaacsim.__file__).parent))) / "VERSION"
+        sim_build = sim_version_file.read_text().strip() if sim_version_file.is_file() else version("isaacsim")
         report = {
             "task": task_id, "steps": completed, "num_envs": env.unwrapped.num_envs,
             "python": sys.version.split()[0],
-            "isaacsim_build": (Path(os.environ["ISAACSIM_PATH"]) / "VERSION").read_text().strip(),
+            "python_executable": sys.executable,
+            "isaacsim_build": sim_build,
+            "isaacsim_path": str(Path(isaacsim.__file__).resolve()),
             "visualizer": args.visualizer,
             "joint_count": robot.num_joints, "action_dim": actions.shape[1],
             "device": str(env.unwrapped.device), "root_xyzw": robot.data.root_state_w.torch[0, :7].detach().cpu().tolist(),
             "torch": torch.__version__, "cuda_available": torch.cuda.is_available(),
             "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         }
-        output = REPO_ROOT / "output" / "isaac61"
+        output = args.output_dir.resolve()
         output.mkdir(parents=True, exist_ok=True)
         if args.screenshot:
             if args.headless:

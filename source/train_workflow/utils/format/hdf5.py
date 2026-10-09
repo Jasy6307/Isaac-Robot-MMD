@@ -354,7 +354,7 @@ def compile_csv_motion_to_hdf5_motion(
                 dtype=np.float32,
             )
             foot_ik_root_pos = (float(pos[0]), float(pos[1]), float(pos[2]))
-            foot_ik_root_quat = [float(v) for v in q_delta.tolist()]
+            foot_ik_root_quat = [float(v) for v in q_delta]
 
         if frame_data:
             update_foot_ik_mmd_viz_world(
@@ -365,7 +365,7 @@ def compile_csv_motion_to_hdf5_motion(
                 foot_ik_viz_cfg=foot_ik_viz_cfg,
                 target_root_pos=foot_ik_root_pos,
                 target_root_quat_wxyz=foot_ik_root_quat,
-                frames=frames,
+                frames=frames_map,
             )
             target_pos = build_joint_positions_from_frame(
                 frame_data,

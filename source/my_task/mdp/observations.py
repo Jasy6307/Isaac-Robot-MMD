@@ -11,7 +11,7 @@ from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
 
 from source.my_task.mdp.joint_groups import get_cached_joint_scales
-from source.my_task.mdp.root_reference import root_reference_pose_w, root_yaw_error_rad
+from source.my_task.mdp.root_reference import root_reference_position_w, root_yaw_error_rad
 from source.my_task.motion_reference import get_or_create_motion_buffer, motion_steps
 
 if TYPE_CHECKING:
@@ -141,14 +141,15 @@ def root_xy_error(
 ) -> torch.Tensor:
     """Root XY tracking error ``current - reference`` in world frame, shape ``[num_envs, 2]``."""
     asset: Articulation = env.scene[asset_cfg.name]
-    p_ref_w, _ = root_reference_pose_w(
+    p_ref_w = root_reference_position_w(
         asset,
         env,
         h5_path=h5_path,
         window_seconds=window_seconds,
         asset_name=asset_cfg.name,
     )
-    return asset.data.root_state_w.torch[:, 0:2] - p_ref_w[:, 0:2]
+    # root_state_w packs pose and velocity; XY error only needs the root pose.
+    return asset.data.root_link_pose_w.torch[:, 0:2] - p_ref_w[:, 0:2]
 
 
 def joint_pos_tracking_error(

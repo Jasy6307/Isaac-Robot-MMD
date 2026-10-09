@@ -231,6 +231,9 @@ class DanceMotionReferenceBuffer:
         return self._h5_fps
 
     def _clamp_steps(self, steps: torch.Tensor, offset: int = 0) -> torch.Tensor:
+        if offset == 0:
+            # Preserve the caller tensor while avoiding an add-zero kernel.
+            return steps.clamp(min=0, max=self._num_steps - 1)
         idx = steps + offset
         return idx.clamp_(min=0, max=self._num_steps - 1)
 
@@ -284,18 +287,23 @@ def get_or_create_motion_buffer(
     Multiple HDF5 files can coexist (keyed by absolute path + window). For
     Phase 1 we only use one, but keeping a dict keeps it future-proof.
     """
-    from isaaclab.assets import Articulation
-
     cache: dict[tuple[str, float], DanceMotionReferenceBuffer]
     cache = getattr(env, _ENV_BUFFER_ATTR, None)  # type: ignore[assignment]
     if cache is None:
         cache = {}
         setattr(env, _ENV_BUFFER_ATTR, cache)
 
+    # Once loaded, the buffer is already an in-memory snapshot. Hit the cache
+    # before probing the filesystem on every action/observation term.
+    key = (os.path.abspath(h5_path), float(window_seconds))
+    if key in cache:
+        return cache[key]
     abs_path = _resolve_h5_path(h5_path)
     key = (abs_path, float(window_seconds))
     if key in cache:
         return cache[key]
+
+    from isaaclab.assets import Articulation
 
     asset: Articulation = env.scene[asset_name]
     joint_names: list[str] = list(asset.joint_names)

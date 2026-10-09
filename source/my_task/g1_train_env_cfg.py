@@ -328,10 +328,10 @@ class G1VmdTrainBaseEnvCfg(ManagerBasedRLEnvCfg):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        # Preserve the original 60 Hz physics/control loop (decimation=1).
-        self.sim.dt = 1.0 / 60.0   # 物理 60 Hz
-        self.decimation = 1        # 控制 60 Hz
-        self.sim.render_interval = 1
+        # 120 Hz physics, 30 Hz policy actions, and 60 Hz viewport rendering.
+        self.sim.dt = 1.0 / 120.0
+        self.decimation = 4
+        self.sim.render_interval = 2
         self.sim.physics = PhysxCfg()
         self.sim.use_newton_actuators = False
         self.sim.default_visualizer_cfg = VisualizerCfg(eye=(0.0, 11.0, 5.0), lookat=(0.0, 0.0, -5.0))

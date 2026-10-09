@@ -31,7 +31,7 @@ derivatives of the corresponding files.
 You must download and install Isaac Sim yourself from NVIDIA, accept NVIDIA’s
 license terms, and meet the stated hardware and OS requirements.
 
-Typical setup (see [setup_env.sh](setup_env.sh) / [setup_env.bat](setup_env.bat)
+Typical setup (see [setup_env.bat](setup_env.bat) / [setup_isaac61.ps1](setup_isaac61.ps1)
 for version pins used by this project):
 
 - [Isaac Sim downloads](https://developer.nvidia.com/isaac-sim)

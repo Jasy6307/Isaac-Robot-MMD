@@ -35,7 +35,7 @@ class G1VmdReplayPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 class G1VmdTrainPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     """Shared PPO config for G1 VMD train (C1/C2)."""
 
-    num_steps_per_env = 120
+    num_steps_per_env = 60
     max_iterations = 3000
     save_interval = 200
     experiment_name = "g1_dance_track"

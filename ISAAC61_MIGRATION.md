@@ -8,9 +8,11 @@
 - Downloads: `I:\isaac61\downloads`.
 - Dependency, Warp, CUDA, Torch and Kit caches: `I:\isaac61\cache`.
 - Temporary files: `I:\isaac61\tmp`; Kit data/config/logs also use `I:\isaac61`.
-- Old 5.1 installation and `isaac_workspace` junction are preserved. The new junction is `isaac_workspace_61`.
+- Project workspace junction: `isaac_workspace_61`, pointing to `I:\isaac61`.
 
 Use `setup_env.bat` to install and `run_isaac61.bat` to run project scripts. The launcher clears active Conda/venv variables for its child process only. It does not alter the global Windows environment.
+
+A separate pip-based Conda environment named `isaac61` has also been installed and validated. See [CONDA_ISAAC61.md](CONDA_ISAAC61.md) for direct `conda activate isaac61` / `python` use. The bundled-Python installation described here remains available.
 
 ## Changes
 

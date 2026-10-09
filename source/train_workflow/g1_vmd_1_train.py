@@ -10,12 +10,15 @@ Example
 -------
 .. code-block:: powershell
 
-    ./isaac_workspace/IsaacLab/isaaclab.bat -p source/train_workflow/g1_vmd_1_train.py `
+    python source/train_workflow/g1_vmd_1_train.py `
       --task Isaac-G1-Vmd-Train-C1-v0 `
       --num_envs 2048 `
       --dance IRIS_OUT `
-      --window_frames 460 `
-      --max_iterations 15000 `
+      --physics_hz 120 `
+      --decimation 4 `
+      --window_frames 230 `
+      --max_iterations 10000 `
+      --experiment_suffix standard_30hz_half `
       --random_motion_start `
       --episode_length_curriculum `
       --episode_length_curriculum_spec "0:3,5000:full" `
@@ -25,6 +28,7 @@ Example
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 from dataclasses import dataclass
@@ -53,6 +57,18 @@ parser.add_argument(
     "--max_iterations", type=int, default=None, help="Override PPO iterations."
 )
 parser.add_argument("--seed", type=int, default=42, help="RNG seed.")
+parser.add_argument(
+    "--physics_hz",
+    type=float,
+    default=None,
+    help="Override training physics frequency (sim.dt = 1 / physics_hz).",
+)
+parser.add_argument(
+    "--decimation",
+    type=int,
+    default=None,
+    help="Override physics steps per policy action (120 Hz physics / 4 = 30 Hz control).",
+)
 parser.add_argument(
     "--dance",
     type=str,
@@ -197,7 +213,7 @@ parser.add_argument(
     "--video_length",
     type=int,
     default=300,
-    help="Recorded clip length in env steps (300 = 5s at the default 60Hz control).",
+    help="Recorded clip length in env steps (300 = 10s at the default 30Hz control).",
 )
 parser.add_argument(
     "--video_interval",
@@ -214,6 +230,12 @@ parser.add_argument(
 AppLauncher.add_app_launcher_args(parser)
 sim_compat.add_legacy_headless_arg(parser)
 args_cli = parser.parse_args()
+if args_cli.physics_hz is not None and (
+    not math.isfinite(args_cli.physics_hz) or args_cli.physics_hz <= 0.0
+):
+    parser.error("--physics_hz must be finite and > 0")
+if args_cli.decimation is not None and args_cli.decimation < 1:
+    parser.error("--decimation must be >= 1")
 sim_compat.prepare_launcher_args(args_cli, default_visualizer="kit" if args_cli.video else "none")
 if args_cli.video and args_cli.headless:
     parser.error("--video requires the Kit visualizer; omit --headless/--viz none")
@@ -495,6 +517,17 @@ def main() -> None:
     torch.backends.cudnn.benchmark = False
 
     env_cfg: ManagerBasedRLEnvCfg = parse_env_cfg(args_cli.task)
+    if args_cli.physics_hz is not None:
+        env_cfg.sim.dt = 1.0 / args_cli.physics_hz
+    if args_cli.decimation is not None:
+        env_cfg.decimation = args_cli.decimation
+    print(
+        f"[INFO] Train timing: sim.dt = {env_cfg.sim.dt:.9f}s; "
+        f"physics_hz = {1.0 / env_cfg.sim.dt:.1f}; decimation = {env_cfg.decimation}; "
+        f"render_interval = {env_cfg.sim.render_interval}; "
+        f"render_hz = {1.0 / (env_cfg.sim.dt * env_cfg.sim.render_interval):.1f}; "
+        f"control_hz = {control_hz_from_env_cfg(env_cfg):.1f}"
+    )
     agent_cfg: RslRlOnPolicyRunnerCfg = load_cfg_from_registry(  # type: ignore[assignment]
         args_cli.task, "rsl_rl_cfg_entry_point"
     )

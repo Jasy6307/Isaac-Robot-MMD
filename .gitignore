@@ -1,8 +1,5 @@
 # ============ Isaac 工作空间（必须忽略，体积巨大） ============
-isaac_workspace/
 isaac_workspace_61/
-isaac_workspace/isaacLab
-isaac_workspace/IsaacSim
 
 # ============ MMD 媒体文件（本地数据，不上传） ============
 media/*
@@ -72,6 +69,10 @@ wandb/
 .vscode/
 .idea/
 pyrightconfig.json
+# 本机 Cursor 终端扩展、辅助脚本和说明，不提交
+/cursor_terminal_tools/
+# 本机终端排错入口指引
+/AGENTS.md
 *.swp
 *.swo
 *~

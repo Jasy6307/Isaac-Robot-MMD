@@ -94,7 +94,7 @@ flowchart LR
 | `[media/](media/)`                                                | **仅本地**（gitignore）：`dance/`、`pose/`、VMD/CSV/H5/WAV |
 | `[docs/](docs/)`                                                  | 项目文档（本地，gitignore）                                 |
 | `[assets/](assets/)`                                              | G1 29-DOF O6 手 USD 资产；`demo/` 存放 README 演示 GIF     |
-| `[setup_env.sh](setup_env.sh)` / `[setup_env.bat](setup_env.bat)` | Windows 6.1 安装；`.sh` 保留旧版 5.1 安装       |
+| `[setup_env.bat](setup_env.bat)` / `[setup_isaac61.ps1](setup_isaac61.ps1)` | Windows 6.1 安装 |
 
 
 ---
@@ -106,8 +106,6 @@ flowchart LR
 - **Python 3.12** — 使用 Isaac Sim 自带 Python；不要激活原来的 Conda 环境
 - **安装入口**：`setup_env.bat` / `setup_isaac61.ps1`；下载和依赖缓存均配置在 I 盘
 - **PyYAML**（读取 `dances_config.yaml`）
-
-原 5.1 安装目录保留。`setup_env_legacy51.bat` 和 `setup_env.sh` 是旧版安装脚本，只适用于旧版源代码。
 
 Windows 快速验证和启动：
 
@@ -124,35 +122,37 @@ Windows 快速验证和启动：
 
 CSV/H5 中的四元数继续使用 WXYZ；仿真 API 使用 XYZW，转换由项目边界代码完成。旧 RSL-RL checkpoint 需要另行迁移和验证，建议先用新版生成一个短训练 checkpoint。
 
----
+也已另建 **Conda 环境 `isaac61`**，可以直接使用环境中的 Python：
 
-## 旧版快速开始（仅供迁移前环境参考）
-
-```bash
-# 1) 安装 Isaac Sim + Isaac Lab，然后在仓库根目录：
-conda activate env_isaaclab_mmd
-pip install -e .
-
-# 2) 准备本地媒体与配置
-cp source/train_workflow/dances_config.example.yaml \
-   source/train_workflow/dances_config.yaml
-# 将 VMD/CSV/H5/WAV 放入 media/（见 media/README.md）
-
-# 3) 回放与重定向（步骤 0）
-./isaac_workspace/IsaacLab/isaaclab.sh -p source/train_workflow/g1_vmd_0_replay.py
-
-# 4) PPO 训练（步骤 1）
-./isaac_workspace/IsaacLab/isaaclab.sh -p source/train_workflow/g1_vmd_1_train.py \
-  --task Isaac-G1-Vmd-Train-C1-v0 --num_envs 2048 --headless \
-  --dance ji_le_jing_tu
-
-# 5) 策略验证（步骤 2）
-./isaac_workspace/IsaacLab/isaaclab.sh -p source/train_workflow/g1_vmd_2_eval.py \
-  --task Isaac-G1-Vmd-Train-C1-v0 --num_envs 1 \
-  --dance ji_le_jing_tu --window_frames 2690
+```powershell
+conda activate isaac61
+cd I:\robot_isaac
+python source\train_workflow\g1_vmd_0_replay.py
 ```
 
-Windows 上将 `isaaclab.sh` 替换为 `isaaclab.bat`。步骤 5 也可直接用 Conda Python 启动（与 Isaac Lab 环境一致即可）。
+该环境采用独立的 Sim pip 安装，保留上述独立版。环境路径、编辑器选择、兼容依赖约束和实际验证记录见 [CONDA_ISAAC61.md](CONDA_ISAAC61.md)。
+
+---
+
+## 快速开始（Isaac Sim 6.1）
+
+在仓库根目录准备本地配置和媒体：
+
+```powershell
+Copy-Item source/train_workflow/dances_config.example.yaml source/train_workflow/dances_config.yaml
+# 将 VMD/CSV/H5/WAV 放入 media/（见 media/README.md）
+```
+
+使用 `isaac61` Conda 环境依次运行回放、训练和验证：
+
+```powershell
+conda activate isaac61
+python source/train_workflow/g1_vmd_0_replay.py
+python source/train_workflow/g1_vmd_1_train.py --task Isaac-G1-Vmd-Train-C1-v0 --num_envs 2048 --viz none --dance ji_le_jing_tu
+python source/train_workflow/g1_vmd_2_eval.py --task Isaac-G1-Vmd-Train-C1-v0 --num_envs 1 --dance ji_le_jing_tu --window_frames 2690
+```
+
+独立版环境使用上节的 `run_isaac61.bat` 启动相同脚本。
 
 ### IDE 配置（可选）
 

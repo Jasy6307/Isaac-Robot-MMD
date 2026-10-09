@@ -188,6 +188,18 @@ class ReferenceResidualJointPositionAction(ReferenceFrozenJointPositionAction):
             else:
                 self._residual_joint_ids = self._joint_ids[self._residual_action_cols]
 
+    def apply_actions(self) -> None:
+        # process_actions already writes the current reference into every
+        # frozen action column, so writing those targets again is redundant.
+        self._apply_root_reference()
+        sim_compat.set_joint_position_target(self._asset, self.processed_actions, joint_ids=self._joint_ids)
+        if self._reference_only_joint_ids.numel() > 0:
+            q_ref_all = self._get_reference_joint_targets_all()
+            sim_compat.set_joint_position_target(
+                self._asset, q_ref_all[:, self._reference_only_joint_ids],
+                joint_ids=self._reference_only_joint_ids,
+            )
+
     def _runtime_residual_alpha(self) -> float:
         alpha = getattr(self._env, "_g1_residual_alpha", self.cfg.residual_alpha)
         return max(0.0, float(alpha))

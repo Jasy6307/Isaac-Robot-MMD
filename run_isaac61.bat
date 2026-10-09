@@ -2,6 +2,11 @@
 setlocal EnableExtensions
 set "ISAAC61_ROOT=I:\isaac61"
 set "ISAACSIM_PATH=%ISAAC61_ROOT%\IsaacSim"
+rem Override runtime paths that old Conda activation scripts may leave behind.
+set "ISAAC_PATH=%ISAACSIM_PATH%"
+set "CARB_APP_PATH=%ISAACSIM_PATH%\kit"
+set "EXP_PATH=%ISAACSIM_PATH%\apps"
+set "ISAACSIM_PYTHON_EXE=%ISAACSIM_PATH%\python.bat"
 set "ISAACLAB_PATH=%ISAAC61_ROOT%\IsaacLab"
 for %%D in (tmp logs data documents config cache\pip cache\uv cache\huggingface cache\torch cache\cuda cache\warp cache\kit) do if not exist "%ISAAC61_ROOT%\%%D" mkdir "%ISAAC61_ROOT%\%%D"
 set "TEMP=%ISAAC61_ROOT%\tmp"
