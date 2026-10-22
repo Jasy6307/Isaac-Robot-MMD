@@ -51,6 +51,10 @@ _dance_h5_delete_cb: Callable[[str], None] | None = None
 _h5_record_busy_provider: Callable[[], bool] | None = None
 _dance_h5_exists_provider: Callable[[str], bool] | None = None
 _dance_h5_deletable_provider: Callable[[str], bool] | None = None
+_collision_record_cb = None
+_collision_play_cb = None
+_collision_cancel_cb = None
+_collision_status_provider = None
 _pd_drive_provider: Callable[[], bool] | None = None
 _pd_drive_setter: Callable[[bool], None] | None = None
 _need_record_avi_provider: Callable[[], bool] | None = None
@@ -158,6 +162,13 @@ def set_dance_record_h5_callbacks(
     _dance_h5_exists_provider = h5_exists_provider
     _dance_h5_delete_cb = on_delete_request
     _dance_h5_deletable_provider = h5_deletable_provider
+
+
+def set_dance_collision_h5_callbacks(on_record, on_play, on_cancel, status_provider) -> None:
+    """Separate validated collision-reference export and playback controls."""
+    global _collision_record_cb, _collision_play_cb, _collision_cancel_cb, _collision_status_provider
+    _collision_record_cb, _collision_play_cb = on_record, on_play
+    _collision_cancel_cb, _collision_status_provider = on_cancel, status_provider
 
 
 def set_pd_drive_callbacks(
@@ -620,6 +631,11 @@ def _build_mapping_window(ui):
             except Exception:
                 pass
 
+        def _collision_action(callback):
+            selected_key = _selected_dance_key()
+            if callback is not None and selected_key:
+                callback(selected_key)
+
         def _on_delete_h5_click() -> None:
             if _dance_h5_delete_cb is None:
                 return
@@ -796,6 +812,20 @@ def _build_mapping_window(ui):
                 )
                 ui.Spacer()
             with ui.HStack(height=28):
+                btn_collision_record = ui.Button(
+                    "Record H5 without collision", width=210, height=24,
+                    clicked_fn=lambda: _collision_action(_collision_record_cb),
+                )
+                btn_collision_play = ui.Button(
+                    "Play repaired H5", width=125, height=24,
+                    clicked_fn=lambda: _collision_action(_collision_play_cb),
+                )
+                btn_collision_cancel = ui.Button(
+                    "Cancel", width=58, height=24,
+                    clicked_fn=lambda: _collision_action(_collision_cancel_cb),
+                )
+            collision_status_label = ui.Label("", height=24, word_wrap=True)
+            with ui.HStack(height=28):
                 playback_title_label = ui.Label("Playback: (idle)", width=188, height=22)
                 ui.IntField(model=scrub_model, width=64, height=22)
                 max_frame_label = ui.Label("/ -", width=40, height=22)
@@ -936,6 +966,10 @@ def _build_mapping_window(ui):
         "btn_record_h5": btn_record_h5,
         "btn_delete_h5": btn_delete_h5,
         "h5_status_label": h5_status_label,
+        "btn_collision_record": btn_collision_record,
+        "btn_collision_play": btn_collision_play,
+        "btn_collision_cancel": btn_collision_cancel,
+        "collision_status_label": collision_status_label,
         "foot_ik_enable_model": foot_ik_enable_model,
         "foot_ik_reach_model": foot_ik_reach_model,
         "foot_ik_leg_scale_model": foot_ik_leg_scale_model,
@@ -1130,6 +1164,22 @@ async def _mapping_ui_refresh_loop() -> None:
                 )
             playing = bool(st.get("playing"))
             paused = bool(st.get("playback_paused"))
+            try:
+                collision = _collision_status_provider(selected_key) if _collision_status_provider is not None and selected_key else {}
+            except Exception as exc:
+                collision = {"state": "failed", "message": str(exc)}
+            collision = collision or {}
+            collision_state = collision.get("state", "idle")
+            collision_busy = collision_state in ("recording", "running")
+            tr["btn_collision_record"].enabled = bool(collision.get("can_record")) and not h5_busy and not playing
+            tr["btn_collision_record"].text = "Repairing..." if collision_state == "running" else ("Recording..." if collision_state == "recording" else "Record H5 without collision")
+            tr["btn_collision_play"].enabled = bool(collision.get("has_output")) and not h5_busy and not playing
+            tr["btn_collision_cancel"].enabled = collision_busy
+            message = str(collision.get("message", ""))
+            if collision_busy:
+                message = f"{100*float(collision.get('progress', 0)):.0f}% {message}"
+            tr["collision_status_label"].text = message
+            tr["collision_status_label"].tooltip = "\n".join(str(v) for v in (message, collision.get("log", ""), collision.get("report", "")) if v)
             mx = st.get("max_frame")
             if mx is not None:
                 tr["max_label"].text = f"/ {int(mx)}"

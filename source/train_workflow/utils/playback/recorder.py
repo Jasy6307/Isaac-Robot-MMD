@@ -206,4 +206,15 @@ class PlaybackH5Recorder:
 
     def write(self, path: str | None = None) -> str:
         out = h5_sibling_path_for_csv(self.source_csv) if path is None else os.path.abspath(str(path))
-        return write_hdf5_motion(out, self.build_motion())
+        out = write_hdf5_motion(out, self.build_motion())
+        import h5py
+
+        baseline = np.zeros(len(self.compile_joint_names), dtype=np.float32)
+        for runtime_i, compile_i in enumerate(self._runtime_to_compile):
+            if compile_i >= 0:
+                baseline[compile_i] = self.baseline_joint_pos[runtime_i]
+        with h5py.File(out, "r+") as stream:
+            stream.attrs["record_baseline_joint_pos"] = baseline
+            stream.attrs["record_root_anchor_quat_wxyz"] = self.root_anchor_quat_wxyz
+            stream.attrs["record_root_anchor_pos"] = self.root_anchor_pos
+        return out

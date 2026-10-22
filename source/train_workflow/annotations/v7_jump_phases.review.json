@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "dance": "ji_le_jing_tu_collision_corrected_v7",
+  "status": "manual_review_candidates_only",
+  "time_basis": "rollout seconds at 30Hz control; provisional boundaries, not verified takeoff times",
+  "basis": "User-observed open-stance to closed-stance jumps; reference root height and hip-roll changes in seed42 telemetry",
+  "limitations": [
+    "Hip roll is a pose proxy, not foot separation; forward kinematics has not been computed.",
+    "planned_flight_close is intended flight, not a declaration of actual takeoff.",
+    "Contact measurements aggregate all ankle-link normal collisions, including possible self contacts.",
+    "These labels are not loaded by training, evaluation control or deployment."
+  ],
+  "events": [
+    {
+      "id": "close_jump_17s", "context": [16.0, 18.0],
+      "phases": [
+        {"phase": "prepare_open", "start": 16.80, "end": 16.93},
+        {"phase": "push_off", "start": 16.93, "end": 17.08},
+        {"phase": "planned_flight_close", "start": 17.08, "end": 17.30},
+        {"phase": "landing_recovery", "start": 17.30, "end": 17.50}
+      ]
+    },
+    {
+      "id": "close_jump_21s", "context": [20.0, 22.0],
+      "phases": [
+        {"phase": "prepare_open", "start": 20.48, "end": 20.60},
+        {"phase": "push_off", "start": 20.60, "end": 20.75},
+        {"phase": "planned_flight_close", "start": 20.75, "end": 20.95},
+        {"phase": "landing_recovery", "start": 20.95, "end": 21.15}
+      ]
+    },
+    {
+      "id": "close_jump_48s", "context": [47.0, 49.0],
+      "phases": [
+        {"phase": "prepare_open", "start": 47.88, "end": 48.02},
+        {"phase": "push_off", "start": 48.02, "end": 48.18},
+        {"phase": "planned_flight_close", "start": 48.18, "end": 48.38},
+        {"phase": "landing_recovery", "start": 48.38, "end": 48.58}
+      ]
+    }
+  ]
+}

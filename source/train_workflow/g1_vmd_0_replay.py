@@ -23,6 +23,7 @@ from source import sim_compat
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -50,6 +51,26 @@ DANCES_CONFIG_PATH = os.path.join(_SCRIPT_DIR, "dances_config.yaml")
 
 parser = build_arg_parser(POSE_DIR)
 args_cli = parser.parse_args()
+if args_cli.motion_h5 and args_cli.motion_csv:
+    parser.error("Choose --motion_h5 or --motion_csv")
+if (args_cli.auto_play or args_cli.motion_wav) and not (args_cli.motion_h5 or args_cli.motion_csv):
+    parser.error("--auto_play/--motion_wav requires --motion_h5 or --motion_csv")
+if args_cli.auto_record_h5_without_collision and (not args_cli.motion_csv or args_cli.auto_play):
+    parser.error("--auto_record_h5_without_collision requires --motion_csv and cannot be combined with --auto_play")
+if args_cli.exit_after_collision_record and not args_cli.auto_record_h5_without_collision:
+    parser.error("--exit_after_collision_record requires --auto_record_h5_without_collision")
+if args_cli.motion_csv:
+    args_cli.motion_csv = os.path.abspath(args_cli.motion_csv)
+    if not os.path.isfile(args_cli.motion_csv) or Path(args_cli.motion_csv).suffix.lower() != ".csv":
+        parser.error("--motion_csv must be an existing .csv file")
+if args_cli.motion_h5:
+    args_cli.motion_h5 = os.path.abspath(args_cli.motion_h5)
+    if not os.path.isfile(args_cli.motion_h5) or os.path.splitext(args_cli.motion_h5)[1].lower() not in (".h5", ".hdf5"):
+        parser.error("--motion_h5 must be an existing .h5/.hdf5 file")
+if args_cli.motion_wav:
+    args_cli.motion_wav = os.path.abspath(args_cli.motion_wav)
+    if not os.path.isfile(args_cli.motion_wav):
+        parser.error("--motion_wav must be an existing file")
 sim_compat.prepare_launcher_args(args_cli)
 args_cli.device = "cpu"
 
@@ -64,14 +85,15 @@ except Exception as exc:
 
 from source.train_workflow.utils.motion.sync import sync_dance_assets_from_vmd
 
-sync_dance_assets_from_vmd(
-    dance_dir=DANCE_DIR,
-    dances_config_path=DANCES_CONFIG_PATH,
-    media_dir=_MEDIA_DIR,
-    groove_pos_to_world=float(args_cli.groove_pos_to_world),
-    mmd_center_to_root_offset_local_xyz=args_cli.mmd_center_to_root_offset_local_xyz,
-    knee_hinge_projection=bool(args_cli.mmd_knee_hinge_projection),
-)
+if not (args_cli.motion_h5 or args_cli.motion_csv):
+    sync_dance_assets_from_vmd(
+        dance_dir=DANCE_DIR,
+        dances_config_path=DANCES_CONFIG_PATH,
+        media_dir=_MEDIA_DIR,
+        groove_pos_to_world=float(args_cli.groove_pos_to_world),
+        mmd_center_to_root_offset_local_xyz=args_cli.mmd_center_to_root_offset_local_xyz,
+        knee_hinge_projection=bool(args_cli.mmd_knee_hinge_projection),
+    )
 
 apply_app_window_kit_flags(args_cli)
 
@@ -99,6 +121,7 @@ from source.train_workflow.ui.mmd_config_ui import (
     create_mmd_config_ui,
     set_dance_play_callbacks,
     set_dance_record_h5_callbacks,
+    set_dance_collision_h5_callbacks,
     set_dance_z_edit_callbacks,
     set_audio_volume_callbacks,
     set_foot_ik_callbacks,
@@ -521,12 +544,23 @@ def main():
     """零动作运行 G1 站立环境。"""
     use_root_teleport = True
     pose_cycle_key = (args_cli.pose_cycle_key or "P").strip().upper()[:1]
-    pose_motions = load_pose_motion_dir(POSE_DIR)
-    dance_motion_by_key, dance_wav_by_key = load_dances_from_yaml(
-        DANCES_CONFIG_PATH,
-        media_dir=_MEDIA_DIR,
-        script_dir=_SCRIPT_DIR,
-    )
+    if args_cli.motion_h5 or args_cli.motion_csv:
+        pose_motions = []
+        single_path = args_cli.motion_h5 or args_cli.motion_csv
+        single_key = "ui:single_h5" if args_cli.motion_h5 else "ui:single_csv"
+        data = load_motion(single_path)
+        if data is None:
+            raise ValueError(f"Cannot load motion: {single_path}")
+        dance_motion_by_key = {single_key: (os.path.basename(single_path), data)}
+        dance_wav_by_key = {single_key: args_cli.motion_wav} if args_cli.motion_wav else {}
+        print(f"[INFO] Single-motion replay: {single_path}")
+    else:
+        pose_motions = load_pose_motion_dir(POSE_DIR)
+        dance_motion_by_key, dance_wav_by_key = load_dances_from_yaml(
+            DANCES_CONFIG_PATH,
+            media_dir=_MEDIA_DIR,
+            script_dir=_SCRIPT_DIR,
+        )
     dance_hdf5_motion_by_key = build_dance_hdf5_motion_by_key(dance_motion_by_key)
     dance_hand_motion_by_key = build_dance_hand_motion_by_key(dance_motion_by_key)
     dance_hand_hdf5_motion_by_key = build_dance_hand_hdf5_motion_by_key(dance_hand_motion_by_key)
@@ -590,8 +624,8 @@ def main():
     keyboard = Se3Keyboard(Se3KeyboardCfg(pos_sensitivity=0.1, rot_sensitivity=0.1))
     reset_requested = False
     pending_cycle_play = False
-    pending_dance_key: str | None = None
-    pending_dance_prefer_hdf5 = False
+    pending_dance_key: str | None = single_key if args_cli.auto_play else None
+    pending_dance_prefer_hdf5 = bool(args_cli.auto_play and args_cli.motion_h5)
     pending_dance_prefer_hand = False
     pending_z_edit_key: str | None = None
     z_edit_busy = False
@@ -657,7 +691,7 @@ def main():
         if _dance_z_edit_ui_status(key) == "ik_control":
             print(f"[INFO] dance [{dkey}] has foot IK data; Z_editted is not needed")
             return
-        if z_edit_busy:
+        if z_edit_busy or h5_record_busy or is_playing:
             print("[WARN] Z_editted generation already in progress")
             return
         path = dance_path_by_key.get(dkey, "")
@@ -728,11 +762,51 @@ def main():
             print(f"[WARN] No H5 sibling deleted for dance [{dkey}]")
 
     def _on_record_h5_request_from_ui(key: str) -> None:
-        nonlocal pending_record_h5_key
-        if h5_record_busy or is_playing:
+        nonlocal pending_record_h5_key, pending_record_without_collision
+        if h5_record_busy or is_playing or z_edit_busy:
             print("[WARN] Cannot start H5 recording while playback is active")
             return
         pending_record_h5_key = str(key)
+        pending_record_without_collision = False
+
+    def _collision_csv_path(key: str) -> str | None:
+        entry = dance_motion_by_key.get(_dance_lookup_key(key))
+        if entry is None or entry[1].get("kind") != "csv":
+            return None
+        path = str(entry[1].get("path", ""))
+        if z_offset_enabled_ui:
+            sibling = str(Path(path).with_name(Path(path).stem+"_z_editted.csv"))
+            if os.path.isfile(sibling):
+                path = sibling
+        return path
+
+    def _on_collision_record(key: str) -> None:
+        nonlocal pending_record_h5_key, pending_record_without_collision
+        if h5_record_busy or is_playing or z_edit_busy or not _collision_csv_path(key):
+            return
+        pending_record_h5_key = _dance_lookup_key(key)
+        pending_record_without_collision = True
+
+    def _on_collision_play(key: str) -> None:
+        nonlocal pending_collision_play_key
+        if not h5_record_busy and not is_playing:
+            pending_collision_play_key = _dance_lookup_key(key)
+
+    def _on_collision_cancel(_key: str) -> None:
+        nonlocal pending_collision_cancel
+        pending_collision_cancel = True
+
+    def _collision_status(key: str) -> dict:
+        path = _collision_csv_path(key)
+        active = collision_job.state.get("state") in ("recording", "running")
+        status = dict(collision_job.state) if active or (path and path == collision_job.state.get("source_csv")) else {"state": "idle"}
+        output = collision_job.latest_output(path) if path else None
+        status.update(can_record=bool(path) and not z_edit_busy, has_output=bool(output))
+        if status["state"] == "recording" and h5_recorder is not None:
+            status["progress"] = h5_record_frame_cursor/max(1, h5_recorder.max_frame+1)
+        if status["state"] == "idle":
+            status["message"] = Path(output).name if output else ("CSV source required" if not path else "Independent reference export")
+        return status
 
     keyboard.add_callback("L", _on_reset)
     keyboard.add_callback(pose_cycle_key, _request_cycle_play)
@@ -766,6 +840,13 @@ def main():
     pending_playback_stop = False
     pending_seek_frame: int | None = None
     pending_record_h5_key: str | None = None
+    pending_record_without_collision = False
+    h5_record_without_collision = False
+    pending_collision_play_key = None
+    pending_collision_cancel = False
+    from source.train_workflow.utils.playback.collision_h5_job import CollisionH5Job
+    collision_job = CollisionH5Job()
+    collision_raw_path = None
     h5_record_busy = False
     h5_record_active = False
     h5_recorder: PlaybackH5Recorder | None = None
@@ -1162,6 +1243,7 @@ def main():
         _dance_h5_deletable,
     )
     set_pd_drive_callbacks(_get_pd_drive_for_ui, _set_pd_drive_from_ui)
+    set_dance_collision_h5_callbacks(_on_collision_record, _on_collision_play, _on_collision_cancel, _collision_status)
     set_need_record_avi_callbacks(_get_need_record_avi_for_ui, _set_need_record_avi_from_ui)
     set_z_offset_enable_callbacks(_get_z_offset_enable_for_ui, _set_z_offset_enable_from_ui)
     set_root_z_compress_callbacks(_get_root_z_compress_for_ui, _set_root_z_compress_from_ui)
@@ -1574,17 +1656,22 @@ def main():
 
     def _cancel_h5_recording(*, reason: str) -> None:
         nonlocal h5_record_busy, h5_record_active, h5_recorder, h5_record_frame_cursor
+        nonlocal h5_record_without_collision, h5_record_dance_key
         if not (h5_record_busy or h5_record_active or h5_recorder is not None):
             return
         h5_record_busy = False
         h5_record_active = False
         h5_recorder = None
         h5_record_frame_cursor = 0
+        if h5_record_without_collision or collision_job.process is not None:
+            collision_job.cancel()
+        h5_record_without_collision = False
+        h5_record_dance_key = None
         print(f"[INFO] H5 recording cancelled ({reason})")
 
     def _finalize_h5_recording() -> None:
         nonlocal h5_record_busy, h5_record_active, h5_recorder, h5_record_frame_cursor
-        nonlocal h5_record_dance_key
+        nonlocal h5_record_dance_key, h5_record_without_collision
         nonlocal is_playing, playback_paused, motion_has_wav, current_motion_label
         nonlocal dance_hdf5_motion_by_key
         recorder = h5_recorder
@@ -1602,6 +1689,11 @@ def main():
         try:
             if recorder is None:
                 raise RuntimeError("recorder is missing")
+            if h5_record_without_collision:
+                recorder.write(str(collision_raw_path))
+                collision_job.start(collision_raw_path, env_cfg.scene.robot.spawn.usd_path)
+                print(f"[INFO] Collision repair started in background; log: {collision_job.state['log']}", flush=True)
+                return
             out_path = recorder.write()
             print(f"[INFO] H5 recording complete: {out_path} ({label})")
             if dkey:
@@ -1610,9 +1702,12 @@ def main():
                     dance_hdf5_motion_by_key[str(dkey)] = (os.path.basename(out_path), h5_bundle)
                     print(f"[INFO] Updated in-session H5 cache for dance [{dkey}]")
         except Exception as exc:
+            if h5_record_without_collision:
+                collision_job.fail(exc)
             print(f"[ERROR] H5 recording failed ({label}): {exc}")
         finally:
-            h5_record_busy = False
+            h5_record_without_collision = False
+            h5_record_busy = collision_job.process is not None
 
     def _begin_h5_recording_for_motion(csv_path: str, motion_bundle: MotionBundle) -> bool:
         nonlocal h5_recorder, h5_record_active, h5_record_frame_cursor, h5_record_busy
@@ -1729,13 +1824,33 @@ def main():
             foot_ik_viz_cfg=foot_ik_viz_cfg,
         )
 
+    if args_cli.auto_record_h5_without_collision:
+        _on_collision_record("ui:single_csv")
     completed_loops = 0
     while simulation_app.is_running():
+        collision_job.poll()
+        if not h5_record_active and collision_job.state["state"] in ("done", "failed", "cancelled"):
+            if h5_record_busy:
+                print(f"[COLLISION H5] {collision_job.state}", flush=True)
+            h5_record_busy = False
+            if args_cli.exit_after_collision_record:
+                print(f"COLLISION_H5_EXPORT_{collision_job.state['state'].upper()}", flush=True)
+                if collision_job.state["state"] != "done":
+                    collision_job.close()
+                    env.close()
+                    raise RuntimeError(collision_job.state["message"])
+                break
         if args_cli.max_steps and completed_loops >= args_cli.max_steps:
             print(f"ISAAC61_REPLAY_PASS loops={completed_loops}", flush=True)
             break
         completed_loops += 1
         with torch.inference_mode():
+            if pending_collision_cancel:
+                pending_collision_cancel = False
+                pending_record_h5_key = None
+                pending_record_without_collision = False
+                _cancel_h5_recording(reason="collision export cancelled")
+                _stop_playback_to_initial_pose()
             if reset_requested:
                 reset_requested = False
                 audio_util.stop_wav()
@@ -1821,6 +1936,8 @@ def main():
             if pending_record_h5_key is not None and not h5_record_busy:
                 dkey = pending_record_h5_key
                 pending_record_h5_key = None
+                h5_record_without_collision = pending_record_without_collision
+                pending_record_without_collision = False
                 entry = dance_motion_by_key.get(dkey)
                 if entry is None:
                     print(f"[WARN] dance 键 [{dkey}] 未绑定文件")
@@ -1841,14 +1958,44 @@ def main():
                         if not csv_path or not os.path.isfile(csv_path):
                             print(f"[WARN] CSV not found for dance [{dkey}]: {csv_path}")
                         else:
+                            if h5_record_without_collision:
+                                try:
+                                    collision_raw_path = collision_job.prepare(csv_path)
+                                except Exception as exc:
+                                    collision_job.fail(exc)
+                                    h5_record_without_collision = False
+                                    print(f"[ERROR] Collision export could not start: {exc}", flush=True)
+                                    continue
                             h5_record_busy = True
                             h5_record_dance_key = str(dkey)
                             _prepare_motion_switch()
                             _switch_to_motion(data, f"dance[{dkey}] {name}")
                             if not _begin_h5_recording_for_motion(csv_path, data):
+                                if h5_record_without_collision:
+                                    collision_job.fail("CSV target recording could not start")
+                                h5_record_without_collision = False
                                 is_playing = False
                                 current_motion = None
                                 current_motion_label = ""
+                if h5_record_without_collision and not h5_record_busy:
+                    collision_job.fail("Selected CSV could not be recorded; see replay console")
+                    h5_record_without_collision = False
+
+            if pending_collision_play_key is not None:
+                dkey = pending_collision_play_key
+                pending_collision_play_key = None
+                path = _collision_csv_path(dkey)
+                output = collision_job.latest_output(path) if path else None
+                if output and not h5_record_busy:
+                    data = load_motion(output)
+                    if data is not None:
+                        _prepare_motion_switch()
+                        _switch_to_motion(data, f"dance[{dkey}] {Path(output).name}")
+                        print(f"[INFO] Playing validated collision reference: {output}", flush=True)
+                        wav = dance_wav_by_key.get(dkey)
+                        if wav and os.path.isfile(wav):
+                            motion_has_wav = True
+                            audio_util.play_wav_async(wav)
 
             if pending_dance_key is not None:
                 if h5_record_busy:
@@ -2169,6 +2316,7 @@ def main():
                     last_playback_target_root_quat,
                 )
 
+    collision_job.close()
     env.close()
 
 

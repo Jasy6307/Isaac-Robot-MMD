@@ -67,6 +67,9 @@ from source.my_task.robots.actuator_pd import apply_robot_pd_profile
 | `playback/cli.py` | replay CLI | replay |
 | `playback/sim_robot.py` | Isaac 关节/根写入 | replay |
 | `playback/recorder.py` | Record H5 | replay UI |
+| `playback/collision_h5_job.py` | 独立进程修复、进度与取消 | replay UI |
+| `motion/self_collision.py` | USD 几何包络、FK、碰撞投影 | 修复脚本 |
+| `motion/collision_reference.py` | 保真碰撞修复 + 自动局部脚步尖峰修复 | 无碰撞 H5 导出 |
 | `ik/*` | 足端 FK/IK 几何 | csv_loader、playback |
 | `math/trans_util.py` | 四元数（wxyz） | 全局 |
 | `media/audio_util.py` | WAV 伴音 | replay、UI |
@@ -92,6 +95,36 @@ PD / USD 机器人配置 ──► my_task/robots/
 ---
 
 ## 相关目录
+
+### 在 replay 中录制防穿模参考 H5
+
+运行 `python source/train_workflow/g1_vmd_0_replay.py`，在 **G1 MMD config** 选择 CSV 舞蹈，停止播放后点击 **Record H5 without collision**。
+也可以仅加载任意符合本项目 MMD CSV 格式的文件：
+
+```powershell
+python source\train_workflow\g1_vmd_0_replay.py `
+  --motion_csv "media\dance\ji_le_jing_tu.csv" `
+  --num_envs 1 --sim_fps 60
+```
+
+录制复用当前 replay 的映射、IK、脚底补偿、Root 设置，并保存实际关节基准。若开启 `Z_offset_enable` 且存在对应 CSV，则录制当前选用的 `*_z_editted.csv`。
+随后独立 CPU 子进程按以下步骤修复；窗口显示阶段和进度，**Cancel** 可取消，退出 replay 会停止自己启动的修复进程：
+
+1. 从当前 G1 USD 读取关节与几何包络，投影自碰撞，优先保留原动作及脚端轨迹。
+2. 对剩余穿模局部加力投影。按“绝对异常幅度 + 相对原动作放大”检测修复引入的脚步尖峰，不按歌曲名或固定帧号处理。
+3. 仅在检测窗口内生成稳定腿部轨迹，以平滑权重接回原修复轨迹，再进行局部碰撞投影；不对全段脚步应用统一速度上限。
+4. 对完整轨迹每帧和相邻帧中点进行检测，要求穿透不超过 1 mm，且不再有检测到的新增脚步尖峰。通过后才发布 H5。
+
+输出为 CSV 同目录的 `*_without_collision.h5` 和 `*.collision.json`；重复录制自动添加 `_001` 等后缀。原始 CSV、普通 H5 和旧修正版不会被覆盖。
+成功后用 **Play repaired H5** 回放最新通过检测的文件；普通 **Play H5** 仍使用原先普通 H5。
+录制快照、状态和详细日志保存在 `output/collision-h5-jobs/<任务ID>/`。验证失败时保留报告及 `*.candidate.npz` 诊断数据，不发布未通过的 H5。
+
+核心入口是 `motion.collision_reference.repair_reference_h5(source, output, robot_usd, progress=None)`；
+已录制的原始 H5 也可由 `scripts/record_h5_without_collision.py --input ... --output ...` 离线修复。
+自动 CSV 录制使用 `--motion_csv ... --auto_record_h5_without_collision --exit_after_collision_record`。
+
+检测基于当前 G1 的选定非相邻身体包络（含张开手掌），不是精确三角网格或 PhysX 的全面碰撞认证，也不处理地面/背景碰撞。
+极端输入可能无法自动找到可行轨迹，此时会明确失败；不会因为换了按钮就保证任意不兼容格式或任意姿态都可修复。
 
 | 路径 | 说明 |
 |------|------|

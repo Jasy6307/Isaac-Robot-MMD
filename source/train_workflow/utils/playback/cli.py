@@ -62,6 +62,12 @@ def build_arg_parser(pose_dir: str) -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(description="宇树 G1 站立 - 零动作运行。")
     parser.add_argument("--num_envs", type=int, default=1, help="环境数量（默认 1）")
+    parser.add_argument("--motion_h5", type=str, default=None, help="只加载并回放这个独立 H5 文件（不扫描其他舞蹈）。")
+    parser.add_argument("--motion_csv", type=str, default=None, help="只加载指定的原始 CSV，可在 UI 中录制无碰撞 H5。")
+    parser.add_argument("--motion_wav", type=str, default=None, help="指定动作的可选伴奏 WAV 路径。")
+    parser.add_argument("--auto_play", action="store_true", help="启动后自动播放指定动作。")
+    parser.add_argument("--auto_record_h5_without_collision", action="store_true", help="启动后自动录制并修复 --motion_csv（与 UI 按钮相同）。")
+    parser.add_argument("--exit_after_collision_record", action="store_true", help="自动录制修复完成或失败后退出。")
     parser.add_argument("--max_steps", type=int, default=0, help="自动退出前的循环次数；0 持续运行")
     parser.add_argument("--disable_fabric", action="store_true", help="禁用 fabric，使用 USD I/O")
     parser.add_argument(

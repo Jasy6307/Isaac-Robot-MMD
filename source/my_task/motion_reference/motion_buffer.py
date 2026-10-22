@@ -33,6 +33,12 @@ if TYPE_CHECKING:
 
 _ENV_BUFFER_ATTR = "_g1_dance_motion_buffers"
 _ENV_START_STEPS_ATTR = "_g1_dance_motion_start_steps"
+_PACKAGED_REFERENCES: dict[str, dict] = {}
+
+
+def register_packaged_reference(path: str, reference: dict) -> None:
+    """Register an exported snapshot before creating the simulation environment."""
+    _PACKAGED_REFERENCES[os.path.abspath(path)] = reference
 
 
 def _resolve_h5_path(h5_path: str) -> str:
@@ -200,6 +206,54 @@ class DanceMotionReferenceBuffer:
         self._num_steps = T
         self._h5_fps = h5_fps
 
+    def export_reference(self) -> dict:
+        """Freeze the exact resampled tables used by all runtime MDP terms."""
+        return {
+            "joint_names": self._runtime_joint_names,
+            "default_joint_pos": torch.tensor(self._default_joint_pos_np),
+            "control_hz": self._control_hz,
+            "window_seconds": self._window_seconds,
+            "source_fps": self._h5_fps,
+            "tables": {name: getattr(self, name).detach().cpu().clone() for name in (
+                "_q_ref_abs", "_q_ref_rel", "_root_pos_delta", "_root_quat_wxyz", "_phase"
+            )},
+        }
+
+    @classmethod
+    def from_reference(cls, reference: dict, *, path: str, runtime_joint_names: list[str],
+                       default_joint_pos: np.ndarray, control_hz: float,
+                       window_seconds: float, device: torch.device | str):
+        """Restore without resolving or opening the original motion file."""
+        if list(runtime_joint_names) != reference["joint_names"]:
+            raise ValueError("Deployment reference joint order differs from robot")
+        defaults = np.asarray(default_joint_pos, dtype=np.float32).reshape(-1)
+        if not np.allclose(defaults, reference["default_joint_pos"].cpu().numpy(), atol=1e-6, rtol=0):
+            raise ValueError("Deployment reference default joint positions differ from robot")
+        for name, actual in (("control_hz", control_hz), ("window_seconds", window_seconds)):
+            if not np.isclose(float(actual), float(reference[name]), atol=1e-6, rtol=0):
+                raise ValueError(f"Deployment reference {name} is fixed at {reference[name]}; got {actual}")
+        obj = cls.__new__(cls)
+        obj._h5_path = os.path.abspath(path)
+        obj._runtime_joint_names = list(runtime_joint_names)
+        obj._default_joint_pos_np = defaults.copy()
+        obj._control_hz = float(control_hz)
+        obj._window_seconds = float(window_seconds)
+        obj._h5_fps = float(reference["source_fps"])
+        obj._device = torch.device(device)
+        obj._on_device = False
+        steps = max(2, int(round(window_seconds * control_hz)))
+        shapes = {"_q_ref_abs": (steps, len(runtime_joint_names)),
+                  "_q_ref_rel": (steps, len(runtime_joint_names)),
+                  "_root_pos_delta": (steps, 3), "_root_quat_wxyz": (steps, 4),
+                  "_phase": (steps,)}
+        for name, shape in shapes.items():
+            tensor = reference["tables"][name]
+            if tuple(tensor.shape) != shape or not torch.isfinite(tensor).all():
+                raise ValueError(f"Invalid deployment reference table: {name}")
+            setattr(obj, name, tensor.detach().cpu().to(torch.float32).clone())
+        obj._num_steps = steps
+        return obj
+
     def _to_device(self) -> None:
         if self._on_device:
             return
@@ -298,7 +352,8 @@ def get_or_create_motion_buffer(
     key = (os.path.abspath(h5_path), float(window_seconds))
     if key in cache:
         return cache[key]
-    abs_path = _resolve_h5_path(h5_path)
+    packaged = _PACKAGED_REFERENCES.get(os.path.abspath(h5_path))
+    abs_path = os.path.abspath(h5_path) if packaged is not None else _resolve_h5_path(h5_path)
     key = (abs_path, float(window_seconds))
     if key in cache:
         return cache[key]
@@ -310,14 +365,17 @@ def get_or_create_motion_buffer(
     default_joint_pos = asset.data.default_joint_pos.torch[0].detach().cpu().numpy()
     control_hz = 1.0 / float(env.step_dt)
 
-    buf = DanceMotionReferenceBuffer(
-        h5_path=abs_path,
+    kwargs = dict(
         runtime_joint_names=joint_names,
         default_joint_pos=default_joint_pos,
         control_hz=control_hz,
         window_seconds=float(window_seconds),
         device=env.device,
     )
+    if packaged is not None:
+        buf = DanceMotionReferenceBuffer.from_reference(packaged, path=abs_path, **kwargs)
+    else:
+        buf = DanceMotionReferenceBuffer(h5_path=abs_path, **kwargs)
     cache[key] = buf
     print(
         f"[INFO] DanceMotionReferenceBuffer ready: {os.path.basename(abs_path)} "

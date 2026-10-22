@@ -431,6 +431,14 @@ async def _refresh_loop() -> None:
 
         _title_label_ref.text = f"{dance_title} — {'Playing' if playing else 'Idle'}"
         _policy_progress_label_ref.text = f"Policy: step {policy_step} / {policy_total}"
+        control_hz = float(st.get("control_hz") or 0.0)
+        if control_hz > 0.0:
+            elapsed_seconds = max(0, policy_step) / control_hz
+            total_seconds = policy_total / control_hz
+            _policy_progress_label_ref.text = (
+                f"Time: {elapsed_seconds:.2f} / {total_seconds:.2f} s"
+                f"   |   Frame: {policy_step} / {policy_total}"
+            )
         if _policy_path_label_ref is not None:
             if policy_error:
                 _policy_path_label_ref.text = f"No runnable policy: {_compact_error_for_ui(policy_error)}"

@@ -18,7 +18,7 @@ Example
       --decimation 4 `
       --window_frames 230 `
       --max_iterations 10000 `
-      --experiment_suffix standard_30hz_half `
+      --run_note standard_30hz_half `
       --random_motion_start `
       --episode_length_curriculum `
       --episode_length_curriculum_spec "0:3,5000:full" `
@@ -42,6 +42,8 @@ from source.train_workflow.utils.motion.resolve import (  # noqa: E402
     resolve_dance_h5_by_name,
     resolve_training_log_root,
 )
+from source.train_workflow.utils.run_note import create_run_note, run_note_filename  # noqa: E402
+from source.train_workflow.utils.checkpoints import latest_checkpoint  # noqa: E402
 from isaaclab.app import AppLauncher  # noqa: E402
 from source import sim_compat
 
@@ -170,6 +172,12 @@ parser.add_argument(
     help="Disable random motion start and always reset from frame 0.",
 )
 parser.add_argument(
+    "--run_note",
+    type=run_note_filename,
+    default=None,
+    help="Create an empty file with this exact name inside the new run log directory; does not change the experiment name.",
+)
+parser.add_argument(
     "--experiment_suffix",
     type=str,
     default=None,
@@ -203,6 +211,8 @@ parser.add_argument(
 )
 parser.add_argument("--load_run", type=str, default=None, help="Run folder to resume from.")
 parser.add_argument("--checkpoint", type=str, default=None, help="Checkpoint file.")
+parser.add_argument("--checkpoint_dir", type=str, default=None,
+                    help="Source run directory; omitted --checkpoint selects its latest .pt (requires --resume).")
 parser.add_argument(
     "--video",
     action="store_true",
@@ -230,6 +240,8 @@ parser.add_argument(
 AppLauncher.add_app_launcher_args(parser)
 sim_compat.add_legacy_headless_arg(parser)
 args_cli = parser.parse_args()
+if args_cli.checkpoint_dir and not args_cli.resume:
+    parser.error("--checkpoint_dir requires --resume")
 if args_cli.physics_hz is not None and (
     not math.isfinite(args_cli.physics_hz) or args_cli.physics_hz <= 0.0
 ):
@@ -568,6 +580,9 @@ def main() -> None:
     if DANCE_NAME:
         print(f"[INFO] Dance: {DANCE_NAME}")
     print(f"[INFO] Run directory: {log_dir}")
+    if args_cli.run_note is not None:
+        note_path = create_run_note(log_dir, args_cli.run_note)
+        print(f"[INFO] Run note: {note_path}")
 
     env_cfg.log_dir = log_dir
     if isinstance(env_cfg, ManagerBasedRLEnvCfg):
@@ -593,9 +608,27 @@ def main() -> None:
     )
 
     if agent_cfg.resume:
-        resume_path = get_checkpoint_path(
-            log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint
-        )
+        source_dir = args_cli.checkpoint_dir
+        if source_dir is None and args_cli.load_run:
+            candidate_dir = os.path.join(log_root_path, args_cli.load_run)
+            if os.path.isdir(candidate_dir):
+                source_dir = candidate_dir
+        if args_cli.checkpoint and os.path.dirname(args_cli.checkpoint):
+            # Explicit paths allow resuming old suffixed experiments into the base experiment.
+            resume_path = os.path.abspath(args_cli.checkpoint)
+            if not os.path.isfile(resume_path):
+                raise FileNotFoundError(f"Checkpoint not found: {resume_path}")
+        elif source_dir is not None:
+            if args_cli.checkpoint:
+                resume_path = os.path.abspath(os.path.join(source_dir, args_cli.checkpoint))
+                if not os.path.isfile(resume_path):
+                    raise FileNotFoundError(f"Checkpoint not found: {resume_path}")
+            else:
+                resume_path = latest_checkpoint(source_dir)
+        else:
+            resume_path = get_checkpoint_path(
+                log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint
+            )
     else:
         resume_path = None
 

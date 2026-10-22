@@ -50,6 +50,17 @@ from source.train_workflow.utils.motion.resolve import (  # noqa: E402
 from isaaclab.app import AppLauncher  # noqa: E402
 
 parser = argparse.ArgumentParser(description="Play a G1 dance tracking checkpoint.")
+parser.add_argument("--jump_diagnostics", action="store_true",
+                    help="Record physics-step jump telemetry and export CSV/NPZ/PNG per rollout.")
+parser.add_argument("--jump_diagnostics_dir", default="output/jump-diagnostics")
+parser.add_argument("--jump_diagnostics_env", type=int, default=0)
+parser.add_argument("--jump_diagnostics_start", type=float, default=0., help="First recorded rollout second.")
+parser.add_argument("--jump_diagnostics_end", type=float, default=None, help="Last recorded rollout second.")
+parser.add_argument("--jump_contact_threshold", type=float, default=5., help="Foot contact force threshold, N.")
+parser.add_argument("--deployment_bundle", type=str, default=None,
+                    help="Load a trusted single-file deployment bundle without reading H5.")
+parser.add_argument("--export_deployment_bundle", type=str, default=None,
+                    help="Export checkpoint, current reference and effective configs, then exit.")
 parser.add_argument("--task", type=str, default="Isaac-G1-Vmd-Train-C1-v0")
 parser.add_argument("--num_envs", type=int, default=16)
 parser.add_argument(
@@ -81,6 +92,8 @@ parser.add_argument(
     help="Explicit checkpoint .pt file. If omitted, the latest under logs/ is used.",
 )
 parser.add_argument("--load_run", type=str, default=None)
+parser.add_argument("--checkpoint_dir", type=str, default=None,
+                    help="Source run directory; omitted --checkpoint selects its latest .pt.")
 parser.add_argument(
     "--dance",
     type=str,
@@ -181,11 +194,24 @@ parser.add_argument(
     "--pd_profile",
     type=str,
     choices=("deploy", "isaaclab"),
-    default="deploy",
+    default=None,
     help=(
         "Robot actuator PD: deploy=Unitree rl_lab FixStand (default); "
         "isaaclab=legacy G1_29DOF defaults for old checkpoints."
     ),
+)
+parser.add_argument(
+    "--self_collisions",
+    dest="self_collisions",
+    action="store_true",
+    default=None,
+    help="Enable robot self-collisions during evaluation (match training).",
+)
+parser.add_argument(
+    "--no_self_collisions",
+    dest="self_collisions",
+    action="store_false",
+    help="Disable robot self-collisions during evaluation.",
 )
 parser.add_argument(
     "--play",
@@ -275,6 +301,20 @@ if args_cli.render_interval is not None and args_cli.render_interval < 1:
 if args_cli.viewport_resolution is not None and min(args_cli.viewport_resolution) < 1:
     parser.error("--viewport_resolution dimensions must be >= 1")
 sim_compat.prepare_launcher_args(args_cli)
+if args_cli.jump_diagnostics:
+    if not 0 <= args_cli.jump_diagnostics_env < args_cli.num_envs:
+        parser.error("--jump_diagnostics_env must select an existing environment")
+    if not math.isfinite(args_cli.jump_contact_threshold) or args_cli.jump_contact_threshold <= 0:
+        parser.error("--jump_contact_threshold must be finite and positive")
+    if not math.isfinite(args_cli.jump_diagnostics_start) or args_cli.jump_diagnostics_start < 0:
+        parser.error("--jump_diagnostics_start must be finite and nonnegative")
+    if args_cli.jump_diagnostics_end is not None and (
+        not math.isfinite(args_cli.jump_diagnostics_end)
+        or args_cli.jump_diagnostics_end <= args_cli.jump_diagnostics_start
+    ):
+        parser.error("--jump_diagnostics_end must exceed start")
+    if args_cli.export_deployment_bundle or args_cli.benchmark_inference:
+        parser.error("Jump diagnostics requires a rollout, not export/benchmark mode")
 
 DANCE_NAME: str | None = None
 MOTION_H5_PATH: str | None = None
@@ -748,6 +788,15 @@ def _resolve_latest_checkpoint_for_dance(
     dance_name: str,
 ) -> str:
     log_root_path = resolve_training_log_root(agent_cfg.experiment_name, dance_name)
+    from source.train_workflow.utils.checkpoints import latest_checkpoint
+    if args_cli.checkpoint_dir:
+        return latest_checkpoint(args_cli.checkpoint_dir)
+    if args_cli.load_run:
+        candidate_dir = os.path.join(log_root_path, args_cli.load_run)
+        if os.path.isdir(candidate_dir):
+            return latest_checkpoint(candidate_dir)
+        # A requested run must never silently fall back to another run.
+        return os.path.abspath(get_checkpoint_path(log_root_path, args_cli.load_run, agent_cfg.load_checkpoint))
     run_dir = args_cli.load_run if args_cli.load_run is not None else agent_cfg.load_run
     try:
         return os.path.abspath(get_checkpoint_path(log_root_path, run_dir, agent_cfg.load_checkpoint))
@@ -770,6 +819,7 @@ class _PolicyPlaybackGate:
         self.stop_requested = False
         self.policy_step = 0
         self.policy_total = 0
+        self.control_hz = 0.0
         self.wav_path: str | None = None
         self.audio_enabled = False
         self.record_avi_enabled = False
@@ -795,6 +845,7 @@ class _PolicyPlaybackGate:
             "playing": self.playing,
             "policy_step": self.policy_step,
             "policy_total": self.policy_total,
+            "control_hz": self.control_hz,
             "has_audio": bool(self.wav_path),
             "audio_enabled": self.audio_enabled,
             "record_avi_enabled": self.record_avi_enabled,
@@ -823,6 +874,9 @@ def _find_h5_window(env_cfg: ManagerBasedRLEnvCfg) -> tuple[str, float]:
 
 def _read_h5_frames_and_fps(h5_path: str) -> tuple[int, float]:
     """Read H5 frame count and source fps without loading full motion arrays."""
+    if args_cli.deployment_bundle:
+        ref = _DEPLOYMENT_BUNDLE["reference"]
+        return int(ref["tables"]["_phase"].shape[0]), float(ref["control_hz"])
     import h5py
 
     with h5py.File(os.path.abspath(h5_path), "r") as f:
@@ -842,6 +896,9 @@ def _resolve_eval_window_seconds(
 ) -> tuple[float, int, str]:
     """Resolve eval window seconds from override or current dance full H5 length."""
     control_hz = control_hz_from_env_cfg(env_cfg)
+    if args_cli.deployment_bundle:
+        ref = _DEPLOYMENT_BUNDLE["reference"]
+        return float(ref["window_seconds"]), int(ref["tables"]["_phase"].shape[0]), "deployment_bundle"
     if window_frames_override is not None:
         frames = max(1, int(window_frames_override))
         return float(window_seconds_from_frames(frames, control_hz)), frames, "override"
@@ -1040,7 +1097,7 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
         else:
             src_frames, src_fps = _read_h5_frames_and_fps(new_h5) if new_h5 is not None else (0, 0.0)
             print(
-                f"[INFO] Auto window from dance H5: src_frames={src_frames}@{src_fps:.1f}fps "
+                f"[INFO] Motion window ({ws_mode}): src_frames={src_frames}@{src_fps:.1f}fps "
                 f"=> control_steps={new_wf} "
                 f"=> window_seconds={new_ws:.6f} "
                 f"(control_hz={control_hz_from_env_cfg(env_cfg):.1f})"
@@ -1080,6 +1137,10 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
             _patch(term.params)
     for term_name in vars(env_cfg.events):
         term = getattr(env_cfg.events, term_name)
+        if hasattr(term, "params") and isinstance(term.params, dict):
+            _patch(term.params)
+    for term_name in vars(env_cfg.terminations):
+        term = getattr(env_cfg.terminations, term_name)
         if hasattr(term, "params") and isinstance(term.params, dict):
             _patch(term.params)
     joint_pos_action = getattr(env_cfg.actions, "joint_pos", None)
@@ -1241,10 +1302,47 @@ def _apply_play_mode(env_cfg: ManagerBasedRLEnvCfg) -> None:
     )
 
 
+def _apply_self_collision_override(env_cfg: ManagerBasedRLEnvCfg) -> None:
+    """Apply the same articulation setting as training before env creation."""
+    if args_cli.self_collisions is None:
+        return
+    robot = env_cfg.scene.robot
+    spawn = robot.spawn
+    if spawn is None or spawn.articulation_props is None:
+        raise ValueError("Self-collision override requires robot articulation properties")
+    enabled = bool(args_cli.self_collisions)
+    env_cfg.scene.robot = robot.replace(
+        spawn=spawn.replace(
+            articulation_props=spawn.articulation_props.replace(enabled_self_collisions=enabled)
+        )
+    )
+    print(f"[INFO] Robot self-collisions override: enabled_self_collisions={enabled}")
+
+
 def main() -> None:
     global DANCE_NAME, MOTION_H5_PATH, WINDOW_FRAMES_OVERRIDE
+    global _DEPLOYMENT_BUNDLE
 
-    env_cfg: ManagerBasedRLEnvCfg = parse_env_cfg(args_cli.task)
+    from source.train_workflow.utils.deployment import load_bundle, save_bundle
+    _DEPLOYMENT_BUNDLE = None
+    if args_cli.deployment_bundle:
+        if args_cli.export_deployment_bundle:
+            raise ValueError("Use export and deployment loading in separate runs")
+        # A bundle fixes its policy, motion and timing; switching requires another bundle.
+        for name in ("dance", "checkpoint", "checkpoint_dir", "load_run", "window_frames",
+                     "physics_hz", "decimation", "residual_alpha", "use_reference_residual",
+                     "self_collisions", "pd_profile"):
+            if getattr(args_cli, name, None) is not None:
+                raise ValueError(f"--{name} cannot override a deployment bundle")
+        _DEPLOYMENT_BUNDLE = load_bundle(args_cli.deployment_bundle)
+        args_cli.task = _DEPLOYMENT_BUNDLE["task"]
+    elif args_cli.pd_profile is None:
+        args_cli.pd_profile = "deploy"
+
+    env_cfg: ManagerBasedRLEnvCfg = (
+        _DEPLOYMENT_BUNDLE["env_cfg"] if _DEPLOYMENT_BUNDLE is not None
+        else parse_env_cfg(args_cli.task)
+    )
     # Timing overrides must precede motion-window resolution and env creation.
     if args_cli.physics_hz is not None:
         env_cfg.sim.dt = 1.0 / args_cli.physics_hz
@@ -1254,8 +1352,16 @@ def main() -> None:
         args_cli.task, "rsl_rl_cfg_entry_point"
     )
     agent_cfg = sim_compat.prepare_rsl_rl_cfg(agent_cfg)
+    if _DEPLOYMENT_BUNDLE is not None:
+        agent_cfg = _DEPLOYMENT_BUNDLE["agent_cfg"]
 
-    if args_cli.dance:
+    if _DEPLOYMENT_BUNDLE is not None:
+        from source.my_task.motion_reference.motion_buffer import register_packaged_reference
+        DANCE_NAME = _DEPLOYMENT_BUNDLE["dance"]
+        MOTION_H5_PATH = os.path.abspath(args_cli.deployment_bundle)
+        register_packaged_reference(MOTION_H5_PATH, _DEPLOYMENT_BUNDLE["reference"])
+        dance_options = [DANCE_NAME]
+    elif args_cli.dance:
         dance_options = [normalize_dance_stem(args_cli.dance)]
         print(f"[INFO] Single-dance eval: {dance_options[0]} (other dance assets skipped).")
     else:
@@ -1265,7 +1371,8 @@ def main() -> None:
     selected_dance = normalize_dance_stem(DANCE_NAME or dance_options[0])
     if selected_dance not in dance_options:
         dance_options.insert(0, selected_dance)
-    MOTION_H5_PATH, DANCE_NAME = resolve_dance_h5_by_name(selected_dance)
+    if _DEPLOYMENT_BUNDLE is None:
+        MOTION_H5_PATH, DANCE_NAME = resolve_dance_h5_by_name(selected_dance)
 
     env_cfg.scene.num_envs = int(args_cli.num_envs)
     if args_cli.device is not None:
@@ -1273,10 +1380,15 @@ def main() -> None:
         # Keep inference on the selected device as well (especially for the
         # single-env CPU diagnostic; avoid implicit CPU/CUDA transfers).
         agent_cfg.device = args_cli.device
-    env_cfg.scene.robot = apply_pd_profile_to_scene_robot(
-        env_cfg.scene.robot, args_cli.pd_profile, o6_hands=True
-    )
-    log_pd_profile_summary(args_cli.pd_profile, o6_hands=True)
+    if _DEPLOYMENT_BUNDLE is None:
+        env_cfg.scene.robot = apply_pd_profile_to_scene_robot(
+            env_cfg.scene.robot, args_cli.pd_profile, o6_hands=True
+        )
+        _apply_self_collision_override(env_cfg)
+    if _DEPLOYMENT_BUNDLE is None:
+        log_pd_profile_summary(args_cli.pd_profile, o6_hands=True)
+    else:
+        print("[INFO] Using actuator and collision configuration embedded in deployment bundle.")
     _apply_motion_overrides(env_cfg)
     _apply_play_viewer(env_cfg)
     stage_background_loaded = False
@@ -1284,6 +1396,9 @@ def main() -> None:
         stage_background_loaded = _apply_stage_background(env_cfg, args_cli.stage)
     if args_cli.play:
         _apply_play_mode(env_cfg)
+    if args_cli.jump_diagnostics:
+        from source.train_workflow.utils.jump_diagnostics import configure_jump_sensors
+        configure_jump_sensors(env_cfg)
 
     if args_cli.render_interval is not None:
         env_cfg.sim.render_interval = args_cli.render_interval
@@ -1300,8 +1415,22 @@ def main() -> None:
     print(f"[INFO] Dance: {DANCE_NAME}")
     resume_path = ""
     initial_policy_error = ""
-    if args_cli.checkpoint:
-        resume_path = os.path.abspath(args_cli.checkpoint)
+    if _DEPLOYMENT_BUNDLE is not None:
+        import atexit
+        import tempfile
+        # Runner expects a checkpoint path; materialize embedded bytes in a private
+        # temporary directory, never consult the original checkpoint or logs.
+        checkpoint_temp = tempfile.TemporaryDirectory(prefix="g1-deployment-")
+        atexit.register(checkpoint_temp.cleanup)
+        resume_path = os.path.join(checkpoint_temp.name, "policy.pt")
+        with open(resume_path, "wb") as checkpoint_file:
+            checkpoint_file.write(_DEPLOYMENT_BUNDLE["checkpoint"])
+        selected_policy_key = resume_path
+    elif args_cli.checkpoint:
+        checkpoint = args_cli.checkpoint
+        if args_cli.checkpoint_dir and not os.path.dirname(checkpoint):
+            checkpoint = os.path.join(args_cli.checkpoint_dir, checkpoint)
+        resume_path = os.path.abspath(checkpoint)
         selected_policy_key = resume_path
     else:
         selected_policy_key = _POLICY_AUTO_KEY
@@ -1339,6 +1468,21 @@ def main() -> None:
             print(f"[WARN] Failed to load runnable policy: {resume_path}")
             print(f"[WARN] {initial_policy_error}")
             resume_path = ""
+
+    if args_cli.export_deployment_bundle:
+        if policy is None or obs_adapter is None:
+            wrapped.close()
+            raise ValueError("Cannot export: checkpoint did not load successfully")
+        export_h5, export_window = _find_h5_window(env_cfg)
+        export_buf = get_or_create_motion_buffer(env_unwrapped, export_h5, export_window)
+        save_bundle(
+            args_cli.export_deployment_bundle, checkpoint_path=resume_path,
+            reference=export_buf.export_reference(), env_cfg=env_cfg, agent_cfg=agent_cfg,
+            task=args_cli.task, dance=DANCE_NAME,
+        )
+        print(f"[INFO] Deployment bundle exported: {os.path.abspath(args_cli.export_deployment_bundle)}")
+        wrapped.close()
+        return
 
     if args_cli.benchmark_inference:
         if policy is None or obs_adapter is None:
@@ -1397,14 +1541,24 @@ def main() -> None:
         print(f"[WARN] --record_avi_fps clamped to {record_avi_fps:.1f}")
 
     action_dim = int(env_unwrapped.action_manager.total_action_dim)
+    jump_diagnostics = None
+    if args_cli.jump_diagnostics:
+        from source.train_workflow.utils.jump_diagnostics import JumpDiagnostics
+        jump_diagnostics = JumpDiagnostics(
+            env_unwrapped, args_cli.jump_diagnostics_dir, env_index=args_cli.jump_diagnostics_env,
+            threshold=args_cli.jump_contact_threshold, start=args_cli.jump_diagnostics_start,
+            end=args_cli.jump_diagnostics_end,
+        )
     zero_actions = torch.zeros(env_unwrapped.num_envs, action_dim, device=env_unwrapped.device)
-    policy_entries = _collect_policy_entries(agent_cfg.experiment_name, dance_options)
+    policy_entries = ([] if _DEPLOYMENT_BUNDLE is not None else
+                      _collect_policy_entries(agent_cfg.experiment_name, dance_options))
     if resume_path and (not any(key == resume_path for key, _ in policy_entries)):
         policy_entries.append((resume_path, _checkpoint_relpath(resume_path)))
 
     playback = _PolicyPlaybackGate()
     playback.policy_relpath = _checkpoint_relpath(resume_path) if resume_path else ""
     playback.policy_total = rollout_steps
+    playback.control_hz = control_hz
     playback.dance_title = DANCE_NAME or os.path.splitext(os.path.basename(h5_path))[0]
     playback.dance_selected = DANCE_NAME or ""
     playback.policy_selected = selected_policy_key
@@ -1540,6 +1694,10 @@ def main() -> None:
             return
         if playback.playing:
             return
+        if _DEPLOYMENT_BUNDLE is not None:
+            print("[WARN] Deployment bundle fixes policy, dance and window; load another bundle to change them.")
+            pending_dance_name = pending_policy_key = pending_window_frames = None
+            return
 
         target_dance = normalize_dance_stem(pending_dance_name or DANCE_NAME or "")
         if not target_dance:
@@ -1575,6 +1733,7 @@ def main() -> None:
                 log_interval_s=float(args_cli.perf_log_interval),
             )
             playback.policy_total = rollout_steps
+            playback.control_hz = control_hz
             playback.dance_title = DANCE_NAME or os.path.splitext(os.path.basename(h5_path))[0]
             playback.wav_path = _resolve_dance_wav_path(DANCE_NAME)
             playback.dance_selected = DANCE_NAME or ""
@@ -1722,6 +1881,13 @@ def main() -> None:
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(rollout_seed)
         obs_raw, _ = _env_reset(wrapped, seed=rollout_seed)
+        if jump_diagnostics is not None:
+            jump_diagnostics.begin(episode_idx, buf, {
+                "checkpoint": os.path.abspath(resume_path), "dance": DANCE_NAME,
+                "reference": h5_path, "deployment_bundle": args_cli.deployment_bundle,
+                "seed": rollout_seed, "action_smooth_alpha": smooth_alpha,
+                "play_mode": bool(args_cli.play),
+            })
         if playback.record_avi_enabled and not getattr(args_cli, "headless", False):
             _start_live_avi_recording(episode_idx=episode_idx)
         rollout_wall_start = time.perf_counter()
@@ -1794,6 +1960,7 @@ def main() -> None:
             smoothed_actions = None
             rollout_aborted = False
             aborted_by_done = False
+            expected_timeout = False
             done_warn_msg = ""
             skip_step_tracking_error = bool(args_cli.play)
             if policy is None or obs_adapter is None:
@@ -1814,7 +1981,14 @@ def main() -> None:
                                 smooth_alpha * actions + (1.0 - smooth_alpha) * smoothed_actions
                             )
                         actions = smoothed_actions
-                obs_raw, _, dones, _ = wrapped.step(actions)
+                if jump_diagnostics is not None:
+                    from source.my_task.motion_reference import motion_steps
+                    jump_diagnostics.begin_control(motion_steps(env_unwrapped))
+                try:
+                    obs_raw, _, dones, _ = wrapped.step(actions)
+                finally:
+                    if jump_diagnostics is not None:
+                        jump_diagnostics.end_control()
                 try:
                     if torch.any(dones > 0):
                         done_idx = int(torch.nonzero(dones > 0, as_tuple=False)[0].item())
@@ -1828,11 +2002,14 @@ def main() -> None:
                         except Exception:
                             is_terminated = False
                         cause = ", ".join(term_names) if term_names else "unknown"
+                        expected_timeout = bool(is_timeout and not is_terminated and steps_done + 1 >= rollout_steps)
                         done_warn_msg = (
                             f"[WARN] Rollout interrupted by termination "
                             f"(env={done_idx}, terminated={is_terminated}, time_out={is_timeout}, terms=[{cause}]). "
                             "Stopping playback and returning to standing pose."
                         )
+                        if expected_timeout:
+                            done_warn_msg = "[INFO] Rollout completed at the configured time limit."
                         rollout_aborted = True
                         aborted_by_done = True
                         break
@@ -1853,11 +2030,16 @@ def main() -> None:
                     _wait_until_wall_deadline(rollout_wall_start + steps_done * dt)
 
             if rollout_aborted:
+                if jump_diagnostics is not None:
+                    jump_diagnostics.flush("time_limit_complete" if expected_timeout else
+                                           (done_warn_msg if aborted_by_done else "user_stop"))
                 playback.stop_requested = False
                 if aborted_by_done:
                     print(done_warn_msg)
                 _abort_rollout(export_avi=avi_recording_active)
-                print(f"[EVAL] episode={episode} aborted steps={steps_done}/{rollout_steps}")
+                status = "completed" if expected_timeout else "aborted"
+                reported_steps = steps_done + 1 if expected_timeout else steps_done
+                print(f"[EVAL] episode={episode} {status} steps={reported_steps}/{rollout_steps}")
                 perf.on_episode_end(episode)
                 episode += 1
                 if int(args_cli.num_episodes) > 0:
@@ -1867,6 +2049,8 @@ def main() -> None:
                         _begin_rollout(episode_idx=episode)
                 continue
 
+            if jump_diagnostics is not None:
+                jump_diagnostics.flush("complete")
             audio_util.stop_wav()
             if avi_recording_active:
                 _finalize_live_avi_recording(reason="complete")
@@ -1907,6 +2091,8 @@ def main() -> None:
             else:
                 _begin_rollout(episode_idx=episode)
     finally:
+        if jump_diagnostics is not None:
+            jump_diagnostics.close()
         if step_profiler is not None:
             step_profiler.close()
         audio_util.stop_wav()
