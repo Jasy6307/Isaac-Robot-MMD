@@ -21,6 +21,7 @@ from source.my_task.motion_reference import (
     get_or_create_motion_buffer,
     reset_motion_start_steps,
     set_motion_start_steps,
+    motion_steps,
 )
 from source.train_workflow.utils.motion.start_weight import (
     compute_motion_start_weights_from_h5,
@@ -131,6 +132,9 @@ def reset_to_motion_start(
     auto_motion_start_weight_lookahead_seconds: float = 3.0,
     auto_motion_start_weight_top_ratio: float = 0.25,
     segment_seconds: float | None = None,
+    motion_start_seconds: float | None = None,
+    motion_start_choices: tuple | None = None,
+    motion_start_probabilities: tuple | None = None,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> None:
     """Reset root + joints to the reference motion's first frame plus optional noise.
@@ -141,6 +145,9 @@ def reset_to_motion_start(
     if env_ids.numel() == 0:
         return
 
+    # Capture terminal reference time before this event changes motion starts.
+    controller = getattr(env, "_auto_jump_controller", None)
+    auto_reset = controller.reset(env_ids, motion_steps(env)[env_ids]) if controller is not None else None
     reset_root_to_spawn(env, env_ids, asset_cfg=asset_cfg)
 
     buf = get_or_create_motion_buffer(env, h5_path, window_seconds, asset_name=asset_cfg.name)
@@ -212,6 +219,26 @@ def reset_to_motion_start(
         reset_motion_start_steps(env, env_ids)
         start_steps = torch.zeros((env_ids.numel(),), device=asset.device, dtype=torch.long)
 
+    if motion_start_choices is not None:
+        choices = torch.tensor(motion_start_choices, device=asset.device)
+        probabilities = torch.tensor(motion_start_probabilities, device=asset.device)
+        selected = torch.multinomial(probabilities, env_ids.numel(), replacement=True)
+        start_steps = (choices[selected] / float(env.step_dt)).round().long()
+        if bool((start_steps < 0).any() or (start_steps >= buf.num_steps).any()):
+            raise ValueError("Motion start choice outside reference")
+        set_motion_start_steps(env, env_ids, start_steps)
+    elif motion_start_seconds is not None:
+        start_step = int(round(float(motion_start_seconds) / float(env.step_dt)))
+        if not 0 <= start_step < buf.num_steps:
+            raise ValueError("motion_start_seconds is outside the reference window")
+        start_steps = torch.full((env_ids.numel(),), start_step, device=asset.device, dtype=torch.long)
+        set_motion_start_steps(env, env_ids, start_steps)
+
+    if auto_reset is not None:
+        start_steps, target_steps = auto_reset
+        set_motion_start_steps(env, env_ids, start_steps)
+        set_episode_target_steps(env, env_ids, target_steps)
+
     if reset_root_to_motion_pose or reset_root_to_motion_quat:
         root_pose = asset.data.root_state_w.torch[env_ids, :7].clone()
         env_origin = _cloner_env_origins(env)[env_ids]
@@ -257,7 +284,8 @@ def reset_to_motion_start(
     q0 = buf.q_ref_abs(start_steps).to(asset.device)  # [N, J]
     target_q = q0.clone()
     if joint_pos_noise > 0.0:
-        delta = torch.rand_like(target_q) * (2.0 * joint_pos_noise) - joint_pos_noise
+        from source.my_task.mdp.validation_random import uniform_like
+        delta = uniform_like(env, target_q, "reset:joint_pos", env_ids) * (2.0 * joint_pos_noise) - joint_pos_noise
         if joint_noise_scale_by_expr:
             scales = get_cached_joint_scales(
                 env,
@@ -274,8 +302,9 @@ def reset_to_motion_start(
 
     target_qd = torch.zeros_like(target_q)
     if joint_vel_noise > 0.0:
+        from source.my_task.mdp.validation_random import uniform_like
         target_qd = (
-            torch.rand_like(target_qd) * (2.0 * joint_vel_noise) - joint_vel_noise
+            uniform_like(env, target_qd, "reset:joint_vel", env_ids) * (2.0 * joint_vel_noise) - joint_vel_noise
         )
 
     sim_compat.write_joint_state(asset, target_q, target_qd, env_ids=env_ids)

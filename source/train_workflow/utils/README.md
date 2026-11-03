@@ -121,7 +121,28 @@ python source\train_workflow\g1_vmd_0_replay.py `
 
 核心入口是 `motion.collision_reference.repair_reference_h5(source, output, robot_usd, progress=None)`；
 已录制的原始 H5 也可由 `scripts/record_h5_without_collision.py --input ... --output ...` 离线修复。
-自动 CSV 录制使用 `--motion_csv ... --auto_record_h5_without_collision --exit_after_collision_record`。
+自动 CSV 录制与自碰撞修正使用 `--motion_csv ... --auto_record_collision_corrected_h5 --exit_after_collision_record`。旧参数 `--auto_record_h5_without_collision` 保留为兼容别名，执行相同流程。
+
+一键 VMD → H5 → 带音乐的 H5 回放 MP4（在项目根目录、Isaac Python 环境运行）：
+
+```powershell
+python source/train_workflow/g1_vmd_pipeline.py `
+  --vmd "media/dance/IRIS_OUT.vmd" `
+  --audio "media/dance/IRIS_OUT.wav" `
+  --collision_correction
+```
+
+省略 `--collision_correction` 输出普通 H5。省略 `--audio` 自动寻找 VMD 同名音频。
+默认修正 H5 为 `IRIS_OUT_collision_corrected.h5`，普通 H5 为 `IRIS_OUT_rebuilt.h5`，不加时间戳；重复生成在末尾加 `_v2`、`_v3`，整组产物使用同一版本。修正前的 CSV/H5 使用 `_raw` 标识。
+CSV/原始 H5/修正 H5 位于 `media/dance`，AVI、带音乐 MP4 和 `.pipeline.json` 清单位于 `media/recordings`。
+可用 `--name` 指定最终文件名前缀、`--output_dir` 和 `--video_dir` 指定目录；已有文件不会覆盖。
+音乐从第 0 秒对齐；音频较短时补静音，较长时截到视频结束。需要 FFmpeg（PATH 或 `imageio-ffmpeg`，也可 `--ffmpeg` 指定）。
+此入口会依次打开并自动关闭 H5 录制、H5 回放窗口；不需要手动勾选录像。
+回放逐帧录制，校验视频帧数和 FPS 与最终 H5 一致；碰撞修正失败、录像失败或窗口提前关闭均中止后续步骤。
+这是参考动作回放视频，不运行训练策略。
+每份生成的 H5 还保存同目录 `.motion.json`，记录原始 VMD、原始舞蹈名及音乐路径。
+训练验收 MP4、策略验证及检查点对比录像会自动读取该来源记录；旧产物兼容从 `media/recordings/*.pipeline.json` 按完整 H5 路径匹配配乐。`_v2`、`_v3` 或自定义名字不会影响音乐对应关系。
+验收渲染场景也会保存解析到的音频路径；显式 `--audio` 优先。音乐预览按起始秒数和播放速率同步。
 
 检测基于当前 G1 的选定非相邻身体包络（含张开手掌），不是精确三角网格或 PhysX 的全面碰撞认证，也不处理地面/背景碰撞。
 极端输入可能无法自动找到可行轨迹，此时会明确失败；不会因为换了按钮就保证任意不兼容格式或任意姿态都可修复。

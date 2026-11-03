@@ -6,6 +6,8 @@ Isaac Lab configuration itself; this format requires the matching project/runtim
 from __future__ import annotations
 
 import os
+import shutil
+import json
 import tempfile
 from pathlib import Path
 
@@ -13,6 +15,29 @@ import torch
 
 FORMAT = "g1-dance-deployment"
 VERSION = 1
+
+
+def atomic_copy_file(source, target):
+    """Publish a readable checkpoint alias without exposing a partial copy."""
+    target=Path(target);target.parent.mkdir(parents=True,exist_ok=True)
+    fd,temporary=tempfile.mkstemp(dir=target.parent,suffix=".tmp")
+    os.close(fd)
+    try:
+        shutil.copyfile(source,temporary)
+        os.replace(temporary,target)
+    finally:
+        if os.path.exists(temporary):os.unlink(temporary)
+
+
+def atomic_write_json(target, value):
+    target=Path(target);target.parent.mkdir(parents=True,exist_ok=True)
+    fd,temporary=tempfile.mkstemp(dir=target.parent,suffix=".tmp")
+    try:
+        with os.fdopen(fd,"w",encoding="utf-8") as stream:
+            json.dump(value,stream,ensure_ascii=False,indent=2)
+        os.replace(temporary,target)
+    finally:
+        if os.path.exists(temporary):os.unlink(temporary)
 
 
 def save_bundle(path, *, checkpoint_path, reference, env_cfg, agent_cfg, task, dance):

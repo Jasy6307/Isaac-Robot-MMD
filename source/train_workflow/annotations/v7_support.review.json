@@ -1,0 +1,13 @@
+{
+  "source_sha256": "9656cae505d4dd9f6aa5b42ba74f6b441fb7a26d5ce4428abde5a9960d7af63c",
+  "support_windows": [
+    {"start_s": 27.0, "end_s": 28.1, "reason": "User video review: no added bilateral jump near 27.5s; supporting foot ownership unknown."},
+    {"start_s": 28.33, "end_s": 29.02, "reason": "User video review: no added bilateral jump near 28.6s."},
+    {"start_s": 30.76, "end_s": 31.69, "reason": "User video review: no added bilateral jump near 31.1s."},
+    {"start_s": 41.8, "end_s": 42.59, "reason": "User video review: no added bilateral jump near 42.1s."},
+    {"start_s": 52.5, "end_s": 53.29, "reason": "User video review: no added bilateral jump near 52.8s."},
+    {"start_s": 61.06, "end_s": 61.86, "reason": "User video review: no added bilateral jump near 61.4s."},
+    {"start_s": 65.86, "end_s": 66.59, "reason": "User video review: no added bilateral jump near 66.2s."},
+    {"start_s": 68.4, "end_s": 69.16, "reason": "User video review: no added bilateral jump near 68.7s."}
+  ]
+}

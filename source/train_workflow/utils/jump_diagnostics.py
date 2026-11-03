@@ -89,7 +89,7 @@ class JumpDiagnostics:
     Physics samples pair a held control target with the reference that generated
     that target. ref_time_s makes this zero-order-hold timing explicit.
     """
-    def __init__(self, env, output, env_index=0, threshold=5.0, start=0., end=None):
+    def __init__(self, env, output, env_index=0, threshold=5.0, start=0., end=None, extended=False):
         if getattr(env, "_physics_handles_decimation", False):
             raise ValueError("Jump diagnostics requires per-physics-step scene updates; this backend batches decimation")
         self.env = env
@@ -97,6 +97,7 @@ class JumpDiagnostics:
         self.env_index = env_index
         self.threshold = threshold
         self.start, self.end = start, end
+        self.extended = extended
         self.asset = env.scene["robot"]
         self.joint_ids = [i for i, name in enumerate(self.asset.joint_names)
                           if re.fullmatch(r"(left|right)_(hip_.*|knee|ankle_.*)_joint", name)]
@@ -128,6 +129,9 @@ class JumpDiagnostics:
                              foot_height="link origin relative to terrain plane, not sole clearance",
                              torque_limits="configured effort limits; speed-dependent actuator clipping may be lower",
                              reference_timing="held current control-step reference; compare using ref_time_s")
+        self.metadata["extended_turn_channels"]=self.extended
+        if "jump_left_ground" in getattr(self.env.scene, "sensors", {}):
+            self.metadata["contact_source"] = "ground-only filtered ankle normal forces"
         self.elapsed = 0.
         self.active = True
 
@@ -149,30 +153,63 @@ class JumpDiagnostics:
         root_z = tensor(data.default_root_state)[e, 2] + origins[e, 2] + root_delta
         ref_q = self.buf.q_ref_abs(step)[0]
         ground = float(getattr(self.env.cfg.scene.terrain, "ground_z_offset", 0.))
-        row = dict(time_s=self.elapsed, sample_dt_s=dt, ref_time_s=self.ref_step / self.buf.control_hz,
-                   root_z_m=float(tensor(data.root_state_w)[e, 2]), ref_root_z_m=float(root_z),
-                   root_vz_m_s=float(tensor(data.root_lin_vel_w)[e, 2]),
-                   ref_root_vz_m_s=float((next_delta - root_delta) * self.buf.control_hz))
+        row = dict(root_z_m=tensor(data.root_state_w)[e, 2], ref_root_z_m=root_z,
+                   root_vz_m_s=tensor(data.root_lin_vel_w)[e, 2],
+                   ref_root_vz_m_s=(next_delta - root_delta) * self.buf.control_hz)
+        # Native Isaac Lab root quaternions are xyzw in this project/runtime.
+        quat = tensor(data.root_state_w)[e, 3:7]
+        quat = quat / quat.norm().clamp_min(1.e-8)
+        row["root_tilt_rad"] = torch.acos((1.-2.*quat[:2].square().sum()).clamp(-1.,1.))
+        if self.extended:
+            x,y,z,w=quat.unbind()
+            row["root_yaw_rad"]=torch.atan2(2*(w*z+x*y),1-2*(y*y+z*z))
+            w,x,y,z=self.buf.root_quat_wxyz(step)[0].unbind()
+            row["ref_root_delta_yaw_rad"]=torch.atan2(2*(w*z+x*y),1-2*(y*y+z*z))
+        for axis, index in zip("xy", (0, 1)):
+            row[f"root_{axis}_m"] = tensor(data.root_state_w)[e,index]-origins[e,index]
+            row[f"ref_root_{axis}_m"] = tensor(data.default_root_state)[e,index]+self.buf.root_pos_delta(step)[0,index]
+            row[f"root_v{axis}_m_s"] = tensor(data.root_lin_vel_w)[e,index]
+        if hasattr(data, "root_ang_vel_w"):
+            for index, axis in enumerate("xyz"):
+                row[f"root_w{axis}_rad_s"] = tensor(data.root_ang_vel_w)[e,index]
         contacts = []
         for side, body in zip(("left", "right"), self.foot_ids):
-            sensor_data = self.env.scene[f"jump_{side}_contact"].data
-            force = getattr(sensor_data, "net_normal_forces_w", None)
-            if force is None:
-                force = sensor_data.net_forces_w
-            magnitude = float(torch.linalg.vector_norm(tensor(force)[e, 0]))
+            if f"jump_{side}_ground" in getattr(self.env.scene, "sensors", {}):
+                sensor_data = self.env.scene[f"jump_{side}_ground"].data
+                force = tensor(sensor_data.normal_force_matrix_w).sum(dim=2)
+            else:
+                sensor_data = self.env.scene[f"jump_{side}_contact"].data
+                force = getattr(sensor_data, "net_normal_forces_w", None)
+                if force is None:
+                    force = sensor_data.net_forces_w
+            magnitude = torch.linalg.vector_norm(tensor(force)[e, 0])
             contacts.append(magnitude >= self.threshold)
             row[f"{side}_contact_N"] = magnitude
-            row[f"{side}_contact"] = int(contacts[-1])
-            row[f"{side}_foot_origin_height_m"] = float(tensor(data.body_link_pose_w)[e, body, 2]) - ground
-        row["both_feet_no_contact"] = int(not any(contacts))
+            row[f"{side}_contact"] = contacts[-1].float()
+            row[f"{side}_foot_origin_height_m"] = tensor(data.body_link_pose_w)[e, body, 2] - ground
+            if self.extended:
+                pose=tensor(data.body_link_pose_w)[e,body]
+                velocity=tensor(data.body_link_lin_vel_w)[e,body]
+                angular=tensor(data.body_link_ang_vel_w)[e,body]
+                for k,axis in enumerate("xyz"):
+                    row[f"{side}_foot_{axis}_m"]=pose[k]-origins[e,k]
+                    row[f"{side}_foot_v{axis}_m_s"]=velocity[k]
+                    row[f"{side}_foot_w{axis}_rad_s"]=angular[k]
+                x,y,z,w=pose[3:7].unbind()
+                row[f"{side}_foot_yaw_rad"]=torch.atan2(2*(w*z+x*y),1-2*(y*y+z*z))
+        row["both_feet_no_contact"] = (~torch.stack(contacts).any()).float()
         channels = {"target_rad": tensor(data.joint_pos_target), "actual_rad": tensor(data.joint_pos),
                     "applied_Nm": tensor(data.applied_torque), "computed_Nm": tensor(data.computed_torque),
                     "limit_Nm": tensor(data.joint_effort_limits)}
         for name, joint in zip(self.joint_names, self.joint_ids):
-            row[f"{name}_ref_rad"] = float(ref_q[joint])
+            row[f"{name}_ref_rad"] = ref_q[joint]
             for suffix, values in channels.items():
-                row[f"{name}_{suffix}"] = float(values[e, joint])
-        self.rows.append(row)
+                row[f"{name}_{suffix}"] = values[e, joint]
+            if self.extended:row[f"{name}_velocity_rad_s"]=tensor(data.joint_vel)[e,joint]
+        # One GPU->CPU synchronization per physics sample, not one per scalar.
+        values = torch.stack(list(row.values())).detach().cpu().tolist()
+        self.rows.append(dict(time_s=self.elapsed, sample_dt_s=dt,
+                              ref_time_s=self.ref_step / self.buf.control_hz, **dict(zip(row, values))))
 
     def end_control(self):
         self.pending = False

@@ -1,0 +1,1335 @@
+{
+  "version": 1,
+  "reference_key": "2809f973864d90ca0ccaade664f1edf1dc749f0a5dc2f498563f0a0627ae2918",
+  "kind": "accepted_baseline",
+  "limits": {
+    "leg_p95": 0.19455515433102843,
+    "height_p95": 0.046722915470600104,
+    "tilt_p95": 0.2668764980882406,
+    "leg_window": 0.35,
+    "height_window": 0.15,
+    "tilt_window": 0.45,
+    "support_air_s": 0.03333333333333333,
+    "support_air_fraction": 0.015,
+    "support_speed_p95": 0.6831416326761245,
+    "support_speed_window": 0.976050665527582,
+    "excess_height_window": 0.1,
+    "excess_vz_window": 0.6,
+    "takeoff_offset_s": 0.2,
+    "landing_offset_s": 0.25
+  },
+  "windows": {
+    "0.0": {
+      "leg_window": 0.07752612182870508,
+      "height_window": 0.026581567690290252,
+      "tilt_window": 0.1039953425224742,
+      "excess_height_window": 0.026581567690290252,
+      "excess_vz_window": 0.13179140326908212,
+      "support_speed_window": 0.1262339067550633
+    },
+    "0.5": {
+      "leg_window": 0.07636217209200064,
+      "height_window": 0.026844841837882997,
+      "tilt_window": 0.10374533705413341,
+      "excess_height_window": 0.026844841837882997,
+      "excess_vz_window": 0.12590250734783087,
+      "support_speed_window": 0.11877583392585317
+    },
+    "1.0": {
+      "leg_window": 0.07732732677211364,
+      "height_window": 0.027115534245967864,
+      "tilt_window": 0.11083364337682723,
+      "excess_height_window": 0.027115534245967864,
+      "excess_vz_window": 0.12742595774742463,
+      "support_speed_window": 0.12233891238458455
+    },
+    "1.5": {
+      "leg_window": 0.08186482888335983,
+      "height_window": 0.027613011201222736,
+      "tilt_window": 0.1170902448023359,
+      "excess_height_window": 0.027613011201222736,
+      "excess_vz_window": 0.13193894941903028,
+      "support_speed_window": 0.12579137686950465
+    },
+    "2.0": {
+      "leg_window": 0.08684208070548873,
+      "height_window": 0.02800060540437698,
+      "tilt_window": 0.12183215740447242,
+      "excess_height_window": 0.02800060540437698,
+      "excess_vz_window": 0.13108411869810271,
+      "support_speed_window": 0.1426147127927591
+    },
+    "2.5": {
+      "leg_window": 0.0905061720063289,
+      "height_window": 0.02917403995990753,
+      "tilt_window": 0.12702377214406926,
+      "excess_height_window": 0.02917403995990753,
+      "excess_vz_window": 0.13135238563641904,
+      "support_speed_window": 0.1548650161270052
+    },
+    "3.0": {
+      "leg_window": 0.09513720737770198,
+      "height_window": 0.029556223650773365,
+      "tilt_window": 0.12168810751289129,
+      "excess_height_window": 0.029556223650773365,
+      "excess_vz_window": 0.13499136056751013,
+      "support_speed_window": 0.16121916042951245
+    },
+    "3.5": {
+      "leg_window": 0.09888196162258585,
+      "height_window": 0.03085842063029607,
+      "tilt_window": 0.10905541863602897,
+      "excess_height_window": 0.03085842063029607,
+      "excess_vz_window": 0.12847817288323615,
+      "support_speed_window": 0.1508222877855102
+    },
+    "4.0": {
+      "leg_window": 0.09810736299181978,
+      "height_window": 0.029541506965955096,
+      "tilt_window": 0.11734667885117232,
+      "excess_height_window": 0.029541506965955096,
+      "excess_vz_window": 0.12730253136406341,
+      "support_speed_window": 0.12735197120423739
+    },
+    "4.5": {
+      "leg_window": 0.09150396612162391,
+      "height_window": 0.029293615023295083,
+      "tilt_window": 0.12522469426815708,
+      "excess_height_window": 0.029293615023295083,
+      "excess_vz_window": 0.12675560860196128,
+      "support_speed_window": 0.10713783555974563
+    },
+    "5.0": {
+      "leg_window": 0.08955333163961768,
+      "height_window": 0.02933516720930735,
+      "tilt_window": 0.12915592625737188,
+      "excess_height_window": 0.02933516720930735,
+      "excess_vz_window": 0.12763668332598171,
+      "support_speed_window": 0.10746909032963838
+    },
+    "5.5": {
+      "leg_window": 0.08889507187530399,
+      "height_window": 0.028859112958113352,
+      "tilt_window": 0.12752899400889872,
+      "excess_height_window": 0.028859112958113352,
+      "excess_vz_window": 0.12874726731912234,
+      "support_speed_window": 0.11136450520018115
+    },
+    "6.0": {
+      "leg_window": 0.08676818375786145,
+      "height_window": 0.02895732243855794,
+      "tilt_window": 0.1291588420048356,
+      "excess_height_window": 0.02895732243855794,
+      "excess_vz_window": 0.13156549795841177,
+      "support_speed_window": 0.11297977422674496
+    },
+    "6.5": {
+      "leg_window": 0.09920305927594503,
+      "height_window": 0.026885829667250314,
+      "tilt_window": 0.1561851305887103,
+      "excess_height_window": 0.02677411675453186,
+      "excess_vz_window": 0.13467997154065717,
+      "support_speed_window": 0.11113710867163415
+    },
+    "7.0": {
+      "leg_window": 0.1329312352463603,
+      "height_window": 0.027269745270411174,
+      "tilt_window": 0.23162078618382412,
+      "excess_height_window": 0.02396413932243983,
+      "excess_vz_window": 0.15035744166622558,
+      "support_speed_window": 0.16650739846751095
+    },
+    "7.5": {
+      "leg_window": 0.13965084731578828,
+      "height_window": 0.02875353256861369,
+      "tilt_window": 0.25187240408112604,
+      "excess_height_window": 0.022553592721621194,
+      "excess_vz_window": 0.149153048642911,
+      "support_speed_window": 0.15928739593558322
+    },
+    "8.0": {
+      "leg_window": 0.11002572265764077,
+      "height_window": 0.026571055750052135,
+      "tilt_window": 0.19354933504015207,
+      "excess_height_window": 0.023147229651610056,
+      "excess_vz_window": 0.1345344140442709,
+      "support_speed_window": 0.10708456886777033
+    },
+    "8.5": {
+      "leg_window": 0.10090728225186467,
+      "height_window": 0.025454187095165254,
+      "tilt_window": 0.1597000350244343,
+      "excess_height_window": 0.023598070641358694,
+      "excess_vz_window": 0.14808915878956516,
+      "support_speed_window": 0.14168856532080099
+    },
+    "9.0": {
+      "leg_window": 0.12453789973631502,
+      "height_window": 0.026801272133986156,
+      "tilt_window": 0.18286533003052075,
+      "excess_height_window": 0.025345581571261086,
+      "excess_vz_window": 0.1662544301400582,
+      "support_speed_window": 0.1604430074397325
+    },
+    "9.5": {
+      "leg_window": 0.1474210591179629,
+      "height_window": 0.029037776390711468,
+      "tilt_window": 0.1675716252438724,
+      "excess_height_window": 0.02819002131621043,
+      "excess_vz_window": 0.17569147586201628,
+      "support_speed_window": 0.14140474565105424
+    },
+    "10.0": {
+      "leg_window": 0.1453712345287204,
+      "height_window": 0.03064469168583552,
+      "tilt_window": 0.15077578399951258,
+      "excess_height_window": 0.029318576951821645,
+      "excess_vz_window": 0.18137805922577777,
+      "support_speed_window": 0.24835906145755537
+    },
+    "10.5": {
+      "leg_window": 0.1370257919343809,
+      "height_window": 0.03149616648753484,
+      "tilt_window": 0.14417955825726192,
+      "excess_height_window": 0.030817259152730307,
+      "excess_vz_window": 0.1738555193071564,
+      "support_speed_window": 0.37638040465489025
+    },
+    "11.0": {
+      "leg_window": 0.13257863186920682,
+      "height_window": 0.028129436373710633,
+      "tilt_window": 0.13047342712680499,
+      "excess_height_window": 0.026350223223368326,
+      "excess_vz_window": 0.182140760741507,
+      "support_speed_window": 0.44987368220624585
+    },
+    "11.5": {
+      "leg_window": 0.1187321447270612,
+      "height_window": 0.025514438450336456,
+      "tilt_window": 0.15253923921845852,
+      "excess_height_window": 0.02291673223177592,
+      "excess_vz_window": 0.17449377939725916,
+      "support_speed_window": 0.33081610185859195
+    },
+    "12.0": {
+      "leg_window": 0.12176254341378809,
+      "height_window": 0.028088704446951548,
+      "tilt_window": 0.14243089605122805,
+      "excess_height_window": 0.02777527630329132,
+      "excess_vz_window": 0.1748270714096725,
+      "support_speed_window": 0.19769425042397676
+    },
+    "12.5": {
+      "leg_window": 0.13372638905420897,
+      "height_window": 0.03455946922302246,
+      "tilt_window": 0.14543346568631627,
+      "excess_height_window": 0.03455946922302246,
+      "excess_vz_window": 0.17472692095364134,
+      "support_speed_window": 0.3566285859933123
+    },
+    "13.0": {
+      "leg_window": 0.14106087011595567,
+      "height_window": 0.0369607404867808,
+      "tilt_window": 0.18002044959614674,
+      "excess_height_window": 0.0369607404867808,
+      "excess_vz_window": 0.1595850215355555,
+      "support_speed_window": 0.5335494216841956
+    },
+    "13.5": {
+      "leg_window": 0.15562651998673876,
+      "height_window": 0.034204267263412476,
+      "tilt_window": 0.20269359976053236,
+      "excess_height_window": 0.034204267263412476,
+      "excess_vz_window": 0.15272883087396621,
+      "support_speed_window": 0.4244656165747869
+    },
+    "14.0": {
+      "leg_window": 0.1374636077384154,
+      "height_window": 0.029303487837314606,
+      "tilt_window": 0.16157866824806355,
+      "excess_height_window": 0.026971803804238637,
+      "excess_vz_window": 0.16115781695892412,
+      "support_speed_window": 0.2630538140476814
+    },
+    "14.5": {
+      "leg_window": 0.11987819613267978,
+      "height_window": 0.02761925568183263,
+      "tilt_window": 0.12644282741937785,
+      "excess_height_window": 0.024152357975641886,
+      "excess_vz_window": 0.17341626248011985,
+      "support_speed_window": 0.20298571744125665
+    },
+    "15.0": {
+      "leg_window": 0.14522122190644343,
+      "height_window": 0.026683209637800853,
+      "tilt_window": 0.22325014739297327,
+      "excess_height_window": 0.025339156587918597,
+      "excess_vz_window": 0.16395378603866056,
+      "support_speed_window": 0.18693144813335189
+    },
+    "15.5": {
+      "leg_window": 0.17763069889197747,
+      "height_window": 0.028648041288057962,
+      "tilt_window": 0.2679775147760908,
+      "excess_height_window": 0.02458932767311732,
+      "excess_vz_window": 0.17558416998634735,
+      "support_speed_window": 0.1886268287470662
+    },
+    "16.0": {
+      "height_window": 0.03990330517292023,
+      "tilt_window": 0.20336374771470825
+    },
+    "16.5": {
+      "height_window": 0.04551011075576146,
+      "tilt_window": 0.17125311688675232
+    },
+    "17.0": {
+      "height_window": 0.03892197807629903,
+      "tilt_window": 0.16485982758924364,
+      "support_speed_window": 0.18496129503431308
+    },
+    "17.5": {
+      "leg_window": 0.14143743480245272,
+      "height_window": 0.03270068178574244,
+      "tilt_window": 0.14459346644580362,
+      "excess_height_window": 0.023521733979384105,
+      "excess_vz_window": 0.22927690553168456,
+      "support_speed_window": 0.18876557106496944
+    },
+    "18.0": {
+      "leg_window": 0.1223323515554269,
+      "height_window": 0.028307514886061348,
+      "tilt_window": 0.13398907826049253,
+      "excess_height_window": 0.024262476828363206,
+      "excess_vz_window": 0.21305114519816856,
+      "support_speed_window": 0.1745483881829272
+    },
+    "18.5": {
+      "leg_window": 0.12762442106381058,
+      "height_window": 0.027041624089082082,
+      "tilt_window": 0.14422102245890223,
+      "excess_height_window": 0.02668552704155445,
+      "excess_vz_window": 0.2007986416853964,
+      "support_speed_window": 0.21806722685479107
+    },
+    "19.0": {
+      "leg_window": 0.1602995229098532,
+      "height_window": 0.030228182772795358,
+      "tilt_window": 0.16877409360681972,
+      "excess_height_window": 0.02812944703631931,
+      "excess_vz_window": 0.20408442950910993,
+      "support_speed_window": 0.3206401057372845
+    },
+    "19.5": {
+      "height_window": 0.05493927419185639,
+      "tilt_window": 0.1898735913882653,
+      "support_speed_window": 0.42243751751879854
+    },
+    "20.0": {
+      "height_window": 0.05883035560448964,
+      "tilt_window": 0.21936988750472664
+    },
+    "20.5": {
+      "height_window": 0.038219840725262966,
+      "tilt_window": 0.18835065088390063,
+      "support_speed_window": 0.17903427797059218
+    },
+    "21.0": {
+      "leg_window": 0.13576358885637352,
+      "height_window": 0.033311841189861295,
+      "tilt_window": 0.13342243157414485,
+      "excess_height_window": 0.023538281151226588,
+      "excess_vz_window": 0.1437895273736545,
+      "support_speed_window": 0.17975904463790357
+    },
+    "21.5": {
+      "leg_window": 0.1252543694898486,
+      "height_window": 0.029379203021526336,
+      "tilt_window": 0.12917129911880085,
+      "excess_height_window": 0.023353010659868067,
+      "excess_vz_window": 0.18219936626201325,
+      "support_speed_window": 0.1494064654108068
+    },
+    "22.0": {
+      "leg_window": 0.1341961822596689,
+      "height_window": 0.02639780511458715,
+      "tilt_window": 0.17722722810848304,
+      "excess_height_window": 0.02338863492012024,
+      "excess_vz_window": 0.1978740917146206,
+      "support_speed_window": 0.2309614959251377
+    },
+    "22.5": {
+      "leg_window": 0.14325310036540032,
+      "height_window": 0.026313485205173494,
+      "tilt_window": 0.1937477341045936,
+      "excess_height_window": 0.024410419762134553,
+      "excess_vz_window": 0.21212399760882059,
+      "support_speed_window": 0.3094813826031584
+    },
+    "23.0": {
+      "leg_window": 0.14472304550309975,
+      "height_window": 0.02840417524178823,
+      "tilt_window": 0.1682844849427541,
+      "excess_height_window": 0.027537967761357626,
+      "excess_vz_window": 0.20782055534732835,
+      "support_speed_window": 0.227806383792444
+    },
+    "23.5": {
+      "leg_window": 0.13586548738181592,
+      "height_window": 0.029168412387371064,
+      "tilt_window": 0.20899542954439917,
+      "excess_height_window": 0.027999357879161836,
+      "excess_vz_window": 0.19675142005396384,
+      "support_speed_window": 0.2595532863649229
+    },
+    "24.0": {
+      "leg_window": 0.15456421899298828,
+      "height_window": 0.029293866356213887,
+      "tilt_window": 0.2943035925614337,
+      "excess_height_window": 0.0238657287756602,
+      "excess_vz_window": 0.2231038463115692,
+      "support_speed_window": 0.299107161379264
+    },
+    "24.5": {
+      "leg_window": 0.18375961405535537,
+      "height_window": 0.031588058372338614,
+      "tilt_window": 0.292810283601284,
+      "excess_height_window": 0.02440797726313273,
+      "excess_vz_window": 0.2424694121380647,
+      "support_speed_window": 0.24342367829677336
+    },
+    "25.0": {
+      "leg_window": 0.18010055976609388,
+      "height_window": 0.03185507218043009,
+      "tilt_window": 0.21904328137636184,
+      "excess_height_window": 0.025222597519556682,
+      "excess_vz_window": 0.22232942789793014,
+      "support_speed_window": 0.19266388497980574
+    },
+    "25.5": {
+      "leg_window": 0.16127785190939903,
+      "height_window": 0.02966930518547694,
+      "tilt_window": 0.16504764239614209,
+      "excess_height_window": 0.026463099122047425,
+      "excess_vz_window": 0.2118767140060663,
+      "support_speed_window": 0.24800551474693094
+    },
+    "26.0": {
+      "leg_window": 0.15019036502887803,
+      "height_window": 0.030431463122367858,
+      "tilt_window": 0.20362112461899717,
+      "excess_height_window": 0.029998676975568135,
+      "excess_vz_window": 0.2262033826857805,
+      "support_speed_window": 0.358192049337344
+    },
+    "26.5": {
+      "leg_window": 0.15249391162768006,
+      "height_window": 0.03759293645620346,
+      "tilt_window": 0.20011805760674178,
+      "excess_height_window": 0.03701823403437932,
+      "excess_vz_window": 0.22796106688678264,
+      "support_speed_window": 0.48276936741235354
+    },
+    "27.0": {
+      "leg_window": 0.16333251294369497,
+      "height_window": 0.03932488530874252,
+      "tilt_window": 0.18557942366848387,
+      "excess_height_window": 0.03413783997297287,
+      "excess_vz_window": 0.2245291198790073
+    },
+    "27.5": {
+      "leg_window": 0.15922511485715707,
+      "height_window": 0.03060877392689387,
+      "tilt_window": 0.19698449625323217,
+      "excess_height_window": 0.022989401717980702,
+      "excess_vz_window": 0.20587012857198714
+    },
+    "28.0": {
+      "leg_window": 0.14137540869414805,
+      "height_window": 0.03205155740181605,
+      "tilt_window": 0.17313032613446314,
+      "excess_height_window": 0.02129869888226191,
+      "excess_vz_window": 0.1886932203546166
+    },
+    "28.5": {
+      "leg_window": 0.14027793151636916,
+      "height_window": 0.036921790738900506,
+      "tilt_window": 0.17761494467578207,
+      "excess_height_window": 0.025521592299143473,
+      "excess_vz_window": 0.20757339991008242,
+      "support_speed_window": 0.16030048228207636
+    },
+    "29.0": {
+      "leg_window": 0.12892842978239058,
+      "height_window": 0.03283332159121831,
+      "tilt_window": 0.2005295773471395,
+      "excess_height_window": 0.031111135880152387,
+      "excess_vz_window": 0.18171103521560628,
+      "support_speed_window": 0.15587371658134672
+    },
+    "29.5": {
+      "leg_window": 0.11410838358725112,
+      "height_window": 0.028489450216293337,
+      "tilt_window": 0.18608705504486958,
+      "excess_height_window": 0.028065161406993867,
+      "excess_vz_window": 0.17144191816449164,
+      "support_speed_window": 0.1375696541927755
+    },
+    "30.0": {
+      "leg_window": 0.1045232619345188,
+      "height_window": 0.02858146091302236,
+      "tilt_window": 0.1693734920940672,
+      "excess_height_window": 0.02844564288854599,
+      "excess_vz_window": 0.1780337420105934,
+      "support_speed_window": 0.13702132763176716
+    },
+    "30.5": {
+      "leg_window": 0.1218277572374791,
+      "height_window": 0.03189268300930659,
+      "tilt_window": 0.14109150922546781,
+      "excess_height_window": 0.031662777364254,
+      "excess_vz_window": 0.17885067424426476
+    },
+    "31.0": {
+      "leg_window": 0.17181648038948574,
+      "height_window": 0.03883661170800527,
+      "tilt_window": 0.15168544187210498,
+      "excess_height_window": 0.038606706062952675,
+      "excess_vz_window": 0.19415037317822376
+    },
+    "31.5": {
+      "leg_window": 0.16836218460152547,
+      "height_window": 0.04363639871279398,
+      "tilt_window": 0.18363088567430774,
+      "excess_height_window": 0.04363639871279398,
+      "excess_vz_window": 0.20812677544852098
+    },
+    "32.0": {
+      "leg_window": 0.1369833852164447,
+      "height_window": 0.04158033092816671,
+      "tilt_window": 0.18977123234421014,
+      "excess_height_window": 0.04158033092816671,
+      "excess_vz_window": 0.19380290570358433,
+      "support_speed_window": 0.26565061554933583
+    },
+    "32.5": {
+      "leg_window": 0.13739486647148927,
+      "height_window": 0.03996557176113129,
+      "tilt_window": 0.18031460393220183,
+      "excess_height_window": 0.03319003611803055,
+      "excess_vz_window": 0.19159078816572822,
+      "support_speed_window": 0.2574173761352098
+    },
+    "33.0": {
+      "leg_window": 0.14290171666691698,
+      "height_window": 0.03178043315807978,
+      "tilt_window": 0.20581048638870317,
+      "excess_height_window": 0.024166288673877715,
+      "excess_vz_window": 0.22708967794974644,
+      "support_speed_window": 0.22076852980875766
+    },
+    "33.5": {
+      "leg_window": 0.13379490183666348,
+      "height_window": 0.028218538463115693,
+      "tilt_window": 0.18613678097724914,
+      "excess_height_window": 0.027379929622014364,
+      "excess_vz_window": 0.18958780646324158,
+      "support_speed_window": 0.24127258309951194
+    },
+    "34.0": {
+      "leg_window": 0.1343643137005468,
+      "height_window": 0.03139165083567301,
+      "tilt_window": 0.1945556136406958,
+      "excess_height_window": 0.029856513937314352,
+      "excess_vz_window": 0.1870437609652678,
+      "support_speed_window": 0.22200565704299757
+    },
+    "34.5": {
+      "leg_window": 0.1377965183245639,
+      "height_window": 0.03474136114120483,
+      "tilt_window": 0.19528625971327224,
+      "excess_height_window": 0.03368605762720108,
+      "excess_vz_window": 0.19068056200941402,
+      "support_speed_window": 0.2887169929516191
+    },
+    "35.0": {
+      "leg_window": 0.13488245236376922,
+      "height_window": 0.03460177769263585,
+      "tilt_window": 0.20418871446202197,
+      "excess_height_window": 0.03460177769263585,
+      "excess_vz_window": 0.16624633650605875,
+      "support_speed_window": 0.2960652850428596
+    },
+    "35.5": {
+      "leg_window": 0.13113460686678688,
+      "height_window": 0.030236572722593943,
+      "tilt_window": 0.17599521802427867,
+      "excess_height_window": 0.030236572722593943,
+      "excess_vz_window": 0.16292042371506493,
+      "support_speed_window": 0.20796516528896364
+    },
+    "36.0": {
+      "leg_window": 0.15465260478357473,
+      "height_window": 0.027816819349924724,
+      "tilt_window": 0.15208690531474228,
+      "excess_height_window": 0.027030437489350637,
+      "excess_vz_window": 0.1658974471439918,
+      "support_speed_window": 0.14097302053666982
+    },
+    "36.5": {
+      "leg_window": 0.16020379110549887,
+      "height_window": 0.02531028072039286,
+      "tilt_window": 0.23015089088430007,
+      "excess_height_window": 0.024835850993792215,
+      "excess_vz_window": 0.16845269452159603,
+      "support_speed_window": 0.27868391483634086
+    },
+    "37.0": {
+      "leg_window": 0.14142385439947247,
+      "height_window": 0.027085465689500175,
+      "tilt_window": 0.2633968232447902,
+      "excess_height_window": 0.026455714503924053,
+      "excess_vz_window": 0.17237831721703212,
+      "support_speed_window": 0.35596585093221317
+    },
+    "37.5": {
+      "leg_window": 0.15350854019323984,
+      "height_window": 0.030190521677335103,
+      "tilt_window": 0.17841982247928778,
+      "excess_height_window": 0.02835149814685186,
+      "excess_vz_window": 0.21413599131007988,
+      "support_speed_window": 0.37166082290306296
+    },
+    "38.0": {
+      "leg_window": 0.15501244404974082,
+      "height_window": 0.030947413047154745,
+      "tilt_window": 0.14935439816676077,
+      "excess_height_window": 0.027572281559308368,
+      "excess_vz_window": 0.23050452175239722,
+      "support_speed_window": 0.2911215267665684
+    },
+    "38.5": {
+      "leg_window": 0.13814043729255596,
+      "height_window": 0.03189349869887034,
+      "tilt_window": 0.175491307588915,
+      "excess_height_window": 0.025783478915691375,
+      "excess_vz_window": 0.20631362235794465,
+      "support_speed_window": 0.23645154394800416
+    },
+    "39.0": {
+      "leg_window": 0.13553207855671645,
+      "height_window": 0.033992644945780436,
+      "tilt_window": 0.16883421029895543,
+      "excess_height_window": 0.022661019265651703,
+      "excess_vz_window": 0.17245019243409235,
+      "support_speed_window": 0.31899140255758535
+    },
+    "39.5": {
+      "leg_window": 0.1322405491086344,
+      "height_window": 0.03141939342021942,
+      "tilt_window": 0.15467460182495413,
+      "excess_height_window": 0.024054299294948577,
+      "excess_vz_window": 0.16250536353637773,
+      "support_speed_window": 0.25808661278570066
+    },
+    "40.0": {
+      "leg_window": 0.1257637033611536,
+      "height_window": 0.03091079384088516,
+      "tilt_window": 0.13952300081339974,
+      "excess_height_window": 0.025488046209017436,
+      "excess_vz_window": 0.2001926024754842,
+      "support_speed_window": 0.4574199755563001
+    },
+    "40.5": {
+      "leg_window": 0.12698905230189364,
+      "height_window": 0.03249347378810247,
+      "tilt_window": 0.17732263511978089,
+      "excess_height_window": 0.03059712121884028,
+      "excess_vz_window": 0.22253427550817528,
+      "support_speed_window": 0.976050665527582
+    },
+    "41.0": {
+      "leg_window": 0.16709647573530675,
+      "height_window": 0.038043105701605476,
+      "tilt_window": 0.21021051282063127,
+      "excess_height_window": 0.037716112434864044,
+      "excess_vz_window": 0.23129082621385652
+    },
+    "41.5": {
+      "leg_window": 0.16109816600879034,
+      "height_window": 0.040338929096857705,
+      "tilt_window": 0.19858875098948678,
+      "excess_height_window": 0.032986054321130116,
+      "excess_vz_window": 0.2400303866714239
+    },
+    "42.0": {
+      "leg_window": 0.13538236996158956,
+      "height_window": 0.04176447341839472,
+      "tilt_window": 0.16603486989003918,
+      "excess_height_window": 0.021290190120538077,
+      "excess_vz_window": 0.21025523825238146,
+      "support_speed_window": 0.5234257310246013
+    },
+    "42.5": {
+      "leg_window": 0.1275141164722542,
+      "height_window": 0.035867487986882524,
+      "tilt_window": 0.17802936379487316,
+      "excess_height_window": 0.023763760725657144,
+      "excess_vz_window": 0.18473589058344564,
+      "support_speed_window": 0.2926328966628838
+    },
+    "43.0": {
+      "leg_window": 0.1266086583584547,
+      "height_window": 0.031155592103799184,
+      "tilt_window": 0.16835992551719148,
+      "excess_height_window": 0.030817247728506726,
+      "excess_vz_window": 0.16610198044528562,
+      "support_speed_window": 0.17173413099371826
+    },
+    "43.5": {
+      "leg_window": 0.14200665773823856,
+      "height_window": 0.03122676501671473,
+      "tilt_window": 0.194617832818379,
+      "excess_height_window": 0.030311648150285083,
+      "excess_vz_window": 0.16000805153821906,
+      "support_speed_window": 0.3220847903611138
+    },
+    "44.0": {
+      "leg_window": 0.15676114088545243,
+      "height_window": 0.030738203525543212,
+      "tilt_window": 0.2376835509513815,
+      "excess_height_window": 0.029015695651372273,
+      "excess_vz_window": 0.20249443215628465,
+      "support_speed_window": 0.42252191143576057
+    },
+    "44.5": {
+      "leg_window": 0.15189202655106782,
+      "height_window": 0.03213874250650406,
+      "tilt_window": 0.2182966291097303,
+      "excess_height_window": 0.028319069345792133,
+      "excess_vz_window": 0.2114444328099489,
+      "support_speed_window": 0.38486034275381825
+    },
+    "45.0": {
+      "leg_window": 0.1282658795081079,
+      "height_window": 0.030750178396701813,
+      "tilt_window": 0.15701363320462403,
+      "excess_height_window": 0.026390783786773682,
+      "excess_vz_window": 0.22715527369951205
+    },
+    "45.5": {
+      "leg_window": 0.11591527277603744,
+      "height_window": 0.030186653435230255,
+      "tilt_window": 0.1429805327982952,
+      "excess_height_window": 0.025638535221417746,
+      "excess_vz_window": 0.21369808596869308,
+      "support_speed_window": 0.11771711443623645
+    },
+    "46.0": {
+      "leg_window": 0.1089235173609285,
+      "height_window": 0.03038676470518112,
+      "tilt_window": 0.1271438858952994,
+      "excess_height_window": 0.0272068833169483,
+      "excess_vz_window": 0.17408217692304223,
+      "support_speed_window": 0.11161289485223178
+    },
+    "46.5": {
+      "leg_window": 0.09973634974410137,
+      "height_window": 0.03599466929833094,
+      "tilt_window": 0.1470948591052244,
+      "excess_height_window": 0.029234348436196645,
+      "excess_vz_window": 0.1710438279559215,
+      "support_speed_window": 0.12259956942773179
+    },
+    "47.0": {
+      "height_window": 0.03930642147858938,
+      "tilt_window": 0.14221375694032756
+    },
+    "47.5": {
+      "height_window": 0.03853990177313486,
+      "tilt_window": 0.13142443158508588
+    },
+    "48.0": {
+      "height_window": 0.03146262953678767,
+      "tilt_window": 0.22338299747556448,
+      "support_speed_window": 0.10803441313590156
+    },
+    "48.5": {
+      "leg_window": 0.1250027343051301,
+      "height_window": 0.027966906229654948,
+      "tilt_window": 0.2018899497933065,
+      "excess_height_window": 0.029625974628660415,
+      "excess_vz_window": 0.1585339689751466,
+      "support_speed_window": 0.11423878389765464
+    },
+    "49.0": {
+      "leg_window": 0.12074457922484724,
+      "height_window": 0.028456306258837383,
+      "tilt_window": 0.17759594146162272,
+      "excess_height_window": 0.02778103011349837,
+      "excess_vz_window": 0.17355642456561327,
+      "support_speed_window": 0.13469510016098085
+    },
+    "49.5": {
+      "leg_window": 0.127433008911709,
+      "height_window": 0.026147539218266805,
+      "tilt_window": 0.2670228372514247,
+      "excess_height_window": 0.02599804639816284,
+      "excess_vz_window": 0.15930736313574015,
+      "support_speed_window": 0.13498706739318247
+    },
+    "50.0": {
+      "leg_window": 0.13145960203682383,
+      "height_window": 0.026653744280338287,
+      "tilt_window": 0.26643863130360845,
+      "excess_height_window": 0.026653744280338287,
+      "excess_vz_window": 0.13531421333861848,
+      "support_speed_window": 0.15690023234734932
+    },
+    "50.5": {
+      "leg_window": 0.11677050429085889,
+      "height_window": 0.027874749302864075,
+      "tilt_window": 0.17456560510831573,
+      "excess_height_window": 0.027786497175693512,
+      "excess_vz_window": 0.15713855375846225,
+      "support_speed_window": 0.29675471251675234
+    },
+    "51.0": {
+      "leg_window": 0.12034494221210479,
+      "height_window": 0.03121482441822688,
+      "tilt_window": 0.13034967754501847,
+      "excess_height_window": 0.027545324961344403,
+      "excess_vz_window": 0.17144998823602992,
+      "support_speed_window": 0.27865344641158146
+    },
+    "51.5": {
+      "leg_window": 0.1419077636611958,
+      "height_window": 0.030457905630270638,
+      "tilt_window": 0.1477689521651094,
+      "excess_height_window": 0.025691756109396616,
+      "excess_vz_window": 0.17496008807172375,
+      "support_speed_window": 0.16793315383908336
+    },
+    "52.0": {
+      "leg_window": 0.13502507508421938,
+      "height_window": 0.036791933874289195,
+      "tilt_window": 0.16429245937615633,
+      "excess_height_window": 0.02350769132375717,
+      "excess_vz_window": 0.2612539162486791,
+      "support_speed_window": 0.18449095482842742
+    },
+    "52.5": {
+      "leg_window": 0.12381777051836251,
+      "height_window": 0.03751835227012634,
+      "tilt_window": 0.1754516286899646,
+      "excess_height_window": 0.02423671672741572,
+      "excess_vz_window": 0.28016408910353974
+    },
+    "53.0": {
+      "leg_window": 0.13208733970299363,
+      "height_window": 0.025485900739828746,
+      "tilt_window": 0.14301881644253928,
+      "excess_height_window": 0.02326932261387507,
+      "excess_vz_window": 0.20651517707854508,
+      "support_speed_window": 0.3118693452679059
+    },
+    "53.5": {
+      "leg_window": 0.12516888502364357,
+      "height_window": 0.025364228188991547,
+      "tilt_window": 0.16516572010082503,
+      "excess_height_window": 0.02224513868490855,
+      "excess_vz_window": 0.1820073188841343,
+      "support_speed_window": 0.28354178022464804
+    },
+    "54.0": {
+      "leg_window": 0.11073788405085602,
+      "height_window": 0.02780038446187973,
+      "tilt_window": 0.16483958814914026,
+      "excess_height_window": 0.02457112431526184,
+      "excess_vz_window": 0.17689774806300798,
+      "support_speed_window": 0.2380370409647003
+    },
+    "54.5": {
+      "leg_window": 0.10683589264750482,
+      "height_window": 0.02945285499095917,
+      "tilt_window": 0.1412939431828757,
+      "excess_height_window": 0.02450831393400828,
+      "excess_vz_window": 0.1826961655790607,
+      "support_speed_window": 0.163491994056385
+    },
+    "55.0": {
+      "leg_window": 0.10446349111075204,
+      "height_window": 0.02969113459189733,
+      "tilt_window": 0.15047015310265122,
+      "excess_height_window": 0.025271214445432028,
+      "excess_vz_window": 0.17988140653818846,
+      "support_speed_window": 0.16805698885540055
+    },
+    "55.5": {
+      "leg_window": 0.10917146377265452,
+      "height_window": 0.02695758521556854,
+      "tilt_window": 0.16004187107086182,
+      "excess_height_window": 0.026140202581882478,
+      "excess_vz_window": 0.1635587869087855,
+      "support_speed_window": 0.16198384505589133
+    },
+    "56.0": {
+      "leg_window": 0.11943320234616597,
+      "height_window": 0.026107431054115296,
+      "tilt_window": 0.16942397555957237,
+      "excess_height_window": 0.021762060821056365,
+      "excess_vz_window": 0.1593852611320714,
+      "support_speed_window": 0.14713718049189387
+    },
+    "56.5": {
+      "leg_window": 0.1259720422141254,
+      "height_window": 0.030320741832256318,
+      "tilt_window": 0.168200510116294,
+      "excess_height_window": 0.021387483378251394,
+      "excess_vz_window": 0.1560242508413891,
+      "support_speed_window": 0.2287355869535046
+    },
+    "57.0": {
+      "leg_window": 0.1347879219117264,
+      "height_window": 0.030244567394256593,
+      "tilt_window": 0.15755754420223334,
+      "excess_height_window": 0.02449032078186671,
+      "excess_vz_window": 0.17994605222096044,
+      "support_speed_window": 0.32130468565272163
+    },
+    "57.5": {
+      "leg_window": 0.13847726638739308,
+      "height_window": 0.029506679077943167,
+      "tilt_window": 0.1403680605208501,
+      "excess_height_window": 0.028635867635409037,
+      "excess_vz_window": 0.19064994594703116,
+      "support_speed_window": 0.27123220875928244
+    },
+    "58.0": {
+      "leg_window": 0.11777105749895175,
+      "height_window": 0.029096060494581858,
+      "tilt_window": 0.16374590595563251,
+      "excess_height_window": 0.02870670924584071,
+      "excess_vz_window": 0.17432350005954503,
+      "support_speed_window": 0.22260157893016003
+    },
+    "58.5": {
+      "leg_window": 0.14424406893551348,
+      "height_window": 0.02830972890059153,
+      "tilt_window": 0.20105673229321835,
+      "excess_height_window": 0.02764908661444982,
+      "excess_vz_window": 0.15710726223886012,
+      "support_speed_window": 0.2749450300540775
+    },
+    "59.0": {
+      "leg_window": 0.16319595420112212,
+      "height_window": 0.02821581264336904,
+      "tilt_window": 0.21532558711866537,
+      "excess_height_window": 0.02772487719853719,
+      "excess_vz_window": 0.18427118986845015
+    },
+    "59.5": {
+      "leg_window": 0.14959505673497914,
+      "height_window": 0.033141544858614605,
+      "tilt_window": 0.20946696794281403,
+      "excess_height_window": 0.03014998624722163,
+      "excess_vz_window": 0.25656934653719266
+    },
+    "60.0": {
+      "leg_window": 0.17124950288484495,
+      "height_window": 0.03976812462011973,
+      "tilt_window": 0.2113621778041124,
+      "excess_height_window": 0.03703504592180252,
+      "excess_vz_window": 0.24339508955677347,
+      "support_speed_window": 0.38897485150024297
+    },
+    "60.5": {
+      "leg_window": 0.18372753797719876,
+      "height_window": 0.03722489138444264,
+      "tilt_window": 0.24101123678187528,
+      "excess_height_window": 0.03514661947886149,
+      "excess_vz_window": 0.19698269239316382,
+      "support_speed_window": 0.38897485150024297
+    },
+    "61.0": {
+      "leg_window": 0.18233587561796108,
+      "height_window": 0.03508007794618606,
+      "tilt_window": 0.21765099625413614,
+      "excess_height_window": 0.03203481634457906,
+      "excess_vz_window": 0.22701167420794566
+    },
+    "61.5": {
+      "leg_window": 0.16986559271812438,
+      "height_window": 0.033414588371912635,
+      "tilt_window": 0.24133684857438006,
+      "excess_height_window": 0.03171278804540634,
+      "excess_vz_window": 0.20333253033459187,
+      "support_speed_window": 0.2032138396531809
+    },
+    "62.0": {
+      "leg_window": 0.15119960821544132,
+      "height_window": 0.029393190840880073,
+      "tilt_window": 0.21628491087506213,
+      "excess_height_window": 0.024851477046807607,
+      "excess_vz_window": 0.187933165046076,
+      "support_speed_window": 0.307260749079287
+    },
+    "62.5": {
+      "leg_window": 0.14664417207241057,
+      "height_window": 0.02758174538612366,
+      "tilt_window": 0.19112728896861272,
+      "excess_height_window": 0.022673535645008087,
+      "excess_vz_window": 0.20101546787967284,
+      "support_speed_window": 0.4026074166508624
+    },
+    "63.0": {
+      "leg_window": 0.12190019545455774,
+      "height_window": 0.027344852685928345,
+      "tilt_window": 0.15455687191647788,
+      "excess_height_window": 0.02260186235109965,
+      "excess_vz_window": 0.1674130427651107,
+      "support_speed_window": 0.2773318980137507
+    },
+    "63.5": {
+      "leg_window": 0.1188065818262597,
+      "height_window": 0.025485857327779134,
+      "tilt_window": 0.17302882612061998,
+      "excess_height_window": 0.024490944544474286,
+      "excess_vz_window": 0.16505384398934742,
+      "support_speed_window": 0.1619786388236874
+    },
+    "64.0": {
+      "leg_window": 0.13271446574479343,
+      "height_window": 0.026350559095541636,
+      "tilt_window": 0.18785986734554172,
+      "excess_height_window": 0.024148309230804445,
+      "excess_vz_window": 0.17561281822621821,
+      "support_speed_window": 0.3795559322903864
+    },
+    "64.5": {
+      "leg_window": 0.1299057121326526,
+      "height_window": 0.025277424653371176,
+      "tilt_window": 0.1538822150354584,
+      "excess_height_window": 0.023371315797170004,
+      "excess_vz_window": 0.16737733049939074,
+      "support_speed_window": 0.4038567104384614
+    },
+    "65.0": {
+      "leg_window": 0.13163919925689696,
+      "height_window": 0.026199635962645212,
+      "tilt_window": 0.16169563360822697,
+      "excess_height_window": 0.022196071644624074,
+      "excess_vz_window": 0.1641383951778213,
+      "support_speed_window": 0.3401661959895864
+    },
+    "65.5": {
+      "leg_window": 0.14615220673382281,
+      "height_window": 0.028604208827018737,
+      "tilt_window": 0.18732473229368526,
+      "excess_height_window": 0.020798180798689524,
+      "excess_vz_window": 0.19125623177736997,
+      "support_speed_window": 0.5547662543726619
+    },
+    "66.0": {
+      "leg_window": 0.140381026280423,
+      "height_window": 0.028088610768318176,
+      "tilt_window": 0.20388602823019025,
+      "excess_height_window": 0.021167007287343345,
+      "excess_vz_window": 0.20677711910257734,
+      "support_speed_window": 0.2699080278765824
+    },
+    "66.5": {
+      "leg_window": 0.13925460254773497,
+      "height_window": 0.025946797331174214,
+      "tilt_window": 0.20966993012775975,
+      "excess_height_window": 0.023821048637231192,
+      "excess_vz_window": 0.20087627542515596,
+      "support_speed_window": 0.2373411886968339
+    },
+    "67.0": {
+      "leg_window": 0.13261413935571909,
+      "height_window": 0.0295924178759257,
+      "tilt_window": 0.21719296014557282,
+      "excess_height_window": 0.026740255355834963,
+      "excess_vz_window": 0.20171385208765663,
+      "support_speed_window": 0.2528864393926536
+    },
+    "67.5": {
+      "leg_window": 0.12025114990770816,
+      "height_window": 0.03183629075686137,
+      "tilt_window": 0.17580468196732302,
+      "excess_height_window": 0.02759274919827779,
+      "excess_vz_window": 0.22471180635193982
+    },
+    "68.0": {
+      "leg_window": 0.13136760619158544,
+      "height_window": 0.03269823471705119,
+      "tilt_window": 0.13948895848356185,
+      "excess_height_window": 0.029674587746461232,
+      "excess_vz_window": 0.2277441488703092
+    },
+    "68.5": {
+      "leg_window": 0.13367289341365296,
+      "height_window": 0.033284151156743366,
+      "tilt_window": 0.15949539519225558,
+      "excess_height_window": 0.03279440840085347,
+      "excess_vz_window": 0.18479698633154232
+    },
+    "69.0": {
+      "leg_window": 0.14359702004740635,
+      "height_window": 0.032555719812711076,
+      "tilt_window": 0.20046332870299616,
+      "excess_height_window": 0.029473434587319693,
+      "excess_vz_window": 0.1982305600494146,
+      "support_speed_window": 0.2597822430162341
+    },
+    "69.5": {
+      "leg_window": 0.14732368017857272,
+      "height_window": 0.03000708977381388,
+      "tilt_window": 0.2140480550378561,
+      "excess_height_window": 0.026715391675631205,
+      "excess_vz_window": 0.1784019133200248,
+      "support_speed_window": 0.22328628947561674
+    },
+    "70.0": {
+      "leg_window": 0.12326042670446138,
+      "height_window": 0.027192460397879283,
+      "tilt_window": 0.19251267128934463,
+      "excess_height_window": 0.02520814816157023,
+      "excess_vz_window": 0.17456482964257397,
+      "support_speed_window": 0.2652338319174359
+    },
+    "70.5": {
+      "leg_window": 0.10956514430232345,
+      "height_window": 0.027010481655597687,
+      "tilt_window": 0.22567106325179337,
+      "excess_height_window": 0.025011016329129537,
+      "excess_vz_window": 0.1998656823237737,
+      "support_speed_window": 0.2366140212837189
+    },
+    "71.0": {
+      "leg_window": 0.11850416677693526,
+      "height_window": 0.02709653119246165,
+      "tilt_window": 0.22359678239872058,
+      "excess_height_window": 0.02683247168858846,
+      "excess_vz_window": 0.19299001564582186,
+      "support_speed_window": 0.2731643443631715
+    },
+    "71.5": {
+      "leg_window": 0.1550305272390445,
+      "height_window": 0.033965425590674087,
+      "tilt_window": 0.22857602367798488,
+      "excess_height_window": 0.033721506992975867,
+      "excess_vz_window": 0.18251347210879126,
+      "support_speed_window": 0.29014665438483156
+    },
+    "72.0": {
+      "leg_window": 0.1552043839295705,
+      "height_window": 0.03568529446919759,
+      "tilt_window": 0.22853066808233657,
+      "excess_height_window": 0.035636195441087086,
+      "excess_vz_window": 0.17820005300144354,
+      "support_speed_window": 0.3588129325288658
+    },
+    "72.5": {
+      "leg_window": 0.13572882182275256,
+      "height_window": 0.03323696911334992,
+      "tilt_window": 0.24979650127391018,
+      "excess_height_window": 0.03322138647238414,
+      "excess_vz_window": 0.16761182696868976,
+      "support_speed_window": 0.3393993903184309
+    },
+    "73.0": {
+      "leg_window": 0.12675184914842247,
+      "height_window": 0.030842678050200144,
+      "tilt_window": 0.2351523939768473,
+      "excess_height_window": 0.029755603770414987,
+      "excess_vz_window": 0.1900689950461189,
+      "support_speed_window": 0.2033326847711578
+    },
+    "73.5": {
+      "leg_window": 0.133368989645193,
+      "height_window": 0.026441281139850618,
+      "tilt_window": 0.2389395238086581,
+      "excess_height_window": 0.024307508071263632,
+      "excess_vz_window": 0.19493982815494137,
+      "support_speed_window": 0.2960073406589045
+    },
+    "74.0": {
+      "leg_window": 0.1380002443616589,
+      "height_window": 0.02899953265984853,
+      "tilt_window": 0.23553747427960234,
+      "excess_height_window": 0.026921107669671377,
+      "excess_vz_window": 0.15634700872004031,
+      "support_speed_window": 0.34645144525122035
+    },
+    "74.5": {
+      "leg_window": 0.1213921635163327,
+      "height_window": 0.03030671974023183,
+      "tilt_window": 0.17592735135306914,
+      "excess_height_window": 0.028305778404076894,
+      "excess_vz_window": 0.17136312797199935,
+      "support_speed_window": 0.20902264061927173
+    },
+    "75.0": {
+      "leg_window": 0.10001804796357949,
+      "height_window": 0.029280913571516673,
+      "tilt_window": 0.11287432255378613,
+      "excess_height_window": 0.028960052827994028,
+      "excess_vz_window": 0.16603494524334866,
+      "support_speed_window": 0.11955359969947797
+    },
+    "75.5": {
+      "leg_window": 0.10213214080780744,
+      "height_window": 0.02862162391344706,
+      "tilt_window": 0.10410015765887995,
+      "excess_height_window": 0.029975647264056736,
+      "excess_vz_window": 0.14006189267461497,
+      "support_speed_window": 0.13191660158025723
+    },
+    "76.0": {
+      "height_window": 0.02780997852484385,
+      "tilt_window": 0.0987798729868761,
+      "support_speed_window": 0.15685816559036644
+    },
+    "76.5": {
+      "height_window": 0.038512458503246305,
+      "tilt_window": 0.11837364939817538
+    },
+    "77.0": {
+      "height_window": 0.03919839859008789,
+      "tilt_window": 0.14939271251360575,
+      "support_speed_window": 0.4664415584364906
+    },
+    "77.5": {
+      "height_window": 0.029443932672341664,
+      "tilt_window": 0.14765007537168762,
+      "support_speed_window": 0.391355535946363
+    },
+    "78.0": {
+      "height_window": 0.052010404864947,
+      "tilt_window": 0.17199941396713253,
+      "support_speed_window": 0.3257551649492234
+    },
+    "78.5": {
+      "height_window": 0.06179694543282191,
+      "tilt_window": 0.2309801342897117
+    },
+    "79.0": {
+      "height_window": 0.0414305113752683,
+      "tilt_window": 0.20658240296877917
+    },
+    "79.5": {
+      "height_window": 0.035591885447502136,
+      "tilt_window": 0.14757744551325835,
+      "support_speed_window": 0.18643346642061848
+    },
+    "80.0": {
+      "leg_window": 0.12585982692117492,
+      "height_window": 0.02889279156923294,
+      "tilt_window": 0.12241765179050465,
+      "excess_height_window": 0.025099963810708788,
+      "excess_vz_window": 0.18278916504234075,
+      "support_speed_window": 0.18594965480600617
+    },
+    "80.5": {
+      "leg_window": 0.1286819365931054,
+      "height_window": 0.026292115052541098,
+      "tilt_window": 0.16386108537049343,
+      "excess_height_window": 0.02515878637631734,
+      "excess_vz_window": 0.18757915491859117,
+      "support_speed_window": 0.24991744540390315
+    },
+    "81.0": {
+      "leg_window": 0.14386065071448684,
+      "height_window": 0.026509218712647754,
+      "tilt_window": 0.21540455220888058,
+      "excess_height_window": 0.02593293289343516,
+      "excess_vz_window": 0.1942978056396047,
+      "support_speed_window": 0.24564903944316835
+    },
+    "81.5": {
+      "leg_window": 0.14723307808861136,
+      "height_window": 0.028776408433914186,
+      "tilt_window": 0.1801919026300311,
+      "excess_height_window": 0.026028039554754894,
+      "excess_vz_window": 0.20464148588478565,
+      "support_speed_window": 0.1899734649016422
+    },
+    "82.0": {
+      "leg_window": 0.13256427818909286,
+      "height_window": 0.03125142534573873,
+      "tilt_window": 0.16828865121429165,
+      "excess_height_window": 0.03008668005466461,
+      "excess_vz_window": 0.21477236440405248,
+      "support_speed_window": 0.21121676440699955
+    }
+  },
+  "events": {
+    "0": {
+      "takeoff_offset_s": 0.1000003814697268,
+      "landing_offset_s": 0.06666831970214938,
+      "min_feet_distance_m": 0.27147392809391024
+    },
+    "1": {
+      "takeoff_offset_s": 0.13333422342936196,
+      "landing_offset_s": 0.06666692097982031,
+      "min_feet_distance_m": 0.26670591413974765
+    },
+    "2": {
+      "takeoff_offset_s": 0.09999821980794389,
+      "landing_offset_s": 0.06666819254557434,
+      "min_feet_distance_m": 0.2755716878175736
+    },
+    "3": {
+      "takeoff_offset_s": 0.10000025431315175,
+      "landing_offset_s": 0.06666819254557434,
+      "min_feet_distance_m": 0.23868408679962158
+    },
+    "11": {
+      "takeoff_offset_s": 0.10000228881835606,
+      "landing_offset_s": 0.0666697184244749,
+      "min_feet_distance_m": 0.25652558982372287
+    },
+    "12": {
+      "takeoff_offset_s": 0.10000127156575568,
+      "landing_offset_s": 0.06666920979817471,
+      "min_feet_distance_m": 0.24794262528419495
+    },
+    "22": {
+      "takeoff_offset_s": 0.1333404541015606,
+      "landing_offset_s": 0.10000406901041382,
+      "min_feet_distance_m": 0.18249302983283996
+    },
+    "23": {
+      "takeoff_offset_s": 0.09999643961588257,
+      "landing_offset_s": 0.06667378743489773,
+      "min_feet_distance_m": 0.28088542699813845
+    },
+    "24": {
+      "takeoff_offset_s": 0.10000203450521307,
+      "landing_offset_s": 0.06667378743489773,
+      "min_feet_distance_m": 0.23144489407539368
+    }
+  },
+  "provenance": [
+    {
+      "completed_iterations": 4400,
+      "checkpoint": "I:\\robot_isaac\\logs\\rsl_rl\\g1_auto_jump_conditional\\ji_le_jing_tu_collision_corrected_v7\\2026-10-28_00-28-28\\model_4399.pt",
+      "seeds": [
+        42,
+        43,
+        44
+      ]
+    },
+    {
+      "completed_iterations": 6000,
+      "checkpoint": "I:\\robot_isaac\\logs\\rsl_rl\\g1_auto_jump_conditional\\ji_le_jing_tu_collision_corrected_v7\\2026-10-28_00-28-28\\model_5999.pt",
+      "seeds": [
+        42,
+        43,
+        44
+      ]
+    }
+  ]
+}

@@ -50,6 +50,10 @@ from source.train_workflow.utils.motion.resolve import (  # noqa: E402
 from isaaclab.app import AppLauncher  # noqa: E402
 
 parser = argparse.ArgumentParser(description="Play a G1 dance tracking checkpoint.")
+parser.add_argument("--eval_motion_start", type=float, default=None,
+                    help="Multi/Auto-jump task: evaluate a 2.6s clip at this source time; default full motion.")
+parser.add_argument("--eval_motion_starts", type=float, nargs="+", default=None,
+                    help="Multi-jump task: cycle clips; repeat each seed across the clip list.")
 parser.add_argument("--jump_diagnostics", action="store_true",
                     help="Record physics-step jump telemetry and export CSV/NPZ/PNG per rollout.")
 parser.add_argument("--jump_diagnostics_dir", default="output/jump-diagnostics")
@@ -57,6 +61,7 @@ parser.add_argument("--jump_diagnostics_env", type=int, default=0)
 parser.add_argument("--jump_diagnostics_start", type=float, default=0., help="First recorded rollout second.")
 parser.add_argument("--jump_diagnostics_end", type=float, default=None, help="Last recorded rollout second.")
 parser.add_argument("--jump_contact_threshold", type=float, default=5., help="Foot contact force threshold, N.")
+parser.add_argument("--auto_jump_review", type=str, default=None)
 parser.add_argument("--deployment_bundle", type=str, default=None,
                     help="Load a trusted single-file deployment bundle without reading H5.")
 parser.add_argument("--export_deployment_bundle", type=str, default=None,
@@ -708,6 +713,14 @@ def _resolve_dance_wav_path(dance_name: str | None) -> str | None:
     if not dance_name:
         return None
     stem = normalize_dance_stem(dance_name)
+    from source.train_workflow.utils.motion.audio import resolve_motion_audio
+    for suffix in ("_z_editted.h5", ".h5", "_z_editted.hdf5", ".hdf5"):
+        motion = os.path.join(DANCE_DIR, stem + suffix)
+        if os.path.isfile(motion):
+            resolved = resolve_motion_audio(motion)
+            if resolved:
+                return resolved
+            break
     try:
         entry = _read_dance_asset_catalog().get(stem)
         configured = entry[1] if entry else None
@@ -1112,7 +1125,9 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
             params["window_seconds"] = float(new_ws)
         if "random_start" in params:
             params["random_start"] = False
-        if args_cli.full_window_episode:
+        if getattr(env_cfg, "jump_specialist", False) and "segment_seconds" in params:
+            params["segment_seconds"] = float(env_cfg.episode_length_s)
+        elif args_cli.full_window_episode:
             if "segment_seconds" in params:
                 if new_ws is not None:
                     seg_s = float(new_ws)
@@ -1158,10 +1173,12 @@ def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
             joint_pos_action.use_reference_residual = bool(new_use_reference_residual)
 
     base_episode_s = float(new_ws) if new_ws is not None else float(getattr(env_cfg, "episode_length_s", 0.0))
+    if getattr(env_cfg, "jump_specialist", False):
+        base_episode_s = float(env_cfg.episode_length_s)
     if extend_episode_tail:
         env_cfg.episode_length_s = float(base_episode_s + post_tail_s)
     elif new_ws is not None:
-        env_cfg.episode_length_s = float(new_ws)
+        env_cfg.episode_length_s = base_episode_s
 
 
 def _sync_runtime_motion_overrides(env_unwrapped, *, h5_path: str, window_seconds: float) -> None:
@@ -1390,6 +1407,18 @@ def main() -> None:
     else:
         print("[INFO] Using actuator and collision configuration embedded in deployment bundle.")
     _apply_motion_overrides(env_cfg)
+    if getattr(env_cfg, "auto_jump", False) and _DEPLOYMENT_BUNDLE is None:
+        from source.train_workflow.utils.auto_jump_training import prepare_auto_config
+        auto_h5, auto_window = _find_h5_window(env_cfg)
+        prepare_auto_config(env_cfg, auto_h5, auto_window, args_cli.auto_jump_review)
+    if getattr(env_cfg, "jump_multi", False) or (getattr(env_cfg, "auto_jump", False) and
+                                               (args_cli.eval_motion_start is not None or args_cli.eval_motion_starts)):
+        if args_cli.eval_motion_starts:
+            args_cli.eval_motion_start = args_cli.eval_motion_starts[0]
+        start = args_cli.eval_motion_start
+        env_cfg.episode_length_s = 2.6 if start is not None else 2500/30.
+        env_cfg.events.reset_robot_joints.params.update(motion_start_choices=None,
+            motion_start_seconds=float(start or 0.), segment_seconds=env_cfg.episode_length_s)
     _apply_play_viewer(env_cfg)
     stage_background_loaded = False
     if not args_cli.no_stage:
@@ -1442,6 +1471,12 @@ def main() -> None:
     if resume_path:
         print(f"[INFO] Loading checkpoint: {resume_path}")
         env_cfg.log_dir = os.path.dirname(resume_path)
+        if getattr(env_cfg,"auto_jump",False):
+            header = torch.load(resume_path,map_location="cpu",weights_only=False)
+            if any(name.startswith("jump_mlp.") for name in header["actor_state_dict"]):
+                env_cfg.auto_jump_exact_residual = True
+                agent_cfg.actor.class_name = "source.train_workflow.utils.exact_phase_policy:ExactPhaseResidualPolicy"
+            del header
     else:
         print("[WARN] No runnable policy selected at startup; Play will stay disabled.")
 
@@ -1459,7 +1494,7 @@ def main() -> None:
     obs_adapter = None
     if resume_path:
         try:
-            runner.load(resume_path)
+            runner.load(resume_path, load_cfg={"actor": True, "critic": True})
             policy = runner.get_inference_policy(device=env_unwrapped.device)
             obs = _extract_policy_obs_tensor(obs_raw)
             obs_adapter = _build_policy_obs_adapter(policy, obs_raw, obs)
@@ -1509,6 +1544,9 @@ def main() -> None:
         print(f"[WARN] --post_play_seconds clamped to {post_play_seconds:.3f}")
     post_play_steps = int(round(control_hz * post_play_seconds)) if args_cli.play else 0
     rollout_steps = int(T + post_play_steps)
+    if getattr(env_cfg, "jump_specialist", False) or (getattr(env_cfg, "auto_jump", False) and
+                                                   (args_cli.eval_motion_start is not None or args_cli.eval_motion_starts)):
+        rollout_steps = int(round(env_cfg.episode_length_s * control_hz))
     if post_play_steps > 0:
         print(
             f"[INFO] --play tail enabled: +{post_play_steps} steps "
@@ -1718,6 +1756,10 @@ def main() -> None:
             MOTION_H5_PATH = new_h5
         if dance_changed or window_changed:
             _apply_motion_overrides(env_cfg)
+            if getattr(env_cfg, "auto_jump", False):
+                from source.train_workflow.utils.auto_jump_training import prepare_auto_config
+                auto_h5, auto_window = _find_h5_window(env_cfg)
+                prepare_auto_config(env_cfg, auto_h5, auto_window, args_cli.auto_jump_review)
             h5_cfg, ws_cfg = _find_h5_window(env_cfg)
             _sync_runtime_motion_overrides(env_unwrapped, h5_path=h5_cfg, window_seconds=ws_cfg)
             h5_path = str(h5_cfg)
@@ -1781,7 +1823,12 @@ def main() -> None:
 
         if target_policy_path != resume_path:
             try:
-                runner.load(target_policy_path)
+                header = torch.load(target_policy_path,map_location="cpu",weights_only=False)
+                target_exact = any(name.startswith("jump_mlp.") for name in header["actor_state_dict"])
+                del header
+                if target_exact != bool(getattr(env_cfg,"auto_jump_exact_residual",False)):
+                    raise ValueError("Policy observation/architecture differs; restart eval with the target checkpoint")
+                runner.load(target_policy_path, load_cfg={"actor": True, "critic": True})
                 policy = runner.get_inference_policy(device=env_unwrapped.device)
                 obs = _extract_policy_obs_tensor(obs_raw)
                 obs_adapter = _build_policy_obs_adapter(policy, obs_raw, obs)
@@ -1865,7 +1912,10 @@ def main() -> None:
     def _next_play_seed(*, episode_idx: int) -> int:
         nonlocal play_seed_counter
         if args_cli.seed is not None:
-            return (int(args_cli.seed) + int(episode_idx)) & 0x7FFFFFFF
+            seed_episode = int(episode_idx)
+            if args_cli.eval_motion_starts:
+                seed_episode //= len(args_cli.eval_motion_starts)
+            return (int(args_cli.seed) + seed_episode) & 0x7FFFFFFF
         play_seed_counter += 1
         seed = (time.time_ns() + int(episode_idx) * 131 + play_seed_counter * 1009) & 0x7FFFFFFF
         return int(seed if seed > 0 else 1)
@@ -1880,6 +1930,10 @@ def main() -> None:
         torch.manual_seed(rollout_seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(rollout_seed)
+        if args_cli.eval_motion_starts:
+            start = args_cli.eval_motion_starts[episode_idx % len(args_cli.eval_motion_starts)]
+            env_cfg.events.reset_robot_joints.params["motion_start_seconds"] = start
+            env_unwrapped.event_manager.get_term_cfg("reset_robot_joints").params["motion_start_seconds"] = start
         obs_raw, _ = _env_reset(wrapped, seed=rollout_seed)
         if jump_diagnostics is not None:
             jump_diagnostics.begin(episode_idx, buf, {
@@ -1887,12 +1941,16 @@ def main() -> None:
                 "reference": h5_path, "deployment_bundle": args_cli.deployment_bundle,
                 "seed": rollout_seed, "action_smooth_alpha": smooth_alpha,
                 "play_mode": bool(args_cli.play),
+                "task": args_cli.task,
+                "reference_variant": "v2_leg_takeoff" if getattr(env_cfg, "jump_reference_shaping", False) else "original",
+                "reward_requires_full_step_no_contact": bool(getattr(env_cfg, "jump_full_step_contact", False)),
             })
         if playback.record_avi_enabled and not getattr(args_cli, "headless", False):
             _start_live_avi_recording(episode_idx=episode_idx)
         rollout_wall_start = time.perf_counter()
         if playback.wav_path and playback.audio_enabled and (not playback.record_avi_enabled):
-            audio_util.play_wav_async(playback.wav_path)
+            start_seconds = float(env_cfg.events.reset_robot_joints.params.get("motion_start_seconds") or 0.)
+            audio_util.play_wav_async(playback.wav_path, start_sec=start_seconds)
         playback.playing = True
         playback.stop_requested = False
         playback.policy_step = 0

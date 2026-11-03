@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from source.train_workflow.utils.jump_diagnostics import JumpDiagnostics
 from source.train_workflow.utils.jump_analysis import analyze, window_metrics
+from source.train_workflow.scripts.analyze_turn import spectral_rms,control_rows
 
 
 class Scene(dict):
@@ -27,6 +28,9 @@ class Buffer:
 
     def q_ref_abs(self, steps):
         return torch.full((len(steps), 1), .25)
+
+    def root_quat_wxyz(self, steps):
+        return torch.tensor([[1.,0.,0.,0.]]).repeat(len(steps),1)
 
 
 class DiagnosticsTests(unittest.TestCase):
@@ -89,8 +93,39 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(recorder.rows[-1]["both_feet_no_contact"], 1)
         recorder.close()
 
+    def test_extended_turn_channels_preserve_target_reference_alignment(self):
+        data=self.scene["robot"].data
+        data.body_link_lin_vel_w=torch.tensor([[[.1,.2,.3],[.4,.5,.6]]])
+        data.body_link_ang_vel_w=torch.tensor([[[0.,0.,2.],[0.,0.,-3.]]])
+        data.joint_vel=torch.tensor([[.7]])
+        data.root_state_w[0,6]=1.;data.body_link_pose_w[:,:,6]=1.
+        recorder=JumpDiagnostics(self.env,self.temp.name,extended=True)
+        recorder.begin(0,Buffer(),{})
+        recorder.begin_control(torch.tensor([390]))
+        self.scene.update(dt=1/120.);recorder.end_control()
+        row=recorder.rows[0]
+        self.assertAlmostEqual(row["ref_time_s"],13.)
+        self.assertEqual(row["left_foot_wz_rad_s"],2.)
+        self.assertEqual(row["right_foot_wz_rad_s"],-3.)
+        self.assertAlmostEqual(row["left_knee_joint_target_rad"],.3)
+        self.assertAlmostEqual(row["left_knee_joint_velocity_rad_s"],.7)
+        self.assertEqual(row["root_yaw_rad"],0.)
+        recorder.close()
+
 
 class AnalysisTests(unittest.TestCase):
+    def test_hf_comparison_separates_smooth_reference_and_oscillating_residual(self):
+        t=np.arange(60)/30.
+        ref=.3*np.sin(2*np.pi*t);residual=.1*np.sin(2*np.pi*6*t)
+        self.assertLess(spectral_rms(ref,30),.001)
+        self.assertAlmostEqual(spectral_rms(residual,30),.1/np.sqrt(2),places=3)
+        self.assertGreater(spectral_rms(ref+residual,30),.06)
+
+    def test_partial_control_intervals_are_removed_before_differentiating(self):
+        steps=np.array([299,299,299,300,300,300,300,301,301,301,301,302])
+        data=dict(ref_time_s=steps/30.,sample_dt_s=np.full(len(steps),1/120.))
+        self.assertEqual(control_rows(data,30.).tolist(),[6,10])
+
     def data(self, t, ref, actual):
         return dict(time_s=t, root_z_m=actual, ref_root_z_m=ref,
                     both_feet_no_contact=np.zeros(len(t)))

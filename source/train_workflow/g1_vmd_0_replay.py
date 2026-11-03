@@ -51,14 +51,24 @@ DANCES_CONFIG_PATH = os.path.join(_SCRIPT_DIR, "dances_config.yaml")
 
 parser = build_arg_parser(POSE_DIR)
 args_cli = parser.parse_args()
+if args_cli.auto_record_h5 and (not args_cli.motion_csv or args_cli.auto_play or args_cli.auto_record_collision_corrected_h5):
+    parser.error("--auto_record_h5 requires --motion_csv and cannot be combined with auto play/collision recording")
+if args_cli.exit_after_h5_record and not args_cli.auto_record_h5:
+    parser.error("--exit_after_h5_record requires --auto_record_h5")
+if args_cli.record_avi_path and (not args_cli.motion_h5 or not args_cli.auto_play or args_cli.play_speed != 1.0):
+    parser.error("--record_avi_path requires --motion_h5 --auto_play and --play_speed 1")
+if args_cli.exit_after_playback and not args_cli.record_avi_path:
+    parser.error("--exit_after_playback requires --record_avi_path")
+if args_cli.record_avi_path and os.path.exists(args_cli.record_avi_path):
+    parser.error("--record_avi_path already exists; choose a new output path")
 if args_cli.motion_h5 and args_cli.motion_csv:
     parser.error("Choose --motion_h5 or --motion_csv")
 if (args_cli.auto_play or args_cli.motion_wav) and not (args_cli.motion_h5 or args_cli.motion_csv):
     parser.error("--auto_play/--motion_wav requires --motion_h5 or --motion_csv")
-if args_cli.auto_record_h5_without_collision and (not args_cli.motion_csv or args_cli.auto_play):
-    parser.error("--auto_record_h5_without_collision requires --motion_csv and cannot be combined with --auto_play")
-if args_cli.exit_after_collision_record and not args_cli.auto_record_h5_without_collision:
-    parser.error("--exit_after_collision_record requires --auto_record_h5_without_collision")
+if args_cli.auto_record_collision_corrected_h5 and (not args_cli.motion_csv or args_cli.auto_play):
+    parser.error("--auto_record_collision_corrected_h5 requires --motion_csv and cannot be combined with --auto_play")
+if args_cli.exit_after_collision_record and not args_cli.auto_record_collision_corrected_h5:
+    parser.error("--exit_after_collision_record requires --auto_record_collision_corrected_h5")
 if args_cli.motion_csv:
     args_cli.motion_csv = os.path.abspath(args_cli.motion_csv)
     if not os.path.isfile(args_cli.motion_csv) or Path(args_cli.motion_csv).suffix.lower() != ".csv":
@@ -852,7 +862,10 @@ def main():
     h5_recorder: PlaybackH5Recorder | None = None
     h5_record_frame_cursor = 0
     h5_record_dance_key: str | None = None
-    need_record_avi_ui = False
+    need_record_avi_ui = bool(args_cli.record_avi_path)
+    batch_video_frame = 0
+    batch_video_complete = False
+    batch_h5_complete = False
     avi_recorder: ViewportAviRecorder | None = None
     avi_recording_active = False
     last_avi_motion_frame: int | None = None
@@ -1508,7 +1521,7 @@ def main():
         if avi_recording_active:
             _finalize_avi_recording(reason="restart")
         play_hz = max(1.0, float(VMD_FPS) * float(args_cli.play_speed))
-        out_path = default_playback_avi_path(media_dir=_MEDIA_DIR, motion_label=motion_label)
+        out_path = args_cli.record_avi_path or default_playback_avi_path(media_dir=_MEDIA_DIR, motion_label=motion_label)
         try:
             avi_recorder = ViewportAviRecorder(fps=play_hz)
             avi_recorder.start(out_path)
@@ -1516,6 +1529,8 @@ def main():
             avi_recorder = None
             avi_recording_active = False
             last_avi_motion_frame = None
+            if args_cli.record_avi_path:
+                raise
             print(f"[ERROR] AVI recording failed to start: {exc}")
             return
         avi_recording_active = True
@@ -1534,6 +1549,8 @@ def main():
         if last_avi_motion_frame is None:
             if avi_recorder.capture_frame():
                 last_avi_motion_frame = mf
+            elif args_cli.record_avi_path:
+                raise RuntimeError(f"Batch video capture failed at frame {mf}")
             return
         if mf == last_avi_motion_frame:
             return
@@ -1543,6 +1560,8 @@ def main():
                 avi_recorder.write_duplicate_frames(gap)
             if avi_recorder.capture_frame():
                 last_avi_motion_frame = mf
+            elif args_cli.record_avi_path:
+                raise RuntimeError(f"Batch video capture failed at frame {mf}")
         else:
             if avi_recorder.capture_frame():
                 last_avi_motion_frame = mf
@@ -1558,6 +1577,7 @@ def main():
             last_avi_motion_frame = int(max_frame)
 
     def _finalize_avi_recording(*, reason: str) -> None:
+        nonlocal batch_video_complete
         nonlocal avi_recorder, avi_recording_active, last_avi_motion_frame, pending_avi_finalize_max_frame
         if not avi_recording_active and avi_recorder is None:
             return
@@ -1573,6 +1593,8 @@ def main():
         try:
             out_path = recorder.stop()
         except Exception as exc:
+            if args_cli.record_avi_path:
+                raise
             print(f"[ERROR] AVI recording finalize failed ({reason}): {exc}")
             return
         if out_path:
@@ -1584,6 +1606,10 @@ def main():
             )
         else:
             print(f"[WARN] AVI recording produced no frames ({reason})")
+        if args_cli.record_avi_path and reason == "complete":
+            if not out_path or frame_count != batch_video_frame:
+                raise RuntimeError("Batch video is incomplete")
+            batch_video_complete = True
 
     def _cancel_avi_recording(*, reason: str) -> None:
         nonlocal avi_recorder, avi_recording_active, last_avi_motion_frame, pending_avi_finalize_max_frame
@@ -1670,6 +1696,7 @@ def main():
         print(f"[INFO] H5 recording cancelled ({reason})")
 
     def _finalize_h5_recording() -> None:
+        nonlocal batch_h5_complete
         nonlocal h5_record_busy, h5_record_active, h5_recorder, h5_record_frame_cursor
         nonlocal h5_record_dance_key, h5_record_without_collision
         nonlocal is_playing, playback_paused, motion_has_wav, current_motion_label
@@ -1695,6 +1722,7 @@ def main():
                 print(f"[INFO] Collision repair started in background; log: {collision_job.state['log']}", flush=True)
                 return
             out_path = recorder.write()
+            batch_h5_complete = True
             print(f"[INFO] H5 recording complete: {out_path} ({label})")
             if dkey:
                 h5_bundle = load_motion(out_path)
@@ -1824,11 +1852,19 @@ def main():
             foot_ik_viz_cfg=foot_ik_viz_cfg,
         )
 
-    if args_cli.auto_record_h5_without_collision:
+    if args_cli.auto_record_collision_corrected_h5:
         _on_collision_record("ui:single_csv")
+    elif args_cli.auto_record_h5:
+        _on_record_h5_request_from_ui("ui:single_csv")
     completed_loops = 0
     while simulation_app.is_running():
         collision_job.poll()
+        if args_cli.exit_after_h5_record and batch_h5_complete:
+            break
+        if args_cli.auto_record_h5 and pending_record_h5_key is None and not h5_record_active and not h5_record_busy and not batch_h5_complete:
+            raise RuntimeError("Automatic H5 capture failed; see replay errors above")
+        if args_cli.exit_after_playback and batch_video_complete:
+            break
         if not h5_record_active and collision_job.state["state"] in ("done", "failed", "cancelled"):
             if h5_record_busy:
                 print(f"[COLLISION H5] {collision_job.state}", flush=True)
@@ -2063,6 +2099,11 @@ def main():
                 if h5_record_active:
                     frame = max(0, min(int(h5_record_frame_cursor), max_frame))
                     frame_float = float(frame)
+                    playback_paused = False
+                elif args_cli.record_avi_path:
+                    frame = min(batch_video_frame, max_frame)
+                    frame_float = float(frame)
+                    batch_video_frame += 1
                     playback_paused = False
                 else:
                     if pending_seek_frame is not None:
@@ -2318,6 +2359,10 @@ def main():
 
     collision_job.close()
     env.close()
+    if args_cli.exit_after_h5_record and not batch_h5_complete:
+        raise RuntimeError("H5 recording interrupted before completion")
+    if args_cli.exit_after_playback and not batch_video_complete:
+        raise RuntimeError("Video recording interrupted before completion")
 
 
 if __name__ == "__main__":

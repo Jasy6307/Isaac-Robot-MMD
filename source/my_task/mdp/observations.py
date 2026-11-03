@@ -13,6 +13,7 @@ from isaaclab.managers import SceneEntityCfg
 from source.my_task.mdp.joint_groups import get_cached_joint_scales
 from source.my_task.mdp.root_reference import root_reference_position_w, root_yaw_error_rad
 from source.my_task.motion_reference import get_or_create_motion_buffer, motion_steps
+from source.my_task.mdp.validation_random import uniform_like
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -50,7 +51,7 @@ def joint_pos_rel_group_noise(
         return obs
     asset: Articulation = env.scene[asset_cfg.name]
     scales = _joint_scales_for_obs(env, asset, asset_cfg, "obs_pos", joint_noise_scale_by_expr)
-    noise = (torch.rand_like(obs) * 2.0 - 1.0) * float(pos_noise) * scales.unsqueeze(0)
+    noise = (uniform_like(env, obs, "obs:joint_pos") * 2.0 - 1.0) * float(pos_noise) * scales.unsqueeze(0)
     return obs + noise
 
 
@@ -66,7 +67,7 @@ def joint_vel_rel_group_noise(
         return obs
     asset: Articulation = env.scene[asset_cfg.name]
     scales = _joint_scales_for_obs(env, asset, asset_cfg, "obs_vel", joint_noise_scale_by_expr)
-    noise = (torch.rand_like(obs) * 2.0 - 1.0) * float(vel_noise) * scales.unsqueeze(0)
+    noise = (uniform_like(env, obs, "obs:joint_vel") * 2.0 - 1.0) * float(vel_noise) * scales.unsqueeze(0)
     return obs + noise
 
 

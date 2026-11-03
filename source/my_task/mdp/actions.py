@@ -222,6 +222,10 @@ class ReferenceResidualJointPositionAction(ReferenceFrozenJointPositionAction):
             self._raw_actions[:, self._frozen_action_cols] = 0.0
             self._processed_actions[:, self._frozen_action_cols] = q_ref[:, self._frozen_action_cols]
 
+        if getattr(self._env.cfg,"turn_smoothing_enabled",False):
+            from source.my_task.mdp.turn_smoothing import capture_residual
+            capture_residual(self._env,self,q_ref)
+
 
 @configclass
 class ReferenceResidualJointPositionActionCfg(ReferenceFrozenJointPositionActionCfg):

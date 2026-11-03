@@ -80,3 +80,61 @@ class G1VmdTrainC2PPORunnerCfg(G1VmdTrainC1PPORunnerCfg):
     def __post_init__(self) -> None:
         super().__post_init__()
         self.experiment_name = "g1_dance_track_c2_residual"
+
+
+@configclass
+class G1VmdJumpPPORunnerCfg(G1VmdTrainC1PPORunnerCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.experiment_name = "g1_jump_specialist"
+        self.num_steps_per_env = 30
+        self.save_interval = 20
+        self.algorithm.learning_rate = 1.e-4
+
+
+@configclass
+class G1VmdJumpV2PPORunnerCfg(G1VmdJumpPPORunnerCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.experiment_name = "g1_jump_specialist_v2"
+        self.actor.distribution_cfg.init_std = .45
+        self.algorithm.entropy_coef = .001
+
+
+@configclass
+class G1VmdJumpMultiPPORunnerCfg(G1VmdJumpV2PPORunnerCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.experiment_name = "g1_jump_multi"
+
+
+@configclass
+class G1VmdJumpFullPPORunnerCfg(G1VmdJumpMultiPPORunnerCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.experiment_name = "g1_jump_full"
+        self.algorithm.learning_rate = 3.e-5
+
+
+@configclass
+class G1VmdAutoJumpPPORunnerCfg(G1VmdTrainC1PPORunnerCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.experiment_name = "g1_auto_jump"
+        # 48 * 10000 retains the old 60 * 8000 environment-step budget.
+        self.num_steps_per_env = 48
+        self.max_iterations = 10000
+        self.save_interval = 250
+        self.actor.distribution_cfg.init_std = .6
+        self.algorithm.learning_rate = 1.e-3
+        self.algorithm.class_name = "source.train_workflow.utils.bounded_ppo:BoundedAdaptivePPO"
+
+
+@configclass
+class G1VmdAutoJumpConditionalPPORunnerCfg(G1VmdAutoJumpPPORunnerCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.experiment_name="g1_auto_jump_conditional"
+        self.actor.class_name="source.train_workflow.utils.exact_phase_policy:ExactPhaseResidualPolicy"
+        self.actor.freeze_base=False
+        self.actor.freeze_normalization=False

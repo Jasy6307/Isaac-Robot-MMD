@@ -58,6 +58,8 @@ parser.add_argument("--num_envs", type=int, default=512, help="Number of paralle
 parser.add_argument(
     "--max_iterations", type=int, default=None, help="Override PPO iterations."
 )
+parser.add_argument("--num_steps_per_env",type=int,default=None,
+                    help="Control steps collected per environment per PPO iteration; episodes continue across iterations. Auto-Jump default: 48.")
 parser.add_argument("--seed", type=int, default=42, help="RNG seed.")
 parser.add_argument(
     "--physics_hz",
@@ -213,6 +215,26 @@ parser.add_argument("--load_run", type=str, default=None, help="Run folder to re
 parser.add_argument("--checkpoint", type=str, default=None, help="Checkpoint file.")
 parser.add_argument("--checkpoint_dir", type=str, default=None,
                     help="Source run directory; omitted --checkpoint selects its latest .pt (requires --resume).")
+parser.add_argument("--auto_jump_interval", type=int, default=250,
+                    help="Auto-Jump task: shared PPO iteration interval for sampling updates and validation (positive; default 250).")
+parser.add_argument("--auto_jump_probe_start_fraction", type=float, default=0.2,
+                    help="Skip full validation and video until this fraction of the cumulative iteration budget. 0 keeps every probe.")
+parser.add_argument("--auto_jump_review", type=str, default=None, help="Reference-hash-bound support review JSON.")
+parser.add_argument("--auto_jump_repair", action="store_true", help="Low-LR continuation mixing support reviews, retained jumps and full motion.")
+parser.add_argument("--turn_smoothing",action="store_true",help="Opt in to supported-turn residual rate/acceleration rewards; preserves jump transition margins.")
+parser.add_argument("--auto_motion_feedback",action="store_true",help="Reference-aware full-motion slip/chatter candidates, bounded rehearsal feedback and auxiliary best ranking.")
+parser.add_argument("--auto_jump_check_starts", type=float, nargs="+", default=None,
+                    help="Optional independent regression clip starts before/after repair.")
+parser.add_argument("--auto_quality_profile", type=str, default=None,
+                    help="Frozen reference-bound quality JSON; default uses a matching accepted profile or generic limits.")
+parser.add_argument("--auto_quality_patience", type=int, default=3,
+                    help="Consecutive qualified checkpoints required to recommend manual visual review; never stops training.")
+parser.add_argument("--no_auto_validation_record",dest="auto_validation_record",action="store_false",default=True,
+                    help="Disable saving actual full-validation poses for later video rendering (enabled by default, headless-compatible).")
+parser.add_argument("--no_auto_validation_video",dest="auto_validation_video",action="store_false",default=True,
+                    help="Only save validation poses; disable the single synchronized multi-seed MP4 after each parallel full check.")
+parser.add_argument("--no_auto_quality_early_stop", dest="auto_quality_early_stop",action="store_false",default=False,
+                    help="Compatibility option: training always continues to the iteration limit or a manual stop.")
 parser.add_argument(
     "--video",
     action="store_true",
@@ -240,8 +262,16 @@ parser.add_argument(
 AppLauncher.add_app_launcher_args(parser)
 sim_compat.add_legacy_headless_arg(parser)
 args_cli = parser.parse_args()
+if args_cli.num_steps_per_env is not None and args_cli.num_steps_per_env < 1:
+    parser.error("--num_steps_per_env must be positive")
 if args_cli.checkpoint_dir and not args_cli.resume:
     parser.error("--checkpoint_dir requires --resume")
+if args_cli.auto_jump_interval < 1:
+    parser.error("--auto_jump_interval must be positive")
+if not 0 <= args_cli.auto_jump_probe_start_fraction <= 1:
+    parser.error("--auto_jump_probe_start_fraction must be between 0 and 1")
+if args_cli.auto_quality_patience < 1:
+    parser.error("--auto_quality_patience must be positive")
 if args_cli.physics_hz is not None and (
     not math.isfinite(args_cli.physics_hz) or args_cli.physics_hz <= 0.0
 ):
@@ -555,9 +585,54 @@ def main() -> None:
     _apply_self_collision_override(env_cfg)
     log_pd_profile_summary(args_cli.pd_profile, o6_hands=True)
     _apply_motion_overrides(env_cfg)
+    auto_report = None
+    if getattr(env_cfg, "auto_jump", False):
+        if MOTION_H5_PATH is None:
+            raise ValueError("Auto-Jump requires --dance to identify the reference")
+        if args_cli.episode_length_curriculum or args_cli.episode_seconds is not None or args_cli.random_motion_start is not None:
+            raise ValueError("Auto-Jump manages episode sampling and curriculum; omit manual episode/start overrides")
+        from source.train_workflow.utils.auto_jump_training import prepare_auto_config
+        # Without --window_frames, use the actual file duration, not the task's default reference.
+        if args_cli.window_frames is None:
+            import h5py
+            with h5py.File(MOTION_H5_PATH) as motion_file:
+                args_cli.window_frames = int(math.floor(len(motion_file["joint_pos_delta"]) /
+                    float(motion_file.attrs["fps"]) * control_hz_from_env_cfg(env_cfg) + 1e-6))
+            _apply_motion_overrides(env_cfg)
+        auto_report = prepare_auto_config(env_cfg, MOTION_H5_PATH, _resolve_motion_window_seconds(env_cfg), args_cli.auto_jump_review)
+        if args_cli.auto_jump_repair:
+            if not args_cli.resume or not auto_report["support_windows"]:
+                raise ValueError("Repair requires --resume and --auto_jump_review with support windows")
+            auto_report["repair_training"] = True
+            agent_cfg.num_steps_per_env = 30
+    if getattr(env_cfg, "jump_specialist", False):
+        if DANCE_NAME != "ji_le_jing_tu_collision_corrected_v7":
+            raise ValueError("Jump phase annotations require ji_le_jing_tu_collision_corrected_v7")
+        if args_cli.episode_length_curriculum:
+            raise ValueError("Jump specialist uses its fixed clip; full-motion curriculum is not compatible")
+        env_cfg.episode_length_s = float(getattr(env_cfg, "jump_training_episode_seconds", 2.6))
+        env_cfg.events.reset_robot_joints.params["segment_seconds"] = env_cfg.episode_length_s
 
     if args_cli.max_iterations is not None:
         agent_cfg.max_iterations = int(args_cli.max_iterations)
+    if args_cli.num_steps_per_env is not None:
+        agent_cfg.num_steps_per_env = int(args_cli.num_steps_per_env)
+    if args_cli.turn_smoothing:
+        if auto_report is None:raise ValueError("--turn_smoothing requires an Auto-Jump task")
+        from source.my_task.mdp.turn_smoothing import configure
+        configure(env_cfg)
+    if args_cli.auto_motion_feedback:
+        if auto_report is None:raise ValueError("--auto_motion_feedback requires an Auto-Jump task")
+        env_cfg.auto_motion_feedback=True
+    if auto_report is not None and agent_cfg.max_iterations < 1:
+        raise ValueError("Auto-Jump requires at least one learning iteration")
+    batch_steps=int(env_cfg.scene.num_envs)*int(agent_cfg.num_steps_per_env)
+    print(f"[PPO采样] 每环境每iter {agent_cfg.num_steps_per_env} 控制步 "
+          f"({agent_cfg.num_steps_per_env/control_hz_from_env_cfg(env_cfg):.2f}s) | "
+          f"{env_cfg.scene.num_envs}环境 | 每iter {batch_steps:,}条样本 | "
+          f"{agent_cfg.algorithm.num_learning_epochs}轮学习 / {agent_cfg.algorithm.num_mini_batches}个小批次")
+    print(f"[PPO预算] 本次 {agent_cfg.max_iterations} iter，共 {batch_steps*int(agent_cfg.max_iterations):,}条训练样本（不含验收）；"
+          "采样段结束后继续原回合，不因iter结束重置机器人")
     agent_cfg.seed = int(args_cli.seed)
     if args_cli.resume:
         agent_cfg.resume = True
@@ -585,6 +660,11 @@ def main() -> None:
         print(f"[INFO] Run note: {note_path}")
 
     env_cfg.log_dir = log_dir
+    if auto_report is not None:
+        import json
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, "auto_jump_candidates.json"), "w", encoding="utf-8") as report_file:
+            json.dump(auto_report, report_file, indent=2)
     if isinstance(env_cfg, ManagerBasedRLEnvCfg):
         env_cfg.export_io_descriptors = False
         env_cfg.io_descriptors_output_dir = log_dir
@@ -600,12 +680,6 @@ def main() -> None:
             source="visualizer:kit", output_dir=os.path.join(log_dir, "videos", "train"),
             video_interval=video_interval, video_length=int(args_cli.video_length),
         )]
-
-    env = gym.make(
-        args_cli.task,
-        cfg=env_cfg,
-        render_mode="rgb_array" if args_cli.video else None,
-    )
 
     if agent_cfg.resume:
         source_dir = args_cli.checkpoint_dir
@@ -632,20 +706,49 @@ def main() -> None:
     else:
         resume_path = None
 
+    if resume_path is not None and getattr(env_cfg,"auto_jump",False):
+        header = torch.load(resume_path,map_location="cpu",weights_only=False)
+        if any(name.startswith("jump_mlp.") for name in header["actor_state_dict"]):
+            env_cfg.auto_jump_exact_residual = True
+            agent_cfg.actor.class_name = "source.train_workflow.utils.exact_phase_policy:ExactPhaseResidualPolicy"
+        del header
+    env = gym.make(args_cli.task,cfg=env_cfg,render_mode="rgb_array" if args_cli.video else None)
+    if getattr(env_cfg,"jump_specialist",False) or getattr(env_cfg,"auto_jump",False):
+        from source.my_task.mdp.jump import validate_ground_contacts
+        validate_ground_contacts(env.unwrapped)
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
     runner = OnPolicyRunner(
         env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device
     )
     runner.add_git_repo_to_log(__file__)
+    resume_infos = None
     if resume_path is not None:
         print(f"[INFO] Loading checkpoint: {resume_path}")
-        runner.load(resume_path)
+        if getattr(env_cfg, "jump_specialist", False):
+            checkpoint_header = torch.load(resume_path, map_location="cpu", weights_only=False)
+            migrated = "optimizer_state_dict" not in checkpoint_header and bool(
+                (checkpoint_header.get("infos") or {}).get("migration")
+            )
+            del checkpoint_header
+            if migrated:
+                runner.load(resume_path, load_cfg={"actor": True, "critic": True,
+                                                 "optimizer": False, "iteration": False})
+            else:
+                runner.load(resume_path)
+        else:
+            if getattr(env_cfg, "auto_jump", False) and args_cli.auto_jump_repair:
+                resume_infos = runner.load(resume_path, load_cfg={"actor": True, "critic": True, "optimizer": False, "iteration": True})
+            else:
+                resume_infos = runner.load(resume_path)
 
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
 
-    if args_cli.episode_length_curriculum:
+    if auto_report is not None:
+        from source.train_workflow.utils.auto_jump_training import train_auto
+        train_auto(runner, env, env_cfg, agent_cfg, auto_report, log_dir, args_cli, resume_infos)
+    elif args_cli.episode_length_curriculum:
         spec = args_cli.episode_length_curriculum_spec
         if spec is None:
             spec = "0:3,5000:full"
@@ -702,7 +805,7 @@ def main() -> None:
                     f"fixed={stage.seconds:.2f}s iters={stage_iters} start_to_end=off"
                 )
             runner.learn(
-                num_learning_iterations=stage_iters, init_at_random_ep_len=True
+                num_learning_iterations=stage_iters, init_at_random_ep_len=not getattr(env_cfg, "jump_specialist", False)
             )
     else:
         _set_env_runtime_start_to_end_mode(env, enabled=False)
@@ -710,7 +813,8 @@ def main() -> None:
         if args_cli.episode_seconds is not None:
             _set_env_runtime_episode_seconds(env, float(args_cli.episode_seconds))
             print(f"[INFO] Runtime episode length set to {float(args_cli.episode_seconds):.2f}s")
-        runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
+        runner.learn(num_learning_iterations=agent_cfg.max_iterations,
+                     init_at_random_ep_len=not getattr(env_cfg, "jump_specialist", False))
     env.close()
 
 

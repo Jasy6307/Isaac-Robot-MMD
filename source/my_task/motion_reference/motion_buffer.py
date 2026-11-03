@@ -376,6 +376,13 @@ def get_or_create_motion_buffer(
         buf = DanceMotionReferenceBuffer.from_reference(packaged, path=abs_path, **kwargs)
     else:
         buf = DanceMotionReferenceBuffer(h5_path=abs_path, **kwargs)
+        if getattr(env.cfg, "jump_reference_shaping", False):
+            from source.train_workflow.utils.motion.jump_reference import shape_takeoff_reference
+            limits = asset.data.soft_joint_pos_limits.torch[0].detach().cpu()
+            buf._q_ref_abs = shape_takeoff_reference(buf._q_ref_abs, joint_names, control_hz, limits,
+                                                    getattr(env.cfg, "jump_shaping_events", None))
+            buf._q_ref_rel = buf._q_ref_abs - torch.as_tensor(default_joint_pos).unsqueeze(0)
+            print("[JUMP V2] Leg-only reference shaping applied once; source H5 and upper body preserved.")
     cache[key] = buf
     print(
         f"[INFO] DanceMotionReferenceBuffer ready: {os.path.basename(abs_path)} "
