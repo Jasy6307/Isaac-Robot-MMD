@@ -43,6 +43,49 @@ class GateTests(unittest.TestCase):
         self.assertTrue(r["passed"],r["failures"])
         self.assertAlmostEqual(r["events"][0]["air_s"],.2)
 
+    def test_swing_collapse_fails_even_when_overall_leg_tracking_passes(self):
+        self.trace[60:80, INDEX["swing_required"]] = 1
+        self.trace[60:80, INDEX["swing_error"]] = .15
+        r = assess_trace(self.trace, self.report, self.profile, full=True)
+        self.assertIn("swing_height_failure_s", [f["check"] for f in r["failures"]])
+
+    def test_early_swing_contact_has_local_gate_and_transition_tolerance(self):
+        self.trace[60:80, INDEX["swing_required"]] = 1
+        self.trace[60:63, INDEX["swing_early_contact"]] = 1
+        self.assertTrue(assess_trace(self.trace, self.report, self.profile, full=True)["passed"])
+        self.trace[60:70, INDEX["swing_early_contact"]] = 1
+        r = assess_trace(self.trace, self.report, self.profile, full=True)
+        self.assertIn("swing_early_contact_s", [f["check"] for f in r["failures"]])
+
+    def test_repeated_short_touchdowns_cannot_evade_swing_gate(self):
+        self.trace[60:90, INDEX["swing_required"]] = 1
+        self.trace[60:90:2, INDEX["swing_early_contact"]] = 1
+        r = assess_trace(self.trace, self.report, self.profile, full=True)
+        self.assertIn("swing_early_contact_fraction", [f["check"] for f in r["failures"]])
+
+    def test_jump_leg_error_is_not_hidden_by_contact_success(self):
+        self.trace[18:45,INDEX["leg"]]=.8
+        r=assess_trace(self.trace,self.report,self.profile,full=True)
+        self.assertFalse(r["passed"])
+        self.assertTrue(any(f["check"]=="jump_leg_p95" for f in r["failures"]))
+
+    def test_tail_only_full_trace_is_assessed_from_tail_start(self):
+        trace=self.trace[9:45].copy()
+        report=dict(self.report, tail_only=True, tail_start_seconds=.3, episode_duration_s=1.5)
+        self.assertTrue(assess_trace(trace,report,generic_profile(report),full=True)["passed"])
+
+    def test_end_hold_requires_full_trace_and_checks_tail_quality(self):
+        report = dict(self.report, end_hold_seconds=2., episode_duration_s=5.)
+        profile = generic_profile(report)
+        short = assess_trace(self.trace, report, profile, full=True)
+        self.assertIn("incomplete_full_trace", [f["check"] for f in short["failures"]])
+        tail = np.repeat(self.trace[-1:], 60, axis=0)
+        tail[:,0] = np.arange(90,150)/30.
+        extended = np.concatenate((self.trace,tail))
+        self.assertTrue(assess_trace(extended,report,profile,full=True)["passed"])
+        extended[100:,INDEX["tilt"]] = 1.
+        self.assertFalse(assess_trace(extended,report,profile,full=True)["passed"])
+
     def test_recovered_local_stumble_cannot_hide_in_a_long_easy_motion(self):
         self.trace[60:70,INDEX["height"]]=.5
         r=assess_trace(self.trace,self.report,self.profile,full=True)

@@ -623,6 +623,8 @@ def main():
 
     env = gym.make(TASK_ID, cfg=env_cfg)
 
+    from source.train_workflow.utils.playback.scene import frame_full_body_replay
+
     print(f"[INFO] 观测: {env.observation_space}, 动作: {env.action_space}")
     print(f"[INFO] L=重置, {pose_cycle_key}=按序播放 pose；选舞请用 Mapping UI 下拉框")
     print(
@@ -1546,6 +1548,27 @@ def main():
         if not avi_recording_active or avi_recorder is None:
             return
         mf = int(motion_frame)
+        if mf == last_avi_motion_frame:
+            return
+        if last_avi_motion_frame is None and last_playback_target_root is not None:
+            root_track = None
+            if current_motion and current_motion.get("kind") == "hdf5":
+                h5_motion = current_motion["hdf5"]
+                valid = np.asarray(h5_motion.root_valid, dtype=bool)
+                if valid.any():
+                    index = min(int(np.searchsorted(h5_motion.frames, mf)), len(valid)-1)
+                    if valid[index]:
+                        anchor = np.asarray(last_playback_target_root) - h5_motion.root_pos_delta[index]
+                        root_track = h5_motion.root_pos_delta[valid] + anchor
+            frame_full_body_replay(
+                env.unwrapped.sim, last_playback_target_root,
+                width=args_cli.width, height=args_cli.height,
+                root_track=root_track,
+            )
+            # Flush the new camera pose before queuing the viewport capture.
+            # Rendering does not advance the motion/physics time line.
+            for _ in range(3):
+                env.unwrapped.sim.render()
         if last_avi_motion_frame is None:
             if avi_recorder.capture_frame():
                 last_avi_motion_frame = mf

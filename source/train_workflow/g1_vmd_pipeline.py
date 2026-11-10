@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -72,6 +73,8 @@ def build_parser():
     parser.add_argument("--name", help="Output stem; defaults to VMD_collision_corrected or VMD_rebuilt; repeats use _v2, _v3")
     parser.add_argument("--video_dir", type=Path, default=ROOT / "media/recordings")
     parser.add_argument("--ffmpeg", type=Path)
+    parser.add_argument("--audio_volume", type=float, default=0.25,
+                        help="Muxed music gain (0.25 = 25%%; default 0.25)")
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
     return parser
@@ -89,6 +92,8 @@ def main(argv=None):
         parser.error("Music not found; provide --audio PATH")
     if args.width < 2 or args.height < 2 or args.width % 2 or args.height % 2:
         parser.error("Video width and height must be positive even integers")
+    if not math.isfinite(args.audio_volume) or args.audio_volume < 0.0 or args.audio_volume > 2.0:
+        parser.error("--audio_volume must be finite and in [0, 2]")
     name = args.name or f"{vmd.stem}_{'collision_corrected' if args.collision_correction else 'rebuilt'}"
     if not name or name in (".", "..") or any(c in name for c in '<>:"/\\|?*') or name.endswith((" ", ".")):
         parser.error("--name must be a valid filename stem")
@@ -140,12 +145,14 @@ def main(argv=None):
     run_step("5/5 Encode MP4 and mux music", [ffmpeg, "-nostdin", "-n", "-i", avi,
         "-i", audio, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264",
         "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
-        "-af", "apad", "-shortest", "-movflags", "+faststart", video])
+        "-af", f"volume={args.audio_volume:.6g},apad", "-shortest",
+        "-movflags", "+faststart", video])
     if not video.is_file() or not video.stat().st_size:
         raise RuntimeError("MP4 output is missing or empty")
     result = dict(vmd=str(vmd), audio=str(audio), csv=str(csv), raw_h5=str(raw),
         h5=str(h5), collision_corrected=args.collision_correction,
-        avi=str(avi), video=str(video), frames=frames, fps=fps, duration_seconds=frames/fps)
+        avi=str(avi), video=str(video), frames=frames, fps=fps,
+        duration_seconds=frames/fps, audio_volume=float(args.audio_volume))
     manifest.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\n[PIPELINE DONE]\nH5: {h5}\nVideo: {video}\nManifest: {manifest}", flush=True)
 

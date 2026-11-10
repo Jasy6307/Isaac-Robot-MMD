@@ -38,6 +38,21 @@ class AutoJumpTests(unittest.TestCase):
         feet[:, 0, 2] = 0
         self.assertEqual(analyze_signals(z, feet, fps)["events"], [])
 
+    def test_swing_intent_requires_height_gap_and_grounded_lower_foot(self):
+        feet = np.zeros((90, 2, 3))
+        feet[:, 1, 2] = .2
+        report = analyze_signals(np.zeros(90), feet, 30.)
+        self.assertTrue(np.asarray(report["swing_feet"])[:, 1].all())
+        self.assertFalse(np.asarray(report["swing_feet"])[:, 0].any())
+        np.testing.assert_allclose(np.asarray(report["swing_gap_m"])[:, 1], .2)
+        invalid = analyze_signals(np.zeros(90), feet, 30., np.zeros(90, bool))
+        self.assertFalse(np.asarray(invalid["swing_feet"]).any())
+        # Even with a height difference, two feet rising together are not
+        # positive evidence that the lower foot should stay on the ground.
+        feet[30:, :, 2] += .15
+        airborne = analyze_signals(np.zeros(90), feet, 30.)
+        self.assertFalse(np.asarray(airborne["swing_feet"])[35:45].any())
+
     def test_bilateral_reference_jump_and_time_shift(self):
         z, feet, fps = self.signals()
         report = analyze_signals(z, feet, fps)
@@ -148,6 +163,22 @@ class AutoJumpTests(unittest.TestCase):
         # Existing test output root; no simulator, no policy or data writes.
         return AutoJumpController(env, report, Path(__file__).resolve().parents[3] / "output/auto-jump/tests")
 
+    def test_full_sampler_includes_end_hold_and_old_state_can_resume(self):
+        from unittest.mock import patch
+        c = self.controller()
+        old = c.state_dict()
+        old.pop("end_hold_seconds")
+        c.report["end_hold_seconds"] = 2.
+        c.load_state_dict(old)
+        c.stage = "full"
+        c.env.episode_length_buf = torch.zeros(4, dtype=torch.long)
+        c.env.termination_manager = SimpleNamespace(terminated=torch.zeros(4, dtype=torch.bool))
+        with patch("torch.rand", return_value=torch.zeros(4)):
+            starts, targets = c.reset(torch.arange(4), torch.zeros(4, dtype=torch.long))
+        self.assertEqual(starts.tolist(), [0]*4)
+        self.assertEqual(targets.tolist(), [3060]*4)
+        self.assertEqual(c.state_dict()["end_hold_seconds"], 2.)
+
     def test_sampler_preserves_uniform_coverage(self):
         c = self.controller()
         c.prior[20] = 3
@@ -156,6 +187,39 @@ class AutoJumpTests(unittest.TestCase):
         self.assertAlmostEqual(float(p.sum()), 1., places=6)
         self.assertTrue(bool((p >= .4 / c.bins).all()))
         self.assertGreater(p[20], p[0])
+
+    def test_full_stage_rehearses_tail_directly_and_preserves_full_episodes(self):
+        from unittest.mock import patch
+        env = SimpleNamespace(device="cpu", step_dt=1/30., episode_length_buf=torch.zeros(4,dtype=torch.long),
+            termination_manager=SimpleNamespace(terminated=torch.zeros(4,dtype=torch.bool)))
+        c = AutoJumpController(env, dict(duration_s=15.5,end_hold_seconds=2.,events=[],source_sha256="tail"),
+            Path(__file__).resolve().parents[3]/"output/auto-jump/tests")
+        c.stage = "full"
+        with patch("torch.multinomial",return_value=torch.full((4,),14)), patch("torch.rand",
+                side_effect=[torch.full((4,),.5),torch.tensor([.1,.9,.9,.1])]):
+            starts, targets = c.reset(torch.arange(4),torch.zeros(4,dtype=torch.long))
+        # 75% full branch remains intact; local tail clips begin at 12.5s,
+        # execute the last 3s and then hold for 2s rather than restarting at 3.5s.
+        self.assertEqual(starts.tolist(),[0,375,375,0])
+        self.assertEqual(targets.tolist(),[525,150,150,525])
+        c.stage = "long"
+        with patch("torch.multinomial",return_value=torch.full((4,),14)), patch("torch.rand",return_value=torch.full((4,),.5)):
+            starts, targets = c.reset(torch.arange(4),torch.zeros(4,dtype=torch.long))
+        self.assertEqual(starts.tolist(),[105]*4)
+        self.assertEqual(targets.tolist(),[420]*4)
+
+    def test_full_stage_middle_clip_does_not_extend_into_hold(self):
+        from unittest.mock import patch
+        c = self.controller()
+        c.report["end_hold_seconds"] = 2.
+        c.stage = "full"
+        c.env.episode_length_buf=torch.zeros(4,dtype=torch.long)
+        c.env.termination_manager=SimpleNamespace(terminated=torch.zeros(4,dtype=torch.bool))
+        with patch("torch.multinomial",return_value=torch.full((4,),20)), patch("torch.rand",
+                side_effect=[torch.full((4,),.5),torch.full((4,),.9)]):
+            starts, targets = c.reset(torch.arange(4),torch.zeros(4,dtype=torch.long))
+        self.assertTrue(bool((starts>0).all()))
+        self.assertEqual(targets.tolist(),[90]*4)
 
     def test_unvisited_bins_are_not_marked_successful(self):
         c = self.controller()

@@ -52,9 +52,11 @@ def resolve_motion_audio(motion_path, *, recordings_dir=None):
     return None
 
 
-def ffmpeg_audio_args(audio, *, start_seconds=0., playback_rate=1.):
-    """Audio input/filters following video input 0; align trimmed/slow previews."""
-    if not math.isfinite(start_seconds) or start_seconds < 0 or not math.isfinite(playback_rate) or playback_rate <= 0:
+def ffmpeg_audio_args(audio, *, start_seconds=0., playback_rate=1., volume=.25):
+    """Audio input/filters following video input 0; align previews at 25% by default."""
+    if (not math.isfinite(start_seconds) or start_seconds < 0 or
+            not math.isfinite(playback_rate) or playback_rate <= 0 or
+            not math.isfinite(volume) or volume < 0 or volume > 2):
         raise ValueError("Invalid audio start or playback rate")
     rate = playback_rate
     filters = []
@@ -66,6 +68,6 @@ def ffmpeg_audio_args(audio, *, start_seconds=0., playback_rate=1.):
         rate /= 2.
     if abs(rate - 1.) > 1e-9:
         filters.append(f"atempo={rate}")
-    filters.append("apad")
+    filters.extend((f"volume={volume:.6g}", "apad"))
     return ["-ss", str(start_seconds), "-i", str(audio), "-map", "0:v:0", "-map", "1:a:0",
         "-c:a", "aac", "-b:a", "192k", "-af", ",".join(filters)]

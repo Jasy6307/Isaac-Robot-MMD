@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "reference_key": "3b282ae3c98fe3227457411ca116b2be1044c43334e48fc519c9f335501eeb3c",
+  "kind": "iris_out_visual_review_relaxed",
+  "limits": {
+    "leg_p95": 0.3,
+    "height_p95": 0.12,
+    "tilt_p95": 0.35,
+    "leg_window": 0.35,
+    "height_window": 0.15,
+    "tilt_window": 0.45,
+    "support_air_s": 0.1,
+    "support_air_fraction": 0.05,
+    "support_speed_p95": 1.05,
+    "support_speed_window": 1.05,
+    "excess_height_window": 0.1,
+    "excess_vz_window": 0.6,
+    "takeoff_offset_s": 0.2,
+    "landing_offset_s": 0.25
+  },
+  "windows": {},
+  "events": {
+    "2": {
+      "leg_p95": 0.45
+    }
+  },
+  "provenance": [
+    "User visual review accepted the IRIS_OUT tail-only result as visually reasonable.",
+    "Relaxed only IRIS_OUT event-2 jump leg P95 and support speed; fall, height, tilt, flight and landing gates remain strict."
+  ]
+}

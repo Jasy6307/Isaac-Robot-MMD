@@ -94,7 +94,7 @@ class TrainingProgress:
     def episode_text(self, stage=None):
         stage=stage or self.stage
         if stage=="full":
-            return f"75%从头整段({self.motion_seconds:.2f}s) + 25%局部({min(12.,self.motion_seconds):.2f}s)"
+            return f"75%从头整段({self.motion_seconds:.2f}s) + 25%局部({min(3.,self.motion_seconds):.2f}s，触及末帧时另加保持时间)"
         return f"回合 {min(3. if stage=='short' else 12.,self.motion_seconds):.2f}s"
 
     def snapshot(self):

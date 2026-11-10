@@ -13,7 +13,10 @@ from pathlib import Path
 import torch
 
 
-def prepare_auto_config(cfg, h5_path, window_seconds, review_path=None):
+def prepare_auto_config(cfg, h5_path, window_seconds, review_path=None, *, hold_seconds=2.0,
+                        tail_only=False, tail_start_seconds=None):
+    if not math.isfinite(hold_seconds) or hold_seconds < 0:
+        raise ValueError("End hold must be finite and nonnegative")
     import h5py
     from source.train_workflow.utils.motion.auto_jump import analyze_h5, event_schedules
     with h5py.File(h5_path) as f:
@@ -24,17 +27,47 @@ def prepare_auto_config(cfg, h5_path, window_seconds, review_path=None):
     report = analyze_h5(h5_path, cfg.scene.robot.spawn.usd_path,
                         frames=max(3, int(math.ceil(window_seconds * fps))))
     cfg.auto_jump_report = report
+    if getattr(cfg, "reference_reward_version", None):
+        report["reward_contract"] = dict(version=cfg.reference_reward_version,
+            scales=cfg.reference_reward_scales,
+            weights={name: term.weight for name,term in vars(cfg.rewards).items()
+                     if term is not None and hasattr(term, "weight")})
     report["duration_s"] = float(window_seconds)
+    report["end_hold_seconds"] = float(hold_seconds)
+    report["episode_duration_s"] = float(window_seconds + hold_seconds)
     report["control_hz"] = 1. / (cfg.sim.dt * cfg.decimation)
+    report["jump_gate"] = dict(
+        pre_seconds=float(getattr(cfg, "jump_gate_pre_seconds", .6)),
+        post_seconds=float(getattr(cfg, "jump_gate_post_seconds", .6)),
+        ramp_seconds=float(getattr(cfg, "jump_gate_ramp_seconds", .3)),
+    )
+    report["tail_only"] = bool(tail_only)
+    if tail_only:
+        if review_path:
+            raise ValueError("Tail-only training does not combine with a support review")
+        flight_events = [e for e in report["events"] if e.get("flight_reward")]
+        if not flight_events:
+            raise ValueError("Tail-only training requires a high-confidence flight event")
+        last_event = max(flight_events, key=lambda e: float(e["phases"][-1][1]))
+        derived = max(0.0, float(last_event["phases"][0][0]) - 1.0)
+        start = derived if tail_start_seconds is None else float(tail_start_seconds)
+        if not math.isfinite(start) or start < 0.0 or start >= window_seconds - 1e-5:
+            raise ValueError(f"Tail-only start must be in [0, {window_seconds}), got {start}")
+        report["tail_start_seconds"] = start
+        report["tail_event_id"] = int(last_event["id"])
+        report["tail_duration_s"] = float(window_seconds + hold_seconds - start)
+        print(f"[AUTO TAIL] 只训练末段：{start:.3f}s -> {window_seconds + hold_seconds:.3f}s；"
+              f"前段 0–{start:.3f}s 不采样；目标事件 id={last_event['id']}")
     if review_path:
         from source.train_workflow.utils.motion.auto_jump import apply_review
         apply_review(report, json.loads(Path(review_path).read_text(encoding="utf-8")))
     cfg.jump_phase_schedules = event_schedules(report)
-    cfg.episode_length_s = window_seconds
-    cfg.events.reset_robot_joints.params.update(segment_seconds=window_seconds,
+    cfg.episode_length_s = window_seconds + hold_seconds
+    cfg.events.reset_robot_joints.params.update(segment_seconds=cfg.episode_length_s,
         random_start=False, motion_start_seconds=None)
     print(f"[AUTO JUMP] {len(report['events'])} hypotheses; "
-          f"{len(cfg.jump_phase_schedules)} high-confidence reference flight requests; no reviewed labels loaded")
+          f"{len(cfg.jump_phase_schedules)} high-confidence reference flight requests; "
+          f"gate={report['jump_gate']}; no reviewed labels loaded")
     return report
 
 
@@ -114,9 +147,9 @@ class AutoJumpController:
 
     def configure(self, progress):
         self.progress = float(progress)
-        self.stage = curriculum_stage(progress)
+        self.stage = "full" if self.report.get("tail_only") else curriculum_stage(progress)
         # Flight objectives present from the beginning, gradually strengthened.
-        self.env._auto_jump_strength = .1 + .9 * min(1., progress / .5)
+        self.env._auto_jump_strength = 1.0 if self.report.get("tail_only") else .1 + .9 * min(1., progress / .5)
 
     def probabilities(self):
         uniform = torch.ones_like(self.difficulty) / self.bins
@@ -144,6 +177,11 @@ class AutoJumpController:
                 probe["failures"].scatter_add_(0, bins, (~probe["completed"][ended_ids]).float())
                 probe["active"][ended_ids] = False
             return probe["starts"][ids], probe["targets"][ids]
+        if self.report.get("tail_only"):
+            start = int(round(float(self.report["tail_start_seconds"]) / env.step_dt))
+            target = max(1, int(round(float(self.report["tail_duration_s"]) / env.step_dt)))
+            return (torch.full((len(ids),), start, device=self.device, dtype=torch.long),
+                    torch.full((len(ids),), target, device=self.device, dtype=torch.long))
         # Terminal states are still present before the reset event writes poses.
         failed = env.termination_manager.terminated[ids] & (env.episode_length_buf[ids] > 0)
         seconds = reference_steps.float() * env.step_dt
@@ -153,7 +191,11 @@ class AutoJumpController:
         chosen = torch.multinomial(self.probabilities(), count, replacement=True)
         # Bias start before the difficult bin; include setup, not just the apex.
         start = (chosen.float() - .8 + torch.rand(count, device=self.device) * .4).clamp_min(0.)
-        length = min(self.duration, 3. if self.stage == "short" else 12.)
+        # Full-stage rehearsal must remain local. A 12s clip clamps difficult
+        # tail starts back to 3.5s on a 15.5s dance, defeating tail priorities.
+        # The long stage still practices 12s transitions; full episodes retain
+        # continuity while local episodes can start directly before a failure.
+        length = min(self.duration, 12. if self.stage == "long" else 3.)
         start.clamp_(max=max(0., self.duration - length))
         target = torch.full_like(start, length)
         if self.report.get("repair_training"):
@@ -169,12 +211,14 @@ class AutoJumpController:
             start = torch.where(category < .4, a, torch.where(category < .75, b, 0.))
             start.clamp_(max=max(0., self.duration - 3.))
             target = torch.where(category < .75, min(3., self.duration), self.duration)
+            target = target + (start + target >= self.duration - 1e-6) * self.report.get("end_hold_seconds", 0.)
             return (start / env.step_dt).round().long(), (target / env.step_dt).round().long().clamp_min(1)
         if self.stage == "full":
             # Retain 25% local rehearsal; 75% learn frame-zero continuity.
             full = torch.rand(count, device=self.device) < .75
             start = torch.where(full, 0., start)
             target = torch.where(full, self.duration, target)
+        target = target + (start + target >= self.duration - 1e-6) * self.report.get("end_hold_seconds", 0.)
         return (start / env.step_dt).round().long(), (target / env.step_dt).round().long().clamp_min(1)
 
     def observe(self):
@@ -202,6 +246,9 @@ class AutoJumpController:
         from source.my_task.mdp.auto_jump import support_metrics
         support = support_metrics(env)
         error = error + support["unexpected_air"].float() + support["missing_feet"].sum(-1).float() * .5
+        from source.my_task.mdp.auto_jump import swing_metrics
+        swing = swing_metrics(env)
+        error = error + (swing["error_m"] / .08).clamp(max=2.) + swing["early_contact"].float()
         bins = (steps.float() * env.step_dt).long().clamp(0, self.bins - 1)
         active = torch.ones(env.num_envs, device=self.device, dtype=torch.bool)
         sums, counts = self.sums, self.counts
@@ -235,7 +282,8 @@ class AutoJumpController:
                     metrics["tilt_error_rad"],metrics["normal_weight"],support["required"].float(),
                     support["unexpected_air"].float(),support["contacts"][:,0].float(),support["contacts"][:,1].float(),
                     qualified.float(),robot.data.root_lin_vel_w.torch[:,2],distance,speed,
-                    metrics["height_delta_m"].clamp_min(0.),(robot.data.root_lin_vel_w.torch[:,2]-ref_vz).clamp_min(0.)),dim=-1)
+                    metrics["height_delta_m"].clamp_min(0.),(robot.data.root_lin_vel_w.torch[:,2]-ref_vz).clamp_min(0.),
+                    swing["required"].float(),swing["error_m"],swing["early_contact"].float()),dim=-1)
                 active_ids=active.nonzero().flatten()
                 self.probe["trace"].append(torch.cat((active_ids[:,None].float(),values[active_ids]),dim=-1))
             expected = active & jump.phases(env)[:, 2]
@@ -265,7 +313,8 @@ class AutoJumpController:
 
     def state_dict(self):
         return dict(version=1, source_sha256=self.report["source_sha256"],
-                    duration_s=self.duration, control_hz=self.report.get("control_hz"),
+                    reward_contract=self.report.get("reward_contract"),
+                    duration_s=self.duration, end_hold_seconds=self.report.get("end_hold_seconds", 0.), control_hz=self.report.get("control_hz"),
                     difficulty=self.difficulty.cpu().tolist(), progress=self.progress,
                     observed_steps=(self.visits + self.counts).cpu().tolist(),
                     history=self.history,
@@ -273,6 +322,8 @@ class AutoJumpController:
                     quality_selection=self.selection.state_dict() if self.selection is not None else None)
 
     def load_state_dict(self, state):
+        if state.get("reward_contract") != self.report.get("reward_contract"):
+            raise ValueError("Reward contract changed; start a fresh run instead of reusing old optimizer/best state")
         if state["source_sha256"] != self.report["source_sha256"]:
             raise ValueError("Auto curriculum reference differs from resumed checkpoint")
         if state.get("duration_s") != self.duration or state.get("control_hz") != self.report.get("control_hz"):
@@ -324,13 +375,20 @@ class AutoJumpController:
         torch_rng = torch.random.get_rng_state()
         cuda_rng = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
         torch.manual_seed(seed)
-        starts = [0.] if full else sorted(set(
-            [float(x) for x in range(self.bins)] +
-            [max(0., e["phases"][0][0] - .6) for e in self.report["events"]]))
+        tail_only = bool(self.report.get("tail_only"))
+        validation_start = float(self.report.get("tail_start_seconds", 0.0)) if tail_only else 0.0
+        starts = ([validation_start] if full and tail_only else
+                  ([0.] if full else sorted(set(
+                      [float(x) for x in range(self.bins)] +
+                      [max(0., e["phases"][0][0] - .6) for e in self.report["events"]]))))
         if starts_override is not None:
             starts = list(starts_override)
-        length = self.duration if full else min(3., self.duration)
-        starts = [0.]*len(replicas) if replicas is not None else sorted(set(min(s, max(0., self.duration - length)) for s in starts))
+        length = ((float(self.report.get("episode_duration_s", self.duration)) - validation_start)
+                  if full and tail_only else self.report.get("episode_duration_s", self.duration) if full
+                  else min(3., self.duration))
+        starts = ([validation_start] * len(replicas) if replicas is not None and tail_only else
+                  [0.] * len(replicas) if replicas is not None else
+                  sorted(set(min(s, max(0., self.duration - length)) for s in starts)))
         progress=getattr(env,"_auto_training_progress",None)
         if progress is not None:
             progress.validation_started("full" if full else "coverage",replicas or seed,len(starts),length)
@@ -402,7 +460,8 @@ class AutoJumpController:
                             else:print(f"[验证进行中] seeds={replicas or [seed]} | {(probe_step+1)*env.step_dt:.2f}/{length:.2f}s",flush=True)
                             last_notice=time.monotonic()
                 import numpy as np
-                traces=torch.cat(self.probe["trace"]).detach().cpu().numpy() if self.probe["trace"] else np.empty((0,16))
+                from source.train_workflow.utils.quality_selection import TRACE_FIELDS
+                traces=torch.cat(self.probe["trace"]).detach().cpu().numpy() if self.probe["trace"] else np.empty((0,1+len(TRACE_FIELDS)))
                 for index, start in enumerate(batch):
                     trial_seed=replicas[index] if replicas is not None else seed
                     trace=traces[traces[:,0]==index,1:]
@@ -574,7 +633,7 @@ def train_auto(runner, wrapped, cfg, agent_cfg, report, log_dir, args, resume_in
     state=(resume_infos or {}).get("auto_curriculum") or {}
     progress=TrainingProgress(runner.logger,start=int(runner.current_learning_iteration)+(1 if args.resume else 0),
         total=int(agent_cfg.max_iterations),initial_progress=float(state.get("progress",0.)),
-        motion_seconds=report["duration_s"],log_dir=log_dir,
+        motion_seconds=report.get("episode_duration_s",report["duration_s"]),log_dir=log_dir,
         update_interval=args.auto_jump_interval,probe_interval=args.auto_jump_interval)
     wrapped.unwrapped._auto_training_progress=progress
     try:
@@ -608,6 +667,11 @@ def _train_auto_impl(runner, wrapped, cfg, agent_cfg, report, log_dir, args, res
     if state:
         controller.load_state_dict(state)
     saved_selection=(state or {}).get("quality_selection")
+    if state and state.get("end_hold_seconds", 0.) != report.get("end_hold_seconds", 0.):
+        # Preserve policy, optimizer and sampler, but do not reuse acceptance
+        # under a shorter/different hold requirement.
+        saved_selection = None
+        print(f"[AUTO HOLD] Hold changed {state.get('end_hold_seconds', 0.)} -> {report.get('end_hold_seconds', 0.)}s; previous best/acceptance reset, policy and sampler retained")
     profile_path=getattr(args,"auto_quality_profile",None)
     profile=(saved_selection["profile"] if saved_selection and not profile_path else resolve_profile(report,profile_path))
     # Frozen before any learning. Future profile files cannot change a resumed

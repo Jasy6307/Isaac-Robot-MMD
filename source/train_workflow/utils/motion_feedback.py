@@ -145,7 +145,7 @@ class KinematicMotionAnalyzer:
         schedules=[e["phases"] for e in self.report["events"] if e["flight_reward"]]
         return assess_motion(seconds,poses[:,7:][:,self.joints]-ref[:,self.joints],residual,actual_feet,
             self.reference_feet[indices],self.reference_yaw[indices],expected,contacts,self.sides,schedules,
-            duration=self.report["duration_s"],hz=self.hz)
+            duration=self.report.get("episode_duration_s",self.report["duration_s"]),hz=self.hz)
 
 
 class MotionFeedback:

@@ -125,6 +125,54 @@ def root_yaw_tracking_exp(
     return torch.exp(-torch.square(yaw_err) / (float(sigma) ** 2))
 
 
+def root_yaw_global_alignment(
+    env: "ManagerBasedRLEnv",
+    h5_path: str,
+    window_seconds: float = 10.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Global yaw alignment with a non-vanishing large-error gradient.
+
+    The narrow exponential yaw term is excellent near the reference but is
+    effectively flat after a large drift (for example a 90-degree turn).
+    Cosine alignment keeps pulling the root back across the whole [-pi, pi]
+    range while preserving the reference-relative yaw target.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    yaw_err = root_yaw_error_rad(
+        env, asset, h5_path=h5_path, window_seconds=window_seconds,
+        asset_name=asset_cfg.name,
+    )
+    return .5 * (1. + torch.cos(yaw_err))
+
+
+def root_yaw_tail_hold(
+    env: "ManagerBasedRLEnv",
+    h5_path: str,
+    window_seconds: float = 10.0,
+    tail_seconds: float = 3.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Strongly preserve the reference yaw through the final action and hold.
+
+    The gate is based on the reference motion time, so it covers the last
+    action segment plus the configured post-motion hold without affecting
+    earlier dance phases or randomly sampled short clips.
+    """
+    if tail_seconds <= 0.0:
+        raise ValueError(f"tail_seconds must be > 0, got {tail_seconds}")
+    asset: Articulation = env.scene[asset_cfg.name]
+    yaw_err = root_yaw_error_rad(
+        env, asset, h5_path=h5_path, window_seconds=window_seconds,
+        asset_name=asset_cfg.name,
+    )
+    report = getattr(env.cfg, "auto_jump_report", {}) or {}
+    duration = float(report.get("duration_s", window_seconds))
+    seconds = motion_steps(env).float() * env.step_dt
+    active = (seconds >= duration - float(tail_seconds)).float()
+    return active * (.5 * (1. + torch.cos(yaw_err)))
+
+
 def root_xy_tracking_exp(
     env: "ManagerBasedRLEnv",
     h5_path: str,

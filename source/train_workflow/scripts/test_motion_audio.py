@@ -45,8 +45,8 @@ class AudioTests(unittest.TestCase):
     def test_offset_and_slow_motion(self):
         args = ffmpeg_audio_args("music.wav", start_seconds=5., playback_rate=.25)
         self.assertEqual(args[:4], ["-ss", "5.0", "-i", "music.wav"])
-        self.assertEqual(args[-1], "atempo=0.5,atempo=0.5,apad")
-        self.assertEqual(ffmpeg_audio_args("music.wav")[-1], "apad")
+        self.assertEqual(args[-1], "atempo=0.5,atempo=0.5,volume=0.25,apad")
+        self.assertEqual(ffmpeg_audio_args("music.wav")[-1], "volume=0.25,apad")
 
 
 if __name__ == "__main__":

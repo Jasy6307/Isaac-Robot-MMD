@@ -97,6 +97,8 @@ class G1VmdReplaySceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.DomeLightCfg(
             intensity=750.0,
             texture_file=f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Skies/PolyHaven/kloofendal_43d_clear_puresky_4k.hdr",
+            # Keep image-based lighting on the robot without drawing the sky.
+            visible_in_primary_ray=False,
         ),
     )
 
@@ -174,7 +176,9 @@ class G1VmdReplayEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.render_interval = 1
         self.sim.physics = PhysxCfg()
         self.sim.use_newton_actuators = False
-        self.sim.default_visualizer_cfg = VisualizerCfg(eye=(0.0, 4.0, 1.0), lookat=(0.0, 0.0, 1.0))
+        self.sim.default_visualizer_cfg = VisualizerCfg(
+            eye=(0.0, 6.0, 1.0), lookat=(0.0, 0.0, 0.85), background_color=(0.0, 0.0, 0.0)
+        )
         # 原 60s 会与 MDP time_out 一致，交互脚本里每 ~60s 仿真时间会自动 reset。
         # 长时间站姿/动作演示请用大值；需要按回合切场景时再改小。
         self.episode_length_s = 86400.0

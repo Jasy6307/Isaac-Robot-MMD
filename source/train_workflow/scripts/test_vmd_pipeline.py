@@ -61,7 +61,8 @@ class PipelineTests(unittest.TestCase):
                     self.assertNotIn("--motion_wav", command)  # music is muxed, not recorded from speakers
                     Path(command[command.index("--record_avi_path") + 1]).write_bytes(b"avi")
                 if "-shortest" in command:
-                    self.assertIn("apad", command)
+                    self.assertTrue(any("apad" in str(value) for value in command))
+                    self.assertIn("volume=0.25,apad", command)
                     Path(command[-1]).write_bytes(b"mp4")
 
             class H5:

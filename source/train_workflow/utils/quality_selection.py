@@ -17,19 +17,27 @@ import numpy as np
 
 TRACE_FIELDS = ("seconds", "leg", "height", "tilt", "normal", "required",
                 "unexpected_air", "contact_left", "contact_right", "qualified",
-                "vz", "feet_distance", "support_speed", "excess_height", "excess_vz")
+                "vz", "feet_distance", "support_speed", "excess_height", "excess_vz",
+                "swing_required", "swing_error", "swing_early_contact")
 INDEX = {name: i for i, name in enumerate(TRACE_FIELDS)}
 DEFAULT_LIMITS = dict(leg_p95=.30, height_p95=.12, tilt_p95=.35,
     leg_window=.35, height_window=.15, tilt_window=.45,
     support_air_s=.10, support_air_fraction=.05, support_speed_p95=.80,support_speed_window=.80,
     excess_height_window=.10, excess_vz_window=.60,
     takeoff_offset_s=.20, landing_offset_s=.25)
+# The generic global leg gate intentionally excludes jump phases.  Keep a
+# separate event gate so a rollout cannot pass solely because it stayed
+# upright while its jump legs diverged from the reference.
+JUMP_LEG_P95_LIMIT = .30
 PROFILE_DIR = Path(__file__).resolve().parents[1] / "quality_profiles"
 
 
 def reference_key(report):
     contract = {k: report.get(k) for k in ("source_sha256", "duration_s", "control_hz",
-                "version", "fps", "events", "support_feet", "support_windows")}
+                "version", "fps", "events", "support_feet", "support_windows", "swing_feet", "swing_gap_m",
+                "contact_support_confidence", "contact_air_confidence", "reward_contract")}
+    if report.get("end_hold_seconds", 0.):
+        contract["end_hold_seconds"] = report["end_hold_seconds"]
     return hashlib.sha256(json.dumps(contract, sort_keys=True, allow_nan=False).encode()).hexdigest()
 
 
@@ -83,7 +91,9 @@ def assess_trace(trace, report, profile, *, full=False):
     t = data[:, 0]
     if np.any(np.diff(t) < .5*dt) or np.any(np.diff(t) > 1.5*dt):
         failures.append(dict(check="missing_or_duplicate_control_steps")); return result
-    if full and (t[0]>dt+1.e-5 or t[-1]+dt<report["duration_s"]-1.e-5):
+    expected_start = float(report.get("tail_start_seconds", 0.0)) if report.get("tail_only") else 0.0
+    if full and (t[0]>expected_start+dt+1.e-5 or
+                 t[-1]+dt<report.get("episode_duration_s",report["duration_s"])-1.e-5):
         failures.append(dict(check="incomplete_full_trace",time_s=float(t[-1])))
     limits = profile["limits"]
     get = lambda name: data[:, INDEX[name]]
@@ -98,6 +108,18 @@ def assess_trace(trace, report, profile, *, full=False):
         if value is not None and value > limit+1.e-7:
             failures.append(dict(check=name, observed=float(value), limit=float(limit), time_s=seconds))
     for name, value in metrics.items(): check(name,value,limits[name])
+    # Local sustained failures cannot hide in whole-dance averages. Short
+    # contact transients at lift/landing boundaries get 150 ms tolerance.
+    swing = get("swing_required") > .5
+    metrics["swing_samples"] = int(swing.sum())
+    metrics["swing_error_p95_m"] = _p95(get("swing_error")[swing])
+    for name, bad, limit in (
+        ("swing_height_failure_s", swing & (get("swing_error") > .08), .15),
+        ("swing_early_contact_s", swing & (get("swing_early_contact") > .5), .15),
+    ):
+        value = _longest(bad, t, dt)
+        metrics[name] = value
+        check(name, value, limit, float(t[np.flatnonzero(bad)[0]]) if bad.any() else None)
     # Half-second grid, overlapping one-second windows. Partial boundary windows
     # remain visible, but use the generic limit unless the baseline covers them.
     for start in np.arange(math.floor(t[0]*2)/2, t[-1]+dt/2, .5):
@@ -115,10 +137,18 @@ def assess_trace(trace, report, profile, *, full=False):
             # baseline window; the global strict ceiling still applies.
             calibrated = local.get(name,limits[name]) if inside.sum() >= round(.9/dt) else limits[name]
             check(name,value,min(limits[name],calibrated),float(start))
+        selected_swing = inside & swing
+        if selected_swing.sum() >= max(2, round(.2/dt)):
+            row["swing_error_window_m"] = float(get("swing_error")[selected_swing].mean())
+            row["swing_early_contact_fraction"] = float(get("swing_early_contact")[selected_swing].mean())
+            check("swing_error_window_m", row["swing_error_window_m"], .06, float(start))
+            check("swing_early_contact_fraction", row["swing_early_contact_fraction"], .25, float(start))
         result["windows"].append(row)
     for event in report["events"]:
         if not event["flight_reward"]: continue
         phases=event["phases"];lo,hi=phases[0][0],phases[3][1]
+        if report.get("tail_only") and hi <= expected_start + dt:
+            continue
         complete=t[0] <= lo+dt+1.e-5 and t[-1]+dt >= hi-1.e-5
         row=dict(id=event["id"],start_s=lo,end_s=hi,assessed=bool(complete))
         result["events"].append(row)
@@ -127,6 +157,10 @@ def assess_trace(trace, report, profile, *, full=False):
             continue
         inside=(t>=lo-1.e-5)&(t<hi-1.e-5)
         core=(t>=phases[2][0]-1.e-5)&(t<phases[2][1]-1.e-5)
+        row["leg_p95"] = _p95(get("leg")[inside])
+        event_limits=profile.get("events",{}).get(str(event["id"]),{})
+        check("jump_leg_p95", row["leg_p95"],
+              event_limits.get("leg_p95", JUMP_LEG_P95_LIMIT), lo)
         air=(get("contact_left")<.5)&(get("contact_right")<.5)
         qualified=core & inside & (get("qualified")>.5)
         # Find an actual consecutive flight segment overlapping qualified
@@ -151,7 +185,6 @@ def assess_trace(trace, report, profile, *, full=False):
         row["landing_supported_s"]=_longest(landing & supported,t,dt)
         if row["landing_supported_s"] < 2*dt-1.e-6:
             failures.append(dict(check="landing_without_sustained_support",time_s=phases[3][0],event_id=event["id"]))
-        event_limits=profile.get("events",{}).get(str(event["id"]),{})
         for name in ("takeoff_offset_s","landing_offset_s"):
             check(name,abs(row[name]),event_limits.get(name,limits[name]),phases[2][0])
         # Closing is constrained only for reference closing events with an
@@ -264,7 +297,8 @@ class QualitySelection:
             if record is None:continue
             for result in record.get("results",[]):
                 acceptance=result.get("acceptance",{})
-                for key in ("leg_p95","height_p95","tilt_p95"):
+                for key in ("leg_p95","height_p95","tilt_p95","swing_error_p95_m",
+                            "swing_height_failure_s","swing_early_contact_s"):
                     value=acceptance.get("metrics",{}).get(key)
                     if isinstance(value,(int,float)) and math.isfinite(value):metrics[key]=max(metrics.get(key,value),value)
                 events.extend(e for e in acceptance.get("events",[]) if e.get("assessed"))

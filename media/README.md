@@ -54,6 +54,14 @@ python source/train_workflow/scripts/vmd_2_csv.py \
 
 在 Isaac Sim 中运行 `g1_vmd_0_replay.py`，调好 mapping / IK 后，在 Mapping UI 点击 **Record H5**，会在 CSV 同目录生成 `your_motion.h5`（供 `g1_vmd_1_train.py --dance your_motion` 使用）。
 
+## 回放视频外观
+
+`g1_vmd_0_replay.py` 和 `g1_vmd_pipeline.py` 的回放默认采用黑色天空，地面保留原有默认外观。
+保留环境光照亮机器人本体，便于观察轮廓、关节和动作；配置位于
+`source/my_task/g1_replay_env_cfg.py`。已有导出视频不会自动更改。
+录制时使用固定主视角，不跟随机器人。H5 录制开始时根据整段根轨迹一次性确定取景，
+为全身、抬手和移动范围留出余量；原始与矫正动作使用相同根轨迹时，取景也保持一致。
+
 ## 版权提示
 
 MMD 模型、动作（VMD）与音乐（WAV）通常受**第三方版权**约束。  

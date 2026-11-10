@@ -9,9 +9,23 @@ import hashlib
 from pathlib import Path
 
 import numpy as np
-from scipy.ndimage import gaussian_filter1d, minimum_filter1d
+from scipy.ndimage import gaussian_filter1d
 
-VERSION = 3
+VERSION = 6
+
+
+def _causal_minimum(values, span):
+    """Running minimum that never uses future samples.
+
+    A centered minimum makes a later crouch look like an earlier takeoff.  The
+    reference classifier must only compare a frame with its past, so the
+    baseline is deliberately causal.
+    """
+    values = np.asarray(values, float)
+    out = np.empty_like(values)
+    for index in range(len(values)):
+        out[index] = values[max(0, index - span + 1):index + 1].min()
+    return out
 
 
 def analyze_signals(root_z, feet, fps, valid=None):
@@ -27,10 +41,12 @@ def analyze_signals(root_z, feet, fps, valid=None):
     z = gaussian_filter1d(root_z, sigma)
     p = gaussian_filter1d(feet, sigma, axis=0)
     span = max(3, int(round(.9 * fps)) | 1)
-    # Local floor is inferred, not a measured sole/ground contact plane.
-    floor = minimum_filter1d(p[:, :, 2].min(1), size=span, mode="nearest")
+    # Local floor is inferred, not a measured sole/ground contact plane.  Keep
+    # this baseline causal as well; a later squat must not manufacture earlier
+    # foot clearance.
+    floor = _causal_minimum(p[:, :, 2].min(1), span)
     clearance = p[:, :, 2].min(1) - floor
-    rise = z - minimum_filter1d(z, size=span, mode="nearest")
+    rise = z - _causal_minimum(z, span)
     vz = np.gradient(z, 1 / fps)
     gap = np.linalg.norm(p[:, 0, :2] - p[:, 1, :2], axis=-1)
     closing = -np.gradient(gap, 1 / fps)
@@ -52,11 +68,23 @@ def analyze_signals(root_z, feet, fps, valid=None):
         root_rise = float(rise[lo:hi].max())
         clear = float(clearance[lo:hi].max())
         close = float(closing[lo:hi].max())
+        # A flight request requires bilateral clearance for a real interval,
+        # not a single lifted-foot sample.  This rejects small hops and
+        # crouches whose feet remain effectively supported.
+        airborne = clearance[lo:hi] > .08
+        longest_air = run = 0
+        for value in airborne:
+            run = run + 1 if value else 0
+            longest_air = max(longest_air, run)
+        airborne_s = longest_air / fps
         # Stronger evidence is required to actually request flight.
         # Modest body bobbing is not sufficient to impose bilateral flight.
         # Smaller possible jumps remain unknown rather than hard negatives.
-        fast = up > .45 and root_rise > .10 and clear > .08
-        slow_large = up > .35 and root_rise > .12 and clear > .095
+        # A high jump must show a measurable bilateral flight interval.  The
+        # stricter 10 cm / 150 ms gates keep a small hop followed by a squat
+        # out of the hard flight-reward path.
+        fast = up > .45 and root_rise > .10 and clear > .10 and airborne_s >= .15
+        slow_large = up > .35 and root_rise > .12 and clear > .10 and airborne_s >= .15
         high = (fast or slow_large) and valid[before:hi].all()
         confidence = "high" if high else "review"
         start, end = lo / fps, hi / fps
@@ -70,13 +98,28 @@ def analyze_signals(root_z, feet, fps, valid=None):
                            flight_reward=bool(high), phases=schedule,
                            target_upward_velocity=float(np.clip(up, .2, 1.2)),
                            evidence=dict(clearance_m=clear, root_rise_m=root_rise,
-                                         upward_mps=up, closing_mps=close)))
+                                         upward_mps=up, closing_mps=close,
+                                         bilateral_airborne_s=airborne_s)))
     foot_vz = np.gradient(p[:, :, 2], 1 / fps, axis=0)
     support = ((p[:, :, 2] - floor[:, None]) < .012) & (np.abs(foot_vz) < .12) & valid[:, None]
     for event in events:
         lo, hi = event["phases"][0][0] - .1, event["phases"][-1][1] + .1
         support[max(0, int(lo * fps)):min(n, int(np.ceil(hi * fps)))] = False
+    # Positive single-support evidence: one ankle is clearly higher while the
+    # lower ankle stays near the inferred floor. Unknown/bilateral flight is
+    # never converted into a request to lift a particular foot.
+    gap_z = p[:, :, 2] - p[:, ::-1, 2]
+    lower_near_floor = (p[:, :, 2].min(1) - floor) < .035
+    swing = (gap_z > .08) & lower_near_floor[:, None] & valid[:, None]
+    for event in events:
+        if event["flight_reward"]:
+            lo, hi = event["phases"][0][0], event["phases"][-1][1]
+            swing[max(0, int(lo * fps)):min(n, int(np.ceil(hi * fps)))] = False
+    from source.train_workflow.utils.reference_objectives import contact_evidence
+    contact_support, contact_air = contact_evidence(p, fps, valid)
     return dict(version=VERSION, fps=float(fps), frames=n, duration_s=n / fps,
+                contact_support_confidence=contact_support.tolist(), contact_air_confidence=contact_air.tolist(),
+                swing_feet=swing.astype(int).tolist(), swing_gap_m=np.maximum(gap_z, 0.).tolist(),
                 support_feet=support.astype(int).tolist(), support_windows=[],
                 events=events, limitations=[
                     "Candidates describe reference intent, not confirmed jumps or failures.",

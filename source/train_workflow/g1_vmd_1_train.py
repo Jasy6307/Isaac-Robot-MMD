@@ -115,7 +115,7 @@ parser.add_argument(
     type=float,
     default=None,
     help=(
-        "Seconds to hold the last reference frame after a curriculum ``start:full`` "
+        "Seconds to hold the last reference frame after Auto-Jump full motion or a curriculum ``start:full`` "
         "window (motion buffer clamps; policy keeps running). "
         "Default: C1_FULL_WINDOW_HOLD_SECONDS (2.0)."
     ),
@@ -221,6 +221,10 @@ parser.add_argument("--auto_jump_probe_start_fraction", type=float, default=0.2,
                     help="Skip full validation and video until this fraction of the cumulative iteration budget. 0 keeps every probe.")
 parser.add_argument("--auto_jump_review", type=str, default=None, help="Reference-hash-bound support review JSON.")
 parser.add_argument("--auto_jump_repair", action="store_true", help="Low-LR continuation mixing support reviews, retained jumps and full motion.")
+parser.add_argument("--auto_jump_tail_only", action="store_true",
+                    help="Train and validate only the final high-confidence jump window; no earlier motion is sampled.")
+parser.add_argument("--auto_jump_tail_start_seconds", type=float, default=None,
+                    help="Tail-only global H5 start time in seconds (default: 1s before the last high-confidence jump).")
 parser.add_argument("--turn_smoothing",action="store_true",help="Opt in to supported-turn residual rate/acceleration rewards; preserves jump transition margins.")
 parser.add_argument("--auto_motion_feedback",action="store_true",help="Reference-aware full-motion slip/chatter candidates, bounded rehearsal feedback and auxiliary best ranking.")
 parser.add_argument("--auto_jump_check_starts", type=float, nargs="+", default=None,
@@ -599,7 +603,13 @@ def main() -> None:
                 args_cli.window_frames = int(math.floor(len(motion_file["joint_pos_delta"]) /
                     float(motion_file.attrs["fps"]) * control_hz_from_env_cfg(env_cfg) + 1e-6))
             _apply_motion_overrides(env_cfg)
-        auto_report = prepare_auto_config(env_cfg, MOTION_H5_PATH, _resolve_motion_window_seconds(env_cfg), args_cli.auto_jump_review)
+        auto_report = prepare_auto_config(
+            env_cfg, MOTION_H5_PATH, _resolve_motion_window_seconds(env_cfg), args_cli.auto_jump_review,
+            hold_seconds=float(args_cli.episode_full_hold_seconds) if args_cli.episode_full_hold_seconds is not None else float(C1_FULL_WINDOW_HOLD_SECONDS),
+            tail_only=bool(args_cli.auto_jump_tail_only),
+            tail_start_seconds=args_cli.auto_jump_tail_start_seconds,
+        )
+        print(f"[AUTO HOLD] Motion {auto_report['duration_s']:.2f}s + last-frame hold {auto_report['end_hold_seconds']:.2f}s = full episode {auto_report['episode_duration_s']:.2f}s")
         if args_cli.auto_jump_repair:
             if not args_cli.resume or not auto_report["support_windows"]:
                 raise ValueError("Repair requires --resume and --auto_jump_review with support windows")
