@@ -1,0 +1,10 @@
+{
+  "amp_upper_reference_mix": 1.0,
+  "amp_upper_pose_weight": 0.5,
+  "amp_upper_keypoint_weight": 0.5,
+  "amp_phase_upper_weight": 2.0,
+  "amp_phase_velocity_weight": 0.4,
+  "amp_phase_std_floor": 0.04,
+  "diagnostic_controller_trace": false,
+  "amp_evaluation_forward_seconds": 30
+}

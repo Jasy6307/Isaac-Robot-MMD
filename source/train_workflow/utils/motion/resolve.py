@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from source.paths import DANCE_DIR, REPO_ROOT
+from source.paths import DANCE_DIR, REPO_ROOT, resolve_dance_asset
 
 _Z_EDITTED_SUFFIX = "_z_editted"
 
@@ -37,7 +37,7 @@ def _find_dance_csv(canonical: str, root: str) -> str | None:
         f"{canonical}{_Z_EDITTED_SUFFIX}.csv",
         f"{canonical}.csv",
     ):
-        path = os.path.join(root, fname)
+        path = str(resolve_dance_asset(os.path.join(root, fname), dance_dir=root))
         if os.path.isfile(path):
             return path
     return None
@@ -62,7 +62,7 @@ def resolve_dance_h5_by_name(
 ) -> tuple[str, str]:
     """Resolve ``dance_name`` to an absolute HDF5 path and canonical dance id.
 
-    Search order under ``media/dance/`` (first existing file wins):
+    Search order in the dance folder (also accepts legacy flat assets):
 
     1. ``{name}_z_editted.h5``
     2. ``{name}_z_editted.hdf5``
@@ -87,7 +87,7 @@ def resolve_dance_h5_by_name(
         f"{canonical}.hdf5",
     ]
     for fname in candidates:
-        path = os.path.join(root, fname)
+        path = str(resolve_dance_asset(os.path.join(root, fname), dance_dir=root))
         if os.path.isfile(path):
             abs_path = os.path.abspath(path)
             variant = "z_editted" if _Z_EDITTED_SUFFIX in fname else "base"

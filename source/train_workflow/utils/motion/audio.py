@@ -5,6 +5,8 @@ import json
 import math
 from pathlib import Path
 
+from source.paths import DANCE_DIR, resolve_dance_asset
+
 ROOT = Path(__file__).resolve().parents[4]
 
 
@@ -15,13 +17,14 @@ def _audio_from_record(record, base):
     path = Path(value)
     if not path.is_absolute():
         path = base / path
-    return str(path.resolve()) if path.is_file() else None
+    path = resolve_dance_asset(path)
+    return str(path) if path.is_file() else None
 
 
 def resolve_motion_audio(motion_path, *, recordings_dir=None):
     if not motion_path:
         return None
-    motion = Path(motion_path).resolve()
+    motion = resolve_dance_asset(motion_path)
     sidecar = motion.with_suffix(".motion.json")
     if sidecar.is_file():
         try:
@@ -36,7 +39,7 @@ def resolve_motion_audio(motion_path, *, recordings_dir=None):
     for manifest in sorted(directory.glob("*.pipeline.json")):
         try:
             record = json.loads(manifest.read_text(encoding="utf-8"))
-            if not any(record.get(key) and Path(record[key]).resolve() == motion for key in ("h5", "raw_h5")):
+            if not any(record.get(key) and resolve_dance_asset(record[key]) == motion for key in ("h5", "raw_h5")):
                 continue
             found = _audio_from_record(record, manifest.parent)
             if found:
@@ -49,6 +52,13 @@ def resolve_motion_audio(motion_path, *, recordings_dir=None):
         candidate = motion.with_name(stem + suffix)
         if candidate.is_file():
             return str(candidate)
+    # A dance folder also identifies the source of older corrected H5 files
+    # that predate motion sidecars and pipeline manifests.
+    if motion.parent.parent == Path(DANCE_DIR):
+        for suffix in (".wav", ".ogg", ".mp3", ".flac", ".m4a"):
+            candidate = motion.parent / (motion.parent.name + suffix)
+            if candidate.is_file():
+                return str(candidate)
     return None
 
 

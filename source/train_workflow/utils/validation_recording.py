@@ -15,14 +15,17 @@ import numpy as np
 import torch
 
 
-def save_validation_scene(path, *, env_cfg, reference, task, report):
+def save_validation_scene(path, *, env_cfg, reference, task, report, audio=None, reference_video=None):
     """Render-only config/reference snapshot, containing no policy or optimizer."""
     target=Path(path);target.parent.mkdir(parents=True,exist_ok=True)
     cfg=copy.deepcopy(env_cfg)
     cfg.scene.num_envs=1
     from source.train_workflow.utils.motion.audio import resolve_motion_audio
-    audio = resolve_motion_audio(cfg.actions.joint_pos.motion_h5_path)
+    audio = audio or resolve_motion_audio(cfg.actions.joint_pos.motion_h5_path)
+    if audio and not Path(audio).is_file():
+        raise FileNotFoundError(f"Validation audio not found: {audio}")
     payload=dict(format="g1-validation-scene",version=1,env_cfg=cfg,reference=reference,task=task,audio=audio,
+                 reference_video=copy.deepcopy(reference_video),
                  source_sha256=report["source_sha256"],control_hz=report["control_hz"])
     fd,temporary=tempfile.mkstemp(dir=target.parent,suffix=".tmp");os.close(fd)
     try:
@@ -135,6 +138,18 @@ def render_recordings(paths, *, emit=print):
         if code!=0 or not output.exists() or output.stat().st_mtime_ns<started or not sidecar.exists() or sidecar.stat().st_mtime_ns<started:
             return dict(video=None,error=f"Renderer failed (exit {code}); inspect {log}",poses=str(poses))
         emit(f"[验收录像已保存] {output}")
-        return dict(video=str(output),render_log=str(log),poses=[str(path) for path in paths])
+        result=dict(video=str(output),render_log=str(log),poses=[str(path) for path in paths])
+        try:
+            comparison=json.loads(sidecar.read_text(encoding="utf-8")).get("reference_comparison")
+            if comparison:
+                result["reference_comparison"]=comparison
+                if comparison.get("video"):
+                    result["comparison_video"]=comparison["video"]
+                    emit(f"[PMX对照录像已保存] {comparison['video']}")
+                elif comparison.get("error"):
+                    emit(f"[PMX对照录像失败，原验收录像已保留] {comparison['error']}")
+        except (OSError, ValueError, TypeError) as error:
+            emit(f"[PMX对照录像信息读取失败] {error}")
+        return result
     except OSError as error:
         return dict(video=None,error=str(error),poses=str(poses))

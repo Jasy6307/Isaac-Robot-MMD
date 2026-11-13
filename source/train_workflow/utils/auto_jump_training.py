@@ -674,8 +674,21 @@ def _train_auto_impl(runner, wrapped, cfg, agent_cfg, report, log_dir, args, res
         print(f"[AUTO HOLD] Hold changed {state.get('end_hold_seconds', 0.)} -> {report.get('end_hold_seconds', 0.)}s; previous best/acceptance reset, policy and sampler retained")
     profile_path=getattr(args,"auto_quality_profile",None)
     profile=(saved_selection["profile"] if saved_selection and not profile_path else resolve_profile(report,profile_path))
-    # Frozen before any learning. Future profile files cannot change a resumed
-    # run's contract; an explicit incompatible replacement is rejected.
+    # Legacy checkpoints did not freeze the formerly hard-coded swing limits.
+    # Adopt today's explicit defaults and reset quality history on migration.
+    import copy
+    from source.train_workflow.utils.quality_selection import DEFAULT_SWING_LIMITS
+    profile=copy.deepcopy(profile)
+    profile.setdefault("swing_limits",dict(DEFAULT_SWING_LIMITS))
+    if saved_selection and profile != saved_selection["profile"]:
+        # Explicitly selecting another reference-bound acceptance profile starts
+        # a fresh quality history. Keep the previous receipt for audit; model and
+        # optimizer continuation are unaffected.
+        atomic_write_json(Path(log_dir)/"quality_selection_before_profile_change.json", saved_selection)
+        print("[验收标准变更] 新profile或旧版触地容差迁移；保留旧记录，重新累计验收和best。", flush=True)
+        saved_selection=None
+    # Frozen before learning. Resume preserves its saved profile unless another
+    # profile is explicitly selected; it must still match this exact reference.
     from source.train_workflow.utils.quality_selection import validate_profile
     validate_profile(report,profile)
     selector=QualitySelection(profile,patience=getattr(args,"auto_quality_patience",3),
@@ -692,7 +705,8 @@ def _train_auto_impl(runner, wrapped, cfg, agent_cfg, report, log_dir, args, res
         action=cfg.actions.joint_pos
         buf=get_or_create_motion_buffer(wrapped.unwrapped,action.motion_h5_path,action.motion_window_seconds)
         controller.validation_scene=save_validation_scene(log_dir/"validation_media"/"scene.pt",
-            env_cfg=cfg,reference=buf.export_reference(),task=args.task,report=report)
+            env_cfg=cfg,reference=buf.export_reference(),task=args.task,report=report,
+            reference_video=getattr(args,"validation_reference",None))
     # Quality is advisory. Even legacy callers requesting early stopping must
     # continue to the configured budget; only the user decides to stop sooner.
     early_enabled=False

@@ -1,0 +1,9 @@
+{
+  "motion_stage": "complete_motion_transitions",
+  "imitation_transition_training": true,
+  "imitation_persistent_motion": true,
+  "imitation_blend_seconds": 1.0,
+  "imitation_velocity_weight": 6.0,
+  "imitation_keypoint_weight": 3.0,
+  "imitation_angular_velocity_weight": 1.2
+}

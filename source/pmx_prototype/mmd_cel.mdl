@@ -1,0 +1,43 @@
+mdl 1.7;
+import ::df::*;
+import ::math::*;
+import ::state::*;
+import ::tex::*;
+import ::scene::*;
+
+// Art-directed two-band normal/light shading, evaluated per pixel by RTX.
+// This is a directional cel terminator, not a ray-traced cast-shadow ramp.
+export material mmd_cel(
+    uniform texture_2d albedo = texture_2d(),
+    uniform color base_color = color(1.0),
+    uniform float threshold = 0.25,
+    uniform float shadow_level = 0.64,
+    uniform float brightness = 0.58,
+    uniform float opacity = 1.0,
+    uniform bool receive_bangs = false,
+    uniform float bangs_shadow_level = 0.72,
+    uniform bool face_shaping = false,
+    uniform color shadow_tint = color(1.0)
+) = let {
+    float3 uv = state::texture_coordinate(0);
+    float4 sample_color = tex::texture_isvalid(albedo) ?
+        tex::lookup_float4(albedo, float2(uv.x, uv.y)) : float4(1.0);
+    color pigment = color(sample_color.x, sample_color.y, sample_color.z) * base_color;
+    float3 normal_world = math::normalize(state::transform_normal(
+        state::coordinate_internal, state::coordinate_world, state::normal()));
+    float3 light_direction = face_shaping ? float3(-0.65,-0.55,0.52) : float3(-0.35,-0.65,0.68);
+    float light_value = math::dot(normal_world, math::normalize(light_direction));
+    float band = light_value >= threshold ? 1.0 : shadow_level;
+    bool occluded = receive_bangs && scene::data_lookup_float("bang_shadow", 0.0) >= 0.5;
+    float final_band = occluded ? math::min(bangs_shadow_level,band) : band;
+    color tint = final_band < 1.0 ? shadow_tint : color(1.0);
+    material_surface toon_surface = material_surface(emission: material_emission(
+        emission: df::diffuse_edf(),
+        intensity: pigment * tint * (final_band * brightness * 3561.31)
+    ));
+} in material(
+    thin_walled: true,
+    surface: toon_surface,
+    backface: toon_surface,
+    geometry: material_geometry(cutout_opacity: sample_color.w * opacity)
+);

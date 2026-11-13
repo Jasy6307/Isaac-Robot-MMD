@@ -21,6 +21,9 @@ parser.add_argument("--window_seconds", type=float)
 AppLauncher.add_app_launcher_args(parser)
 sim_compat.add_legacy_headless_arg(parser)
 args = parser.parse_args()
+from source.paths import resolve_dance_asset
+if args.h5:
+    args.h5 = str(resolve_dance_asset(args.h5))
 sim_compat.prepare_launcher_args(args, default_visualizer="none")
 app = AppLauncher(args).app
 

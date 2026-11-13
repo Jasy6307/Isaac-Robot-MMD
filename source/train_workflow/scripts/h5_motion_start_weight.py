@@ -3,7 +3,7 @@
 Example
 -------
 python source/train_workflow/scripts/h5_motion_start_weight.py `
-  --h5 media/dance/IRIS_OUT_z_editted.h5 `
+  --h5 media/dance/IRIS_OUT/IRIS_OUT_z_editted.h5 `
   --target_steps 920 `
   --lookahead_seconds 3.0 `
   --top_ratio 0.25 `
@@ -32,7 +32,12 @@ from source.train_workflow.utils.motion.start_weight import (
 
 
 def _resolve_h5_arg(value: str) -> str:
+    from source.paths import resolve_dance_asset
+
     v = str(value).strip()
+    resolved = resolve_dance_asset(v)
+    if resolved.is_file():
+        return str(resolved)
     if os.path.isfile(v):
         return os.path.abspath(v)
     if os.path.isfile(os.path.join(_WORKSPACE_ROOT, v)):

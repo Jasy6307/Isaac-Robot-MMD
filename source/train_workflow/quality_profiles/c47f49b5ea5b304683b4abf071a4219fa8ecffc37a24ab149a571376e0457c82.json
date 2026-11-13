@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "reference_key": "c47f49b5ea5b304683b4abf071a4219fa8ecffc37a24ab149a571376e0457c82",
+  "kind": "user_accepted_visual_tolerance",
+  "limits": {
+    "leg_p95": 0.3,
+    "height_p95": 0.12,
+    "tilt_p95": 0.35,
+    "leg_window": 0.35,
+    "height_window": 0.15,
+    "tilt_window": 0.45,
+    "support_air_s": 0.1,
+    "support_air_fraction": 0.05,
+    "support_speed_p95": 0.8,
+    "support_speed_window": 0.8,
+    "excess_height_window": 0.1,
+    "excess_vz_window": 0.6,
+    "takeoff_offset_s": 0.2,
+    "landing_offset_s": 0.25
+  },
+  "windows": {},
+  "events": {},
+  "provenance": [
+    {
+      "date": "2026-11-11",
+      "reason": "用户明确接受2500级别的舞蹈观感及9至11秒脚尖触地差异，并要求降低自动验收门槛。",
+      "baseline_run": "logs\\rsl_rl\\g1_auto_jump_conditional\\IRIS_OUT_gesture_final_v2\\2026-11-11_16-44-18",
+      "completed_iterations": 2500,
+      "scope": "Only this reference hash; body/height/flight/completion gates unchanged"
+    }
+  ],
+  "swing_limits": {
+    "early_contact_s": 0.4,
+    "early_contact_fraction": 0.9
+  }
+}

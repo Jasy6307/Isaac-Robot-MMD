@@ -1,0 +1,10 @@
+{
+  "learn_arm_clearance": true,
+  "learn_wrist_lateral_m": 0.185,
+  "imitation_normalizer_std_floor": 0,
+  "imitation_transition_training": true,
+  "imitation_persistent_motion": true,
+  "imitation_blend_seconds": 1.5,
+  "imitation_command_scope": "translation_040_yaw_060",
+  "max_speed": 0.4
+}

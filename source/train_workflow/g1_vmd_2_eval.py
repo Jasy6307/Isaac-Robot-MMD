@@ -364,7 +364,7 @@ from source.my_task.robots.actuator_pd import (  # noqa: E402
     apply_pd_profile_to_scene_robot,
     log_pd_profile_summary,
 )
-from source.paths import DANCE_DIR, MEDIA_DIR, REPO_ROOT  # noqa: E402
+from source.paths import DANCE_DIR, MEDIA_DIR, REPO_ROOT, resolve_dance_asset, iter_dance_assets  # noqa: E402
 from source.train_workflow.utils.motion.window import (  # noqa: E402
     control_hz_from_env_cfg,
     log_window_frames_override,
@@ -700,9 +700,9 @@ def _read_dance_asset_catalog() -> dict[str, tuple[str, str | None]]:
             if not motion:
                 continue
             name = infer_dance_name_from_motion_path(motion)
-            motion_path = os.path.normpath(os.path.join(MEDIA_DIR, motion))
+            motion_path = str(resolve_dance_asset(os.path.join(MEDIA_DIR, motion)))
             audio = str(entry.get("audio") or "").strip().replace("\\", "/")
-            wav_path = os.path.normpath(os.path.join(MEDIA_DIR, audio)) if audio else None
+            wav_path = str(resolve_dance_asset(os.path.join(MEDIA_DIR, audio))) if audio else None
             catalog.setdefault(name, (motion_path, wav_path))
     _DANCE_ASSET_CATALOG = catalog
     return catalog
@@ -715,7 +715,7 @@ def _resolve_dance_wav_path(dance_name: str | None) -> str | None:
     stem = normalize_dance_stem(dance_name)
     from source.train_workflow.utils.motion.audio import resolve_motion_audio
     for suffix in ("_z_editted.h5", ".h5", "_z_editted.hdf5", ".hdf5"):
-        motion = os.path.join(DANCE_DIR, stem + suffix)
+        motion = str(resolve_dance_asset(os.path.join(DANCE_DIR, stem + suffix)))
         if os.path.isfile(motion):
             resolved = resolve_motion_audio(motion)
             if resolved:
@@ -729,7 +729,7 @@ def _resolve_dance_wav_path(dance_name: str | None) -> str | None:
     except Exception as exc:
         print(f"[WARN] Failed to read dance WAV path from YAML: {exc}")
 
-    direct = os.path.join(DANCE_DIR, f"{stem}.wav")
+    direct = str(resolve_dance_asset(os.path.join(DANCE_DIR, f"{stem}.wav")))
     if os.path.isfile(direct):
         return direct
     return None
@@ -746,7 +746,7 @@ def _collect_available_dances() -> list[str]:
         print(f"[WARN] Failed to read dances from YAML: {exc}")
 
     for pat in ("*.h5", "*.hdf5", "*.csv"):
-        for path in glob.glob(os.path.join(DANCE_DIR, pat)):
+        for path in iter_dance_assets(pat):
             try:
                 stem = normalize_dance_stem(os.path.basename(path))
             except Exception:

@@ -1,0 +1,6 @@
+{
+  "train_upper_std_cap": 0.08,
+  "train_entropy_coef": 0.001,
+  "diagnostic_controller_trace": false,
+  "amp_evaluation_forward_seconds": 30
+}

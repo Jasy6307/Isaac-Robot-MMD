@@ -25,6 +25,7 @@ DEFAULT_LIMITS = dict(leg_p95=.30, height_p95=.12, tilt_p95=.35,
     support_air_s=.10, support_air_fraction=.05, support_speed_p95=.80,support_speed_window=.80,
     excess_height_window=.10, excess_vz_window=.60,
     takeoff_offset_s=.20, landing_offset_s=.25)
+DEFAULT_SWING_LIMITS = dict(early_contact_s=.4, early_contact_fraction=.9)
 # The generic global leg gate intentionally excludes jump phases.  Keep a
 # separate event gate so a rollout cannot pass solely because it stayed
 # upright while its jump legs diverged from the reference.
@@ -43,7 +44,8 @@ def reference_key(report):
 
 def generic_profile(report):
     return dict(version=1, reference_key=reference_key(report), kind="generic_engineering",
-                limits=dict(DEFAULT_LIMITS), windows={}, events={}, provenance=[])
+                limits=dict(DEFAULT_LIMITS), swing_limits=dict(DEFAULT_SWING_LIMITS),
+                windows={}, events={}, provenance=[])
 
 
 def resolve_profile(report, path=None):
@@ -52,6 +54,7 @@ def resolve_profile(report, path=None):
     profile = json.loads(target.read_text(encoding="utf-8")) if target.exists() else generic_profile(report)
     if path and not target.exists():
         raise FileNotFoundError(target)
+    profile.setdefault("swing_limits", dict(DEFAULT_SWING_LIMITS))
     return validate_profile(report,profile)
 
 
@@ -64,6 +67,11 @@ def validate_profile(report,profile):
     for section in ("windows","events"):
         if any(not math.isfinite(v) or v<=0 for row in profile.get(section,{}).values() for v in row.values()):
             raise ValueError("Invalid local/event quality limits")
+    swing = profile.get("swing_limits", {})
+    if (not isinstance(swing, dict) or set(swing)-set(DEFAULT_SWING_LIMITS) or
+            any(not isinstance(v, (int,float)) or not math.isfinite(v) or v<=0 for v in swing.values()) or
+            swing.get("early_contact_fraction", .25)>1):
+        raise ValueError("Invalid swing contact limits")
     return profile
 
 
@@ -108,14 +116,15 @@ def assess_trace(trace, report, profile, *, full=False):
         if value is not None and value > limit+1.e-7:
             failures.append(dict(check=name, observed=float(value), limit=float(limit), time_s=seconds))
     for name, value in metrics.items(): check(name,value,limits[name])
-    # Local sustained failures cannot hide in whole-dance averages. Short
-    # contact transients at lift/landing boundaries get 150 ms tolerance.
+    # Local sustained failures cannot hide in whole-dance averages. Height
+    # collapse keeps 150 ms tolerance; contact tolerance comes from the profile.
     swing = get("swing_required") > .5
+    swing_limits = dict(DEFAULT_SWING_LIMITS, **profile.get("swing_limits", {}))
     metrics["swing_samples"] = int(swing.sum())
     metrics["swing_error_p95_m"] = _p95(get("swing_error")[swing])
     for name, bad, limit in (
         ("swing_height_failure_s", swing & (get("swing_error") > .08), .15),
-        ("swing_early_contact_s", swing & (get("swing_early_contact") > .5), .15),
+        ("swing_early_contact_s", swing & (get("swing_early_contact") > .5), swing_limits["early_contact_s"]),
     ):
         value = _longest(bad, t, dt)
         metrics[name] = value
@@ -142,7 +151,7 @@ def assess_trace(trace, report, profile, *, full=False):
             row["swing_error_window_m"] = float(get("swing_error")[selected_swing].mean())
             row["swing_early_contact_fraction"] = float(get("swing_early_contact")[selected_swing].mean())
             check("swing_error_window_m", row["swing_error_window_m"], .06, float(start))
-            check("swing_early_contact_fraction", row["swing_early_contact_fraction"], .25, float(start))
+            check("swing_early_contact_fraction", row["swing_early_contact_fraction"], swing_limits["early_contact_fraction"], float(start))
         result["windows"].append(row)
     for event in report["events"]:
         if not event["flight_reward"]: continue
@@ -255,11 +264,20 @@ class QualitySelection:
         self.streak=0;self.last_iteration=None;self.best=None;self.history=[];self.stop_reason=None
         self.latest=None
         if state:
-            if state.get("version")!=1 or state.get("profile")!=profile or state.get("patience")!=patience or state.get("interval")!=interval:
+            if state.get("version")!=1 or state.get("profile")!=profile or state.get("patience")!=patience:
                 raise ValueError("Resumed quality selection settings differ from saved settings")
             for name in ("streak","last_iteration","best","history","stop_reason","latest"):
                 setattr(self,name,copy.deepcopy(state.get(name,getattr(self,name))))
             self.stop_reason=None
+            if state.get("interval") != self.interval:
+                # A new observation cadence is not a change in acceptance.
+                # Preserve verified best/history, but do not reuse the old
+                # consecutive-check streak as evidence under this cadence.
+                self.streak=0
+                self.history.append(dict(iteration=self.last_iteration,event="validation_interval_changed",
+                    previous_interval=state.get("interval"),interval=self.interval))
+                print(f"[AUTO VALIDATION] interval {state.get('interval')} -> {self.interval}; "
+                      "preserving frozen profile/best/history; confirmation streak reset",flush=True)
 
     @staticmethod
     def passed(records):

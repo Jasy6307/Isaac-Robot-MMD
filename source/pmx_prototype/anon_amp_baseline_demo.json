@@ -1,0 +1,5 @@
+{
+  "amp_forward_only": true,
+  "motion_stage": "amp_forward",
+  "imitation_command_scope": "amp_forward_040"
+}

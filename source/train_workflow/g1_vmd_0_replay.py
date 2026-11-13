@@ -11,7 +11,7 @@ G1 MMD 动作回放主入口（Isaac Sim）。
 4) 在重置和切换动作时维护控制参考姿态，避免姿态回弹。
 5) 映射 UI 顶部 ``PD Drive`` 复选框：勾选=全身关节 PD，不勾选=关节瞬移写入。
 6) 映射 UI ``Z_offset_enable``：勾选时自动播放同目录 ``*_z_editted.*`` sibling（无则回退原版并 WARN）。
-7) 启动时扫描 ``media/dance/*.vmd``，自动生成缺失的 CSV/H5 并登记到 ``dances_config.yaml``（可无快捷键，UI 可选）。
+7) 启动时扫描 ``media/dance/**/*.vmd``，自动生成缺失的 CSV/H5 并登记到 ``dances_config.yaml``（可无快捷键，UI 可选）。
 
 启动：``python source/train_workflow/g1_vmd_0_replay.py``
 """
@@ -32,7 +32,7 @@ _WORKSPACE_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "../.."))
 if _WORKSPACE_ROOT not in sys.path:
     sys.path.insert(0, _WORKSPACE_ROOT)
 
-from source.paths import DANCE_DIR, MEDIA_DIR, POSE_DIR
+from source.paths import DANCE_DIR, MEDIA_DIR, POSE_DIR, resolve_dance_asset
 
 _MEDIA_DIR = MEDIA_DIR
 
@@ -51,6 +51,21 @@ DANCES_CONFIG_PATH = os.path.join(_SCRIPT_DIR, "dances_config.yaml")
 
 parser = build_arg_parser(POSE_DIR)
 args_cli = parser.parse_args()
+for field in ("motion_csv", "motion_h5", "motion_wav", "source_vmd"):
+    if getattr(args_cli, field):
+        setattr(args_cli, field, str(resolve_dance_asset(getattr(args_cli, field))))
+if args_cli.retarget_mode == 'legacy' and (args_cli.upper_body_source_animation or args_cli.lower_body_source_animation):
+    parser.error('Legacy mode cannot use new limb source animations')
+if args_cli.lower_body_source_animation:
+    if not args_cli.auto_record_h5 or not args_cli.motion_csv:
+        parser.error("--lower_body_source_animation requires --motion_csv --auto_record_h5")
+    if not os.path.isfile(args_cli.lower_body_source_animation):
+        parser.error("--lower_body_source_animation must exist")
+if args_cli.upper_body_source_animation:
+    if not args_cli.auto_record_h5 or not args_cli.motion_csv:
+        parser.error("--upper_body_source_animation requires --motion_csv --auto_record_h5")
+    if not os.path.isfile(args_cli.upper_body_source_animation):
+        parser.error("--upper_body_source_animation must exist")
 if args_cli.auto_record_h5 and (not args_cli.motion_csv or args_cli.auto_play or args_cli.auto_record_collision_corrected_h5):
     parser.error("--auto_record_h5 requires --motion_csv and cannot be combined with auto play/collision recording")
 if args_cli.exit_after_h5_record and not args_cli.auto_record_h5:
@@ -103,6 +118,8 @@ if not (args_cli.motion_h5 or args_cli.motion_csv):
         groove_pos_to_world=float(args_cli.groove_pos_to_world),
         mmd_center_to_root_offset_local_xyz=args_cli.mmd_center_to_root_offset_local_xyz,
         knee_hinge_projection=bool(args_cli.mmd_knee_hinge_projection),
+        retarget_mode=args_cli.retarget_mode,
+        source_leg_mode=args_cli.source_leg_mode,
     )
 
 apply_app_window_kit_flags(args_cli)
@@ -1740,11 +1757,17 @@ def main():
             if recorder is None:
                 raise RuntimeError("recorder is missing")
             if h5_record_without_collision:
-                recorder.write(str(collision_raw_path))
+                recorder.write(str(collision_raw_path), retarget_mode=args_cli.retarget_mode,
+                               source_vmd=args_cli.source_vmd, source_leg_mode=args_cli.source_leg_mode,
+                               upper_body_source_animation=args_cli.upper_body_source_animation,
+                               lower_body_source_animation=args_cli.lower_body_source_animation)
                 collision_job.start(collision_raw_path, env_cfg.scene.robot.spawn.usd_path)
                 print(f"[INFO] Collision repair started in background; log: {collision_job.state['log']}", flush=True)
                 return
-            out_path = recorder.write()
+            out_path = recorder.write(upper_body_source_animation=args_cli.upper_body_source_animation,
+                                      lower_body_source_animation=args_cli.lower_body_source_animation,
+                                      retarget_mode=args_cli.retarget_mode, source_vmd=args_cli.source_vmd,
+                                      source_leg_mode=args_cli.source_leg_mode)
             batch_h5_complete = True
             print(f"[INFO] H5 recording complete: {out_path} ({label})")
             if dkey:

@@ -159,8 +159,10 @@ def write_hdf5_motion(path: str, motion: Hdf5Motion) -> str:
 
 
 def load_hdf5_motion(path: str) -> Hdf5Motion:
+    from source.paths import resolve_dance_asset
+
     h5py = _ensure_h5py()
-    abs_path = os.path.abspath(path)
+    abs_path = str(resolve_dance_asset(path))
     with h5py.File(abs_path, "r") as f:
         schema = str(f.attrs.get("schema_version", ""))
         if schema != HDF5_SCHEMA_VERSION:

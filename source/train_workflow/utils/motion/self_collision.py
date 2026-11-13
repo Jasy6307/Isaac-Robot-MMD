@@ -77,7 +77,7 @@ def _fit_capsule(name: str, points: np.ndarray) -> Shape:
 
 
 class G1CollisionModel:
-    def __init__(self, usd_path: Path, names: list[str], device: str):
+    def __init__(self, usd_path: Path, names: list[str], device: str,articulated_hands=True):
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.Open(str(usd_path))
@@ -136,11 +136,22 @@ class G1CollisionModel:
             return np.concatenate(pieces) if pieces else np.empty((0, 3))
 
         self.shapes: list[Shape] = []
+        self.hand_parts = {}
         for name in wanted:
             points = vertices(name, name)
             if name in ("lh_hand_base_link", "rh_hand_base_link"):
                 prefix = "lh_" if name.startswith("lh_") else "rh_"
-                # Include open fingers in a single conservative hand envelope.
+                # The neutral box remains the gesture landmark. Collision
+                # bounds are recomputed from every articulated hand part below.
+                parts=[]
+                for body in body_paths:
+                    if not body.startswith(prefix):continue
+                    local=vertices(body,body)
+                    if not len(local):continue
+                    lo,hi=local.min(0),local.max(0)
+                    corners=np.array([[x,y,z] for x in (lo[0],hi[0]) for y in (lo[1],hi[1]) for z in (lo[2],hi[2])])
+                    parts.append((body,corners))
+                self.hand_parts[name]=parts
                 extra = [vertices(body, name) for body in body_paths if body.startswith(prefix) and body != name]
                 points = np.concatenate([points, *extra])
             if not len(points):
@@ -152,9 +163,30 @@ class G1CollisionModel:
                 shape = _fit_capsule(name, points)
             self.shapes.append(shape)
 
-        # Only evaluate kinematic ancestors of the collision/foot bodies.
+        # Keep the established neutral hand proxy and add articulated phalanges
+        # as a union. A single expanded AABB would fill empty space between
+        # fingers and unnecessarily displace face/head gestures.
+        for base,parts in (self.hand_parts.items() if articulated_hands else []):
+            side='left' if base.startswith('lh_') else 'right'
+            for body,_corners in parts:
+                if body==base:continue
+                self.shapes.append(_fit_capsule(body,vertices(body,body)))
+                self.arm_names[side].append(body)
+
+        # Hip pitch/roll and ankle pitch housings are separate visual bodies.
+        # They are hand obstacles even though the historical leg-leg model
+        # represents only the larger yaw/knee/sole bodies.
+        self.hand_leg_targets=[]
+        if articulated_hands:
+            for side in ('left','right'):
+                for part in ('hip_pitch','hip_roll','ankle_pitch'):
+                    name=f'{side}_{part}_link';points=vertices(name,name)
+                    if len(points):
+                        self.shapes.append(_fit_capsule(name,points));self.hand_leg_targets.append(name)
+
+        # Hand bounds must follow the actual finger joint states as well.
         by_child = {joint.child: joint for joint in self.joints}
-        needed = set(wanted)
+        needed = set(wanted)|set(self.hand_leg_targets)|({n for parts in self.hand_parts.values() for n,_ in parts} if articulated_hands else set())
         for name in list(needed):
             while name in by_child:
                 name = by_child[name].parent
@@ -183,12 +215,16 @@ class G1CollisionModel:
         self.lower, self.upper = self._tensor(lower), self._tensor(upper)
         self.adjustable = [i for i, name in enumerate(names) if name.startswith(("left_", "right_"))]
         self.shape_constants = {s.name: (self._tensor(s.a), self._tensor(s.b)) for s in self.shapes}
+        self.hand_part_corners={base:self._tensor(np.stack([corners for _,corners in parts])) for base,parts in self.hand_parts.items()}
+        self.hand_geometry_mode='neutral-hand-box-and-articulated-finger-capsules-v1' if articulated_hands else 'neutral-hand-box-v0'
         indices = {s.name: i for i, s in enumerate(self.shapes)}
         pairs = []
         for arms in self.arm_names.values():
             pairs.extend((a, b) for a in arms for b in central)
         pairs.extend((a, b) for a in self.arm_names["left"] for b in self.arm_names["right"])
         pairs.extend((a, b) for a in sum(self.arm_names.values(), []) for b in sum(self.leg_names.values(), []))
+        hand_links=[n for parts in self.hand_parts.values() for n,_ in parts] if articulated_hands else []
+        pairs.extend((a,b) for a in hand_links for b in self.hand_leg_targets)
         pairs.extend((a, b) for a in self.leg_names["left"] for b in self.leg_names["right"])
         self.pairs = [(indices[a], indices[b]) for a, b in pairs]
         self.pair_labels = [f"{a} / {b}" for a, b in pairs]
@@ -266,30 +302,49 @@ class G1CollisionModel:
         t = t.clamp(0, 1)
         return torch.linalg.vector_norm(w + s[..., None] * u - t[..., None] * v, dim=-1)
 
+    def hand_bounds(self,rotations,positions):
+        """Pose-dependent AABBs in each palm frame, enclosing all visual parts.
+
+        Every part's local mesh lies in its eight-corner box. Transforming all
+        corners with full finger FK therefore covers the whole articulated mesh,
+        including a bent thumb protruding beyond the old neutral envelope.
+        """
+        result={}
+        for base,parts in self.hand_parts.items():
+            r=torch.stack([rotations[n] for n,_ in parts],dim=1)
+            p=torch.stack([positions[n] for n,_ in parts],dim=1)
+            world=torch.einsum('nlij,lkj->nlki',r,self.hand_part_corners[base])+p[:,:,None]
+            local=torch.einsum('nij,nlkj->nlki',rotations[base].transpose(-1,-2),world-positions[base][:,None,None])
+            lo,hi=local.amin((1,2)),local.amax((1,2))
+            result[base]=((lo+hi)/2,(hi-lo)/2+.001)
+        return result
+
     def distances(self, rotations, positions):
         r = torch.stack([rotations[s.name] for s in self.shapes], dim=1)
         p = torch.stack([positions[s.name] for s in self.shapes], dim=1)
-        start = (r @ self.local_a[..., None]).squeeze(-1) + p
-        end = (r @ self.local_b[..., None]).squeeze(-1) + p
+        local_a=self.local_a[None].expand(len(r),-1,-1).clone()
+        local_b=self.local_b[None].expand(len(r),-1,-1).clone()
+        start = (r @ local_a[..., None]).squeeze(-1) + p
+        end = (r @ local_b[..., None]).squeeze(-1) + p
         cp, bp, bb = self.capsule_pairs, self.box_pairs, self.box_box_pairs
         cap_dist = self._segment_distance(start[:, cp[:, 1]], end[:, cp[:, 1]], start[:, cp[:, 2]], end[:, cp[:, 2]]) - self.radii[cp[:, 1]] - self.radii[cp[:, 2]]
         a, b = start[:, bp[:, 1]], end[:, bp[:, 1]]
         points = a[:, :, None] + self.sample_t[None, None, :, None] * (b - a)[:, :, None]
         local = (points - p[:, bp[:, 2], None]) @ r[:, bp[:, 2]]
-        delta = (local - self.local_a[bp[:, 2]][None, :, None]).abs() - self.local_b[bp[:, 2]][None, :, None]
+        delta = (local - local_a[:,bp[:,2],None]).abs() - local_b[:,bp[:,2],None]
         signed = torch.linalg.vector_norm(delta.clamp_min(0), dim=-1) + delta.amax(-1).clamp_max(0)
         box_dist = signed.amin(-1) - self.sample_radii[bp[:, 1]]
         ra, rb = r[:, bb[:, 1]], r[:, bb[:, 2]]
-        ca = p[:, bb[:, 1]] + (ra @ self.local_a[bb[:, 1], :, None]).squeeze(-1)
-        cb = p[:, bb[:, 2]] + (rb @ self.local_a[bb[:, 2], :, None]).squeeze(-1)
+        ca = p[:, bb[:, 1]] + (ra @ local_a[:,bb[:,1],:,None]).squeeze(-1)
+        cb = p[:, bb[:, 2]] + (rb @ local_a[:,bb[:,2],:,None]).squeeze(-1)
         axes_a, axes_b = ra.transpose(-1, -2), rb.transpose(-1, -2)
         cross = torch.linalg.cross(axes_a[:, :, :, None], axes_b[:, :, None, :], dim=-1).flatten(2, 3)
         axes = torch.cat((axes_a, axes_b, cross), dim=2)
         lengths = torch.linalg.vector_norm(axes, dim=-1)
         axes = axes / lengths.clamp_min(1e-8)[..., None]
         center_distance = ((cb - ca)[:, :, None] * axes).sum(-1).abs()
-        a_extent = ((axes @ ra).abs() * self.local_b[bb[:, 1]][None, :, None]).sum(-1)
-        b_extent = ((axes @ rb).abs() * self.local_b[bb[:, 2]][None, :, None]).sum(-1)
+        a_extent = ((axes @ ra).abs() * local_b[:,bb[:,1],None]).sum(-1)
+        b_extent = ((axes @ rb).abs() * local_b[:,bb[:,2],None]).sum(-1)
         separating_gap = center_distance - a_extent - b_extent
         box_box_dist = separating_gap.masked_fill(lengths < 1e-6, -torch.inf).amax(-1)
         # Restore the original pair order for diagnostics.

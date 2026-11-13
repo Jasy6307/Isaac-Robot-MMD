@@ -29,6 +29,13 @@ def main():
     parser.add_argument("--threads", type=int, default=4, help="CPU tensor worker threads")
     parser.add_argument("--margin", type=float, default=0.004)
     args = parser.parse_args()
+    from source.paths import resolve_dance_asset
+    if args.input:
+        args.input = resolve_dance_asset(args.input)
+    if args.output:
+        args.output = resolve_dance_asset(args.output)
+    if args.initial_h5:
+        args.initial_h5 = resolve_dance_asset(args.initial_h5)
     source, output = args.input.resolve(), args.output.resolve()
     if source == output:
         parser.error("Input and output must be different; original H5 is preserved.")

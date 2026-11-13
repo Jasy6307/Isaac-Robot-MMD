@@ -37,7 +37,8 @@ class RecordingTests(unittest.TestCase):
         self.assertTrue(torch.equal(rng,torch.random.get_rng_state()))
 
     def test_scene_snapshot_does_not_change_live_environment_config(self):
-        cfg=NS(scene=NS(num_envs=8192),events=NS(reset_params=dict(random_start=True)))
+        cfg=NS(scene=NS(num_envs=8192),events=NS(reset_params=dict(random_start=True)),
+               actions=NS(joint_pos=NS(motion_h5_path="unused.h5")))
         with tempfile.TemporaryDirectory(dir=ROOT/"output") as directory:
             path=save_validation_scene(Path(directory)/"scene.pt",env_cfg=cfg,reference=dict(q=torch.zeros(3)),
                 task="test",report=dict(source_sha256="test",control_hz=30.))
@@ -52,6 +53,17 @@ class RecordingTests(unittest.TestCase):
         capture.append(torch.tensor([float("nan"),0.,0.,0.,0.,0.,1.]),torch.zeros(1))
         with self.assertRaises(ValueError):capture.save("unused.npz",metadata={},result={})
 
+    def test_explicit_music_is_preserved_without_motion_name_lookup(self):
+        cfg=NS(scene=NS(num_envs=16))
+        with tempfile.TemporaryDirectory(dir=ROOT/"output") as directory:
+            audio=Path(directory)/"music.wav"
+            audio.write_bytes(b"test")
+            path=save_validation_scene(Path(directory)/"scene.pt",env_cfg=cfg,reference={},
+                task="test",report=dict(source_sha256="test",control_hz=30.),audio=str(audio))
+            self.assertEqual(torch.load(path,weights_only=False)["audio"],str(audio))
+            with self.assertRaises(FileNotFoundError):
+                save_validation_scene(Path(directory)/"missing.pt",env_cfg=cfg,reference={},
+                    task="test",report=dict(source_sha256="test",control_hz=30.),audio=str(audio.with_name("missing.wav")))
     def test_actual_observe_hook_captures_terminal_pose_before_reset_once(self):
         with tempfile.TemporaryDirectory(dir=ROOT/"output") as directory:
             proxy=lambda t:NS(torch=t)
@@ -78,7 +90,10 @@ class RecordingTests(unittest.TestCase):
                 flight_state=lambda e:dict(air=torch.zeros(1),stance=torch.tensor([False]),rising=torch.tensor([False])))
             modules={"source.my_task.motion_reference":NS(motion_steps=lambda e:torch.ones(1,dtype=torch.long),
                 get_or_create_motion_buffer=lambda *a:NS(root_pos_delta=lambda steps:torch.zeros(1,3))),
-                "source.my_task.mdp":NS(jump=jump),"source.my_task.mdp.auto_jump":NS(tracking_metrics=lambda *a:metrics,support_metrics=lambda e:support)}
+                "source.my_task.mdp":NS(jump=jump),"source.my_task.mdp.auto_jump":NS(
+                    tracking_metrics=lambda *a:metrics,support_metrics=lambda e:support,
+                    swing_metrics=lambda e:dict(required=torch.zeros(1,dtype=torch.bool),
+                        error_m=torch.zeros(1),early_contact=torch.zeros(1,dtype=torch.bool)))}
             data.root_state_w.torch[0,2]=.6
             with patch.dict(sys.modules,modules):
                 controller.observe();controller.observe()

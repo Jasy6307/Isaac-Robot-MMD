@@ -40,6 +40,13 @@ def main():
     parser.add_argument('--iterations', type=int, default=1400)
     parser.add_argument('--uncross', action='store_true', help='Reduce this window to a consistent left/right leg path instead of preserving a deep crossing')
     args = parser.parse_args()
+    from source.paths import resolve_dance_asset
+    if args.input:
+        args.input = resolve_dance_asset(args.input)
+    if args.reference:
+        args.reference = resolve_dance_asset(args.reference)
+    if args.output:
+        args.output = resolve_dance_asset(args.output)
     if args.output.exists():
         parser.error('Output already exists; input H5 files are preserved')
     torch.set_num_threads(2)

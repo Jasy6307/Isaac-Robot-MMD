@@ -1,0 +1,6 @@
+{
+  "imitation_velocity_weight": 3.0,
+  "imitation_velocity_error_scale": 0.02,
+  "imitation_orientation_error_scale": 0.05,
+  "diagnostic_controller_trace": false
+}

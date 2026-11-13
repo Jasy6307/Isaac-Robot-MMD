@@ -1,0 +1,6 @@
+{
+  "continuous_boundary_fraction": 0.35,
+  "continuous_tracking_weight": 3.0,
+  "imitation_angular_velocity_weight": 1.2,
+  "imitation_normalizer_std_floor": 0
+}

@@ -46,6 +46,15 @@ def main():
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--iterations', type=int, default=1200)
     args = parser.parse_args()
+    from source.paths import resolve_dance_asset
+    if args.input:
+        args.input = resolve_dance_asset(args.input)
+    if args.original:
+        args.original = resolve_dance_asset(args.original)
+    if args.smooth_seed:
+        args.smooth_seed = resolve_dance_asset(args.smooth_seed)
+    if args.output:
+        args.output = resolve_dance_asset(args.output)
     if args.output.exists():
         parser.error('Output already exists; all source H5 files are preserved')
     if args.iterations < 1:

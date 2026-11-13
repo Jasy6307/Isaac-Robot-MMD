@@ -119,6 +119,13 @@ TASK_ID = "Isaac-G1-Vmd-Replay-v0"
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
+    from source.paths import resolve_dance_asset
+    if args.motion:
+        args.motion = str(resolve_dance_asset(args.motion))
+    if args.csv:
+        args.csv = str(resolve_dance_asset(args.csv))
+    if args.output:
+        args.output = str(resolve_dance_asset(args.output))
     sim_compat.prepare_launcher_args(args)
     args.device = "cpu"
     app = AppLauncher(args).app

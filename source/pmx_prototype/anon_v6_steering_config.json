@@ -1,0 +1,14 @@
+{
+  "full_motion_path": "I:/robot_isaac/output/anon_locomotion/full_motion/steering_bank.npz",
+  "motion_stage": "complete_motion_steering",
+  "max_yaw": 0.6,
+  "imitation_motion_probabilities": [1,1,1,1,1,1,1,1,1,1,1],
+  "imitation_persistent_motion": true,
+  "imitation_transition_training": false,
+  "imitation_steering": true,
+  "imitation_invariant_observation": true,
+  "imitation_random_heading": true,
+  "imitation_angular_velocity_weight": 0.7,
+  "imitation_normalizer_std_floor": 0.1,
+  "episode_seconds": 15.0
+}

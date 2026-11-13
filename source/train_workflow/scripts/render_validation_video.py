@@ -23,6 +23,10 @@ if free_mib is not None and free_mib<4864:
 sys.path.insert(0,str(Path(__file__).resolve().parents[3]))
 from isaaclab.app import AppLauncher
 from source import sim_compat
+from source.train_workflow.utils.validation_reference import (
+    add_reference_video_arguments, reference_video_from_args, has_reference_override,
+    resolve_reference_video, compose_reference_video,
+)
 parser=argparse.ArgumentParser()
 parser.add_argument("--poses",type=Path,nargs="+",required=True)
 parser.add_argument("--scene",type=Path)
@@ -42,9 +46,13 @@ parser.add_argument("--playback_rate",type=float,default=1.,help="0.5 encodes re
 parser.add_argument("--camera_layout",choices=("close","wide"),default="close",help="Close full-motion framing (default), or the legacy wide view for comparison")
 parser.add_argument("--robot_spacing",type=float,help="Replay robot center spacing in metres; close default 1.25, wide 2.8")
 parser.add_argument("--fixed_camera",action="store_true",help="Disable close-layout reference-XY camera tracking")
+add_reference_video_arguments(parser)
 AppLauncher.add_app_launcher_args(parser)
 sim_compat.add_legacy_headless_arg(parser)
 args=parser.parse_args()
+from source.paths import resolve_dance_asset
+if args.audio:
+    args.audio = resolve_dance_asset(args.audio)
 if args.start_seconds<0 or (args.end_seconds is not None and args.end_seconds<=args.start_seconds) or args.playback_rate<=0:
     parser.error("Invalid time range or playback rate")
 if args.labels and (not args.checkpoint_comparison or len(args.labels)!=len(args.poses)):
@@ -80,6 +88,21 @@ def main():
     if scene.get("format") not in ("g1-validation-scene","g1-dance-deployment"):
         raise ValueError("Not a supported render scene or deployment bundle")
     cfg=scene["env_cfg"]
+    # New scenes freeze the selected reference. Legacy scenes resolve the dance
+    # list here, so already-running jobs can use a registered PMX video too.
+    reference_video=None
+    reference_error=None
+    try:
+        if has_reference_override(args):
+            reference_video=reference_video_from_args(args,cfg.actions.joint_pos.motion_h5_path)
+        elif "reference_video" in scene:
+            reference_video=scene["reference_video"]
+        else:
+            reference_video=resolve_reference_video(cfg.actions.joint_pos.motion_h5_path)
+    except (OSError,ValueError,TypeError) as error:
+        reference_error=str(error)
+        print(f"[PMX对照视频不可用，继续生成原验收录像] {error}",flush=True)
+    motion_start_s=float(meta.get("result",{}).get("start_s",0.))
     audio = args.audio
     if audio is None:
         saved_audio = scene.get("audio")
@@ -166,7 +189,7 @@ def main():
         if not encoder_exe:raise RuntimeError("Install imageio-ffmpeg in the recording Python environment")
         cmd=[encoder_exe,"-y","-f","rawvideo","-pix_fmt","rgb24","-s",f"{args.width}x{args.height}",
              "-r",str(video_fps),"-i","pipe:0"]
-        if audio:cmd += ffmpeg_audio_args(audio, start_seconds=first_frame/fps, playback_rate=args.playback_rate*args.preview_stride)
+        if audio:cmd += ffmpeg_audio_args(audio, start_seconds=motion_start_s+first_frame/fps, playback_rate=args.playback_rate*args.preview_stride)
         cmd += ["-c:v","libx264","-preset","fast","-crf","19","-pix_fmt","yuv420p",
                 "-t",str(len(frames)/video_fps),"-movflags","+faststart",str(temporary)]
         verdicts=[]
@@ -212,7 +235,7 @@ def main():
                     canvas=Image.fromarray(rgb);draw=ImageDraw.Draw(canvas)
                     draw.rectangle((0,0,args.width,header_pixels),fill=(17,23,33))
                     heading="Checkpoint comparison" if args.checkpoint_comparison else f"iter {meta['completed_iterations']}"
-                    draw.text((12,6),f"{heading} | {frame/fps:05.2f} s | {args.playback_rate:g}x recorded poses",font=font,fill="white")
+                    draw.text((12,6),f"{heading} | {motion_start_s+frame/fps:05.2f} s | {args.playback_rate:g}x recorded poses",font=font,fill="white")
                     for i,((p,m),verdict) in enumerate(zip(recordings,verdicts)):
                         ended=f" | ENDED @ {(len(p)-1)/fps:.2f}s" if frame>=len(p) else ""
                         label=args.labels[i] if args.labels else f"seed {m['seed']}"
@@ -229,13 +252,28 @@ def main():
                 if encoder.poll() is None:encoder.kill();encoder.wait()
         atomic_write_json(output.with_suffix(".json"),dict(video=str(output.resolve()),poses=[str(p.resolve()) for p in args.poses],
             metadata=[m for p,m in recordings],replicas=replicas,cameras=1,render_device=args.device,frames=len(frames),fps=video_fps,
-            video_duration_s=len(frames)/video_fps,source_control_hz=fps,source_start_s=first_frame/fps,audio=str(audio) if audio else None,
+            video_duration_s=len(frames)/video_fps,source_control_hz=fps,source_start_s=motion_start_s+first_frame/fps,
+            source_frame_stride=args.preview_stride,audio=str(audio) if audio else None,
             playback_rate=args.playback_rate,checkpoint_comparison=args.checkpoint_comparison,labels=args.labels,
             camera_layout=args.camera_layout,robot_spacing_m=spacing,camera=framing,replay_collision_enabled=False,
             image_refresh_checks=checks,max_joint_drift_rad=max_joint_drift,max_root_drift_m=max_root_drift,
             render_sync_dt_s=sim.cfg.dt,method="Recorded physical poses replayed; no policy inference"))
         print(f"[VIDEO SAVED] {output.resolve()}",flush=True)
     finally:env.close()
+    # Compose after closing the render environment; acceptance and its original
+    # MP4 remain intact even if the reference movie cannot be decoded.
+    comparison={"error":reference_error} if reference_error else None
+    if reference_video:
+        try:
+            comparison=compose_reference_video(output,reference_video,ffmpeg=encoder_exe)
+        except (OSError,ValueError,RuntimeError,subprocess.SubprocessError) as error:
+            comparison=dict(error=str(error),reference=reference_video)
+            print(f"[PMX对照录像失败，原验收录像已保留] {error}",flush=True)
+    if comparison:
+        sidecar=output.with_suffix(".json")
+        info=json.loads(sidecar.read_text(encoding="utf-8"))
+        info["reference_comparison"]=comparison
+        atomic_write_json(sidecar,info)
 
 
 try:main()

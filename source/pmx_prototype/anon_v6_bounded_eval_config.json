@@ -1,0 +1,4 @@
+{
+  "max_speed": 0.4,
+  "imitation_command_scope": "translation_040_yaw_060"
+}

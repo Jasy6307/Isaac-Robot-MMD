@@ -1,0 +1,6 @@
+{
+  "imitation_heading_observation": true,
+  "imitation_velocity_weight": 2.0,
+  "imitation_keypoint_weight": 3.0,
+  "episode_seconds": 15.0
+}

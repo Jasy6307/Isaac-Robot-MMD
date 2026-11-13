@@ -31,6 +31,9 @@ def format_playback_log_label(label: str) -> str:
 
 def load_motion(filepath: str) -> MotionBundle | None:
     """Load motion (CSV/HDF5) and return a unified bundle."""
+    from source.paths import resolve_dance_asset
+
+    filepath = str(resolve_dance_asset(filepath))
     if not os.path.isfile(filepath):
         return None
     ext = os.path.splitext(filepath)[1].lower()
@@ -108,9 +111,10 @@ def resolve_path_under_media(relative: str, media_dir: str) -> str:
     rel = (relative or "").strip().replace("\\", "/")
     if not rel:
         return ""
-    if os.path.isabs(rel):
-        return os.path.normpath(rel)
-    return os.path.normpath(os.path.join(media_dir, rel))
+    from source.paths import resolve_dance_asset
+
+    path = rel if os.path.isabs(rel) else os.path.join(media_dir, rel)
+    return str(resolve_dance_asset(path, dance_dir=os.path.join(media_dir, "dance")))
 
 
 def load_dances_from_yaml(

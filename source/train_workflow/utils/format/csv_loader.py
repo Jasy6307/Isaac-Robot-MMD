@@ -708,6 +708,9 @@ def load_csv_motion(csv_path: str) -> dict[int, dict[str, dict]]:
     返回: {frame_idx: {bone_name: {"pos": tuple, "euler": tuple(rad),
                                    "quat_wxyz": tuple(w,x,y,z)}}}
     """
+    from source.paths import resolve_dance_asset
+
+    csv_path = str(resolve_dance_asset(csv_path))
     rows = None
     for enc in ("utf-8", "cp932", "shift_jis"):
         try:

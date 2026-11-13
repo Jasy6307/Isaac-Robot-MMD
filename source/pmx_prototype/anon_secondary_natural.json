@@ -1,0 +1,18 @@
+{
+  "skirt_fabric_relaxation": true,
+  "cloth_translation_only": true,
+  "appearance": {
+    "skirt_radius_m": 0.005,
+    "hair_radius_m": 0.005,
+    "skirt_shear_min": 0.82,
+    "skirt_shear_max": 1.04,
+    "skirt_lateral_stiffness": 12.0,
+    "skirt_diagonal_stiffness": 6.0,
+    "skirt_bend_scale": 0.45,
+    "hair_bend_scale": 0.45,
+    "skirt_shape_scale": 0.8,
+    "hair_shape_scale": 0.65,
+    "hair_linear_damping": 3.2,
+    "skirt_linear_damping": 3.5
+  }
+}

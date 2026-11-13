@@ -44,6 +44,9 @@ from source.train_workflow.utils.motion.resolve import (  # noqa: E402
 )
 from source.train_workflow.utils.run_note import create_run_note, run_note_filename  # noqa: E402
 from source.train_workflow.utils.checkpoints import latest_checkpoint  # noqa: E402
+from source.train_workflow.utils.validation_reference import (  # noqa: E402
+    add_reference_video_arguments, reference_video_from_args,
+)
 from isaaclab.app import AppLauncher  # noqa: E402
 from source import sim_compat
 
@@ -237,6 +240,7 @@ parser.add_argument("--no_auto_validation_record",dest="auto_validation_record",
                     help="Disable saving actual full-validation poses for later video rendering (enabled by default, headless-compatible).")
 parser.add_argument("--no_auto_validation_video",dest="auto_validation_video",action="store_false",default=True,
                     help="Only save validation poses; disable the single synchronized multi-seed MP4 after each parallel full check.")
+add_reference_video_arguments(parser)
 parser.add_argument("--no_auto_quality_early_stop", dest="auto_quality_early_stop",action="store_false",default=False,
                     help="Compatibility option: training always continues to the iteration limit or a manual stop.")
 parser.add_argument(
@@ -290,6 +294,14 @@ DANCE_NAME: str | None = None
 MOTION_H5_PATH: str | None = None
 if args_cli.dance:
     MOTION_H5_PATH, DANCE_NAME = resolve_dance_h5_by_name(args_cli.dance)
+
+try:
+    args_cli.validation_reference = reference_video_from_args(args_cli, MOTION_H5_PATH)
+except (OSError, ValueError, TypeError) as error:
+    parser.error(str(error))
+if args_cli.validation_reference:
+    print(f"[PMX对照视频] {args_cli.validation_reference['video']} | "
+          f"动作零点对应视频 {args_cli.validation_reference['start_seconds']:g}s", flush=True)
 
 if args_cli.video:
     args_cli.enable_cameras = True

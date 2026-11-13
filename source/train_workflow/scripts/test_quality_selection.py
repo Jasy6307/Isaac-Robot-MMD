@@ -43,6 +43,13 @@ class GateTests(unittest.TestCase):
         self.assertTrue(r["passed"],r["failures"])
         self.assertAlmostEqual(r["events"][0]["air_s"],.2)
 
+    def test_all_dances_freeze_the_same_default_contact_tolerance(self):
+        for name in ("IRIS_OUT", "ji_le_jing_tu", "another_dance"):
+            profile=generic_profile(dict(self.report,source_sha256=name))
+            self.assertEqual(profile["swing_limits"],dict(early_contact_s=.4,early_contact_fraction=.9))
+            profile["swing_limits"]["early_contact_s"]=.1
+        self.assertEqual(generic_profile(self.report)["swing_limits"]["early_contact_s"],.4)
+
     def test_swing_collapse_fails_even_when_overall_leg_tracking_passes(self):
         self.trace[60:80, INDEX["swing_required"]] = 1
         self.trace[60:80, INDEX["swing_error"]] = .15
@@ -53,15 +60,34 @@ class GateTests(unittest.TestCase):
         self.trace[60:80, INDEX["swing_required"]] = 1
         self.trace[60:63, INDEX["swing_early_contact"]] = 1
         self.assertTrue(assess_trace(self.trace, self.report, self.profile, full=True)["passed"])
-        self.trace[60:70, INDEX["swing_early_contact"]] = 1
+        self.trace[60:74, INDEX["swing_early_contact"]] = 1
         r = assess_trace(self.trace, self.report, self.profile, full=True)
         self.assertIn("swing_early_contact_s", [f["check"] for f in r["failures"]])
 
     def test_repeated_short_touchdowns_cannot_evade_swing_gate(self):
         self.trace[60:90, INDEX["swing_required"]] = 1
-        self.trace[60:90:2, INDEX["swing_early_contact"]] = 1
+        self.trace[60:90, INDEX["swing_early_contact"]] = 1
+        self.trace[[69,79], INDEX["swing_early_contact"]] = 0
         r = assess_trace(self.trace, self.report, self.profile, full=True)
         self.assertIn("swing_early_contact_fraction", [f["check"] for f in r["failures"]])
+
+    def test_reference_specific_visual_contact_tolerance_keeps_other_gates(self):
+        profile=copy.deepcopy(self.profile)
+        strict=copy.deepcopy(self.profile)
+        strict["swing_limits"]=dict(early_contact_s=.15,early_contact_fraction=.25)
+        self.trace[60:90,INDEX["swing_required"]]=1
+        self.trace[60:70,INDEX["swing_early_contact"]]=1
+        self.trace[72:78,INDEX["swing_early_contact"]]=1
+        self.assertFalse(assess_trace(self.trace,self.report,strict,full=True)["passed"])
+        self.assertTrue(assess_trace(self.trace,self.report,profile,full=True)["passed"])
+        self.trace[60:90,INDEX["swing_early_contact"]]=1
+        self.assertFalse(assess_trace(self.trace,self.report,profile,full=True)["passed"])
+        self.trace[:,INDEX["swing_early_contact"]]=0
+        self.trace[60:80,INDEX["swing_error"]]=.15
+        self.assertFalse(assess_trace(self.trace,self.report,profile,full=True)["passed"])
+        self.trace[:,INDEX["swing_error"]]=0
+        self.trace[:,INDEX["tilt"]]=.8
+        self.assertFalse(assess_trace(self.trace,self.report,profile,full=True)["passed"])
 
     def test_jump_leg_error_is_not_hidden_by_contact_success(self):
         self.trace[18:45,INDEX["leg"]]=.8
@@ -186,7 +212,34 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(s.best["checkpoint"],"a.pt")
         restored=QualitySelection(s.profile,interval=400,state=s.state_dict())
         self.assertEqual(restored.best,s.best)
-        with self.assertRaises(ValueError):QualitySelection(s.profile,interval=200,state=s.state_dict())
+        changed=QualitySelection(s.profile,interval=200,state=s.state_dict())
+        self.assertEqual(changed.best,s.best)
+        self.assertEqual(changed.history[:-1],s.history)
+        self.assertEqual(changed.history[-1]["event"],"validation_interval_changed")
+        with self.assertRaises(ValueError):QualitySelection(s.profile,patience=4,interval=200,state=s.state_dict())
+
+    def test_changed_interval_resets_streak_without_mutating_saved_evidence(self):
+        s=self.make();seeds=[42,43,44]
+        for iteration in (400,800,1200):
+            s.screen(iteration,record(kind="coverage"),record())
+            s.confirm(iteration,[record(seed=i) for i in seeds],seeds,"best.pt")
+        state=s.state_dict();old=copy.deepcopy(state)
+        changed=QualitySelection(s.profile,interval=500,state=state)
+        self.assertTrue(s.manual_review_ready)
+        self.assertFalse(changed.manual_review_ready)
+        self.assertEqual(changed.streak,0)
+        self.assertEqual(changed.best,s.best)
+        self.assertEqual(state,old)
+        profile=copy.deepcopy(s.profile);profile["limits"]["leg_p95"]*=2
+        with self.assertRaises(ValueError):QualitySelection(profile,interval=500,state=state)
+
+    def test_never_validated_checkpoint_can_resume_with_periodic_checks(self):
+        profile=self.make().profile
+        saved=QualitySelection(profile,interval=10000).state_dict()
+        changed=QualitySelection(profile,interval=500,state=saved)
+        self.assertIsNone(changed.best)
+        self.assertIsNone(changed.last_iteration)
+        self.assertEqual(changed.interval,500)
 
     def test_manual_review_readiness_tracks_latest_confirmation_and_resumes(self):
         s=self.make();seeds=[42,43,44]

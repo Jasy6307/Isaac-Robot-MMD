@@ -1,0 +1,62 @@
+{
+  "skirt_fabric_relaxation": true,
+  "cloth_translation_only": true,
+  "skirt_contact_smoothing": {
+    "contact_offset_m": 0.006,
+    "max_pushout_m_s": 0.08,
+    "linear_damping": 18.0
+  },
+  "skirt_contact_release": {
+    "normal_ratio": 4.0,
+    "tangent_ratio": 0.3,
+    "release_seconds": 0.1,
+    "rise_seconds": 0.025,
+    "normal_blend_seconds": 0.02
+  },
+  "appearance": {
+    "hand_skirt_contacts": true,
+    "skirt_edge_contacts": true,
+    "free_drape": true,
+    "body_radius_scale": 1.0,
+    "skirt_radius_m": 0.024,
+    "hair_radius_m": 0.003,
+    "skirt_shear_min": 0.9,
+    "skirt_shear_max": 1.18,
+    "skirt_lateral_stiffness": 10.0,
+    "skirt_diagonal_stiffness": 4.0,
+    "skirt_bend_scale": 0.6,
+    "hair_bend_scale": 0.18,
+    "front_hair_bend_scale": 0.6,
+    "skirt_shape_scale": 1.0,
+    "hair_shape_scale": 0.25,
+    "front_hair_shape_scale": 0.8,
+    "hair_linear_damping": 2.2,
+    "skirt_linear_damping": 18.0,
+    "skirt_free_drape": false,
+    "skirt_edge_body_contacts": true,
+    "skirt_edge_radius_m": 0.006,
+    "skirt_edge_body_bones": [
+      "左足",
+      "右足",
+      "左ひざ",
+      "右ひざ"
+    ],
+    "skirt_edge_body_min_row": 2,
+    "palm_proxy_include_fingers": false,
+    "skirt_bend_cone_deg": 35.0,
+    "skirt_reduced_constraints": true,
+    "skirt_edge_mass_kg": 0.006,
+    "skirt_edge_linear_damping": 18.0,
+    "skirt_edge_angular_damping": 60.0,
+    "skirt_edge_max_pushout_m_s": 0.08,
+    "skirt_bend_soft_limit": {
+      "stiffness_per_degree": 0.002,
+      "damping_per_degree": 0.0001
+    }
+  },
+  "description": "Default hair/skirt parameters: soft contact v1, physics fixed at 120 Hz per user preference; native grid inferred without geometry edits. Material/constraint parameters tested on Mutsumi and Anon Girls; 120 Hz default has separate smoke validation.",
+  "profile_id": "soft_contact_v1",
+  "quality_profile": "cloth",
+  "physics_hz": 120,
+  "skirt_max_stretch": 1.02
+}

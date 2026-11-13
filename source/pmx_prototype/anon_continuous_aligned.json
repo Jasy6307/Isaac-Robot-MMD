@@ -1,0 +1,5 @@
+{
+  "continuous_phase_alignment": true,
+  "imitation_normalizer_std_floor": 0,
+  "continuous_curriculum_start": 2050
+}

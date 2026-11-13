@@ -127,6 +127,13 @@ def main():
     parser.add_argument('--resume_npz',type=Path)
     parser.add_argument('--export_state',action='store_true',help='Validate and export a saved solver state without further optimization')
     args=parser.parse_args()
+    from source.paths import resolve_dance_asset
+    if args.input:
+        args.input = resolve_dance_asset(args.input)
+    if args.output:
+        args.output = resolve_dance_asset(args.output)
+    if args.resume_npz:
+        args.resume_npz = resolve_dance_asset(args.resume_npz)
     if args.output.exists():parser.error('Output exists; earlier H5 files are preserved')
     if args.iterations<1:parser.error('Iterations must be positive')
     if args.export_state and not args.resume_npz:parser.error('--export_state requires --resume_npz')

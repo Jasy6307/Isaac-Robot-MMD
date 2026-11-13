@@ -6,6 +6,8 @@ import os
 import re
 from typing import Any
 
+from source.paths import iter_dance_assets
+
 from source.train_workflow.utils.retarget.joint_axis_map import (
     MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT,
     MMD_ROOT_QUAT_RPY_SCALE_DEFAULT,
@@ -130,13 +132,12 @@ def _list_vmd_files(dance_dir: str) -> list[str]:
     if not os.path.isdir(dance_dir):
         return []
     out: list[str] = []
-    for name in os.listdir(dance_dir):
-        if not name.lower().endswith(".vmd"):
-            continue
+    for path in iter_dance_assets("*.vmd", dance_dir=dance_dir):
+        name = path.name
         stem, _ = os.path.splitext(name)
         if any(stem.endswith(sfx) for sfx in _SKIP_VMD_SUFFIXES):
             continue
-        out.append(os.path.join(dance_dir, name))
+        out.append(str(path))
     return sorted(out)
 
 
@@ -148,7 +149,11 @@ def compile_dance_csv_to_h5(
     mmd_center_to_root_offset_local_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0),
     knee_hinge_projection: bool = True,
     foot_ik_cfg: FootIkConfig | None = None,
+    retarget_mode: str = 'new',
+    source_leg_mode: str = 'fk',
 ) -> None:
+    if retarget_mode not in ('new','legacy'):
+        raise ValueError('Unknown retarget mode')
     motion = compile_csv_motion_to_hdf5_motion(
         csv_path,
         list(_DEFAULT_COMPILE_JOINT_NAMES),
@@ -160,7 +165,54 @@ def compile_dance_csv_to_h5(
         root_quat_rpy_axis_idx=tuple(MMD_ROOT_QUAT_RPY_AXIS_IDX_DEFAULT),
         foot_ik_cfg=foot_ik_cfg,
     )
+    reports = {}
+    if retarget_mode == 'new':
+        import ast
+        import json
+        from pathlib import Path
+        import numpy as np
+        from scipy.spatial.transform import Rotation
+        from source.train_workflow.utils.motion.self_collision import playback_baseline
+        from source.train_workflow.utils.retarget.source_animation import prepare_source_animation, ROOT
+        from source.train_workflow.utils.retarget.upper_body_export import solve_upper_body_arrays
+        from source.train_workflow.utils.retarget.lower_body_ik import solve_lower_body_arrays
+        cfg = ROOT/'source/my_task/g1_replay_env_cfg.py'
+        baseline = playback_baseline(motion.joint_names,cfg)
+        tree = ast.parse(cfg.read_text(encoding='utf-8'))
+        call = next(node.value for node in tree.body if isinstance(node,ast.Assign)
+                    and any(isinstance(t,ast.Name) and t.id=='G1_TPOSE_INIT_STATE' for t in node.targets))
+        anchor = np.array(ast.literal_eval(next(k.value for k in call.keywords if k.arg=='pos')))
+        xyzw = np.array(ast.literal_eval(next(k.value for k in call.keywords if k.arg=='rot')))
+        source = prepare_source_animation(csv_path,leg_mode=source_leg_mode)
+        robot = ROOT/'assets/g1_29dof_o6_hand_V3.usd'
+        motion.joint_pos_delta,reports['upper_body'] = solve_upper_body_arrays(
+            motion.joint_pos_delta,motion.joint_names,baseline,motion.fps,source,robot)
+        root_q = (Rotation.from_quat(motion.root_quat_delta_wxyz[:,[1,2,3,0]])*
+                  Rotation.from_quat(xyzw)).as_quat()[:,[3,0,1,2]]
+        motion.joint_pos_delta,reports['lower_body'] = solve_lower_body_arrays(
+            motion.joint_pos_delta,motion.joint_names,baseline,motion.fps,source,robot,
+            motion.root_pos_delta+anchor,root_q)
+        from source.train_workflow.utils.motion.joint_constraints import constrain_joint_positions
+        absolute,joint_report=constrain_joint_positions(
+            motion.joint_pos_delta+baseline,motion.joint_names,motion.fps,robot)
+        motion.joint_pos_delta=(absolute-baseline).astype(np.float32)
     write_hdf5_motion(h5_path, motion)
+    import h5py
+    with h5py.File(h5_path,'r+') as stream:
+        stream.attrs['retarget_mode'] = retarget_mode
+        if retarget_mode == 'new':
+            stream.attrs['all_joint_constraints_validated']=joint_report['after']['passed']
+            stream.attrs['mimic_constraints_validated']=True
+            Path(h5_path).with_suffix('.joint_limits.json').write_text(json.dumps(joint_report,indent=2),encoding='utf-8')
+            stream.attrs['source_leg_mode'] = source_leg_mode
+            stream.attrs['record_baseline_joint_pos'] = baseline
+            stream.attrs['record_root_anchor_pos'] = anchor
+            stream.attrs['record_root_anchor_quat_wxyz'] = xyzw[[3,0,1,2]]
+            for limb,report in reports.items():
+                stream.attrs[limb+'_retarget_method'] = report['method']
+                stream.attrs[limb+'_source_animation'] = str(source)
+                stream.attrs[limb+'_export_mode'] = 'direct-in-memory'
+                Path(h5_path).with_suffix('.'+limb+'.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
 
 
 def sync_dance_assets_from_vmd(
@@ -172,6 +224,8 @@ def sync_dance_assets_from_vmd(
     mmd_center_to_root_offset_local_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0),
     knee_hinge_projection: bool = True,
     foot_ik_cfg: FootIkConfig | None = None,
+    retarget_mode: str = 'new',
+    source_leg_mode: str = 'fk',
 ) -> list[str]:
     """Ensure CSV/H5 siblings exist for each VMD; append keyless YAML entries.
 
@@ -187,8 +241,9 @@ def sync_dance_assets_from_vmd(
 
     for vmd_path in vmd_paths:
         stem = os.path.splitext(os.path.basename(vmd_path))[0]
-        csv_path = os.path.join(dance_dir, stem + ".csv")
-        h5_path = os.path.join(dance_dir, stem + ".h5")
+        asset_dir = os.path.dirname(vmd_path)
+        csv_path = os.path.join(asset_dir, stem + ".csv")
+        h5_path = os.path.join(asset_dir, stem + ".h5")
 
         if not os.path.isfile(csv_path):
             try:
@@ -208,6 +263,8 @@ def sync_dance_assets_from_vmd(
                     mmd_center_to_root_offset_local_xyz=mmd_center_to_root_offset_local_xyz,
                     knee_hinge_projection=knee_hinge_projection,
                     foot_ik_cfg=foot_ik_cfg,
+                    retarget_mode=retarget_mode,
+                    source_leg_mode=source_leg_mode,
                 )
             except Exception as exc:
                 print(f"[WARN] CSV -> H5 failed ({stem}): {exc}")
@@ -215,11 +272,11 @@ def sync_dance_assets_from_vmd(
         if _yaml_covers_stem(yaml_entries, stem):
             continue
 
-        motion_rel = f"dance/{stem}.csv"
+        motion_rel = os.path.relpath(csv_path, media_dir).replace("\\", "/")
         ent: dict[str, str] = {"id": stem, "motion": motion_rel}
-        wav_abs = os.path.join(dance_dir, stem + ".wav")
+        wav_abs = os.path.join(asset_dir, stem + ".wav")
         if os.path.isfile(wav_abs):
-            ent["audio"] = f"dance/{stem}.wav"
+            ent["audio"] = os.path.relpath(wav_abs, media_dir).replace("\\", "/")
         yaml_additions.append(ent)
         yaml_entries.append(ent)
         registered.append(stem)

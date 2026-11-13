@@ -1,0 +1,6 @@
+{
+  "motion_stage": "complete_motion_transitions",
+  "imitation_transition_training": true,
+  "imitation_persistent_motion": true,
+  "imitation_blend_seconds": 1.0
+}

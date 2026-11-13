@@ -204,17 +204,89 @@ class PlaybackH5Recorder:
             groove_pos_to_world=float(self.groove_pos_to_world),
         )
 
-    def write(self, path: str | None = None) -> str:
+    def write(self, path: str | None = None, *, upper_body_source_animation: str | None = None,
+              lower_body_source_animation: str | None = None, retarget_mode: str = 'new',
+              source_vmd: str | None = None, source_leg_mode: str = 'fk') -> str:
+        if retarget_mode not in ('new','legacy'):
+            raise ValueError('retarget_mode must be new or legacy')
+        if retarget_mode == 'new' and not (upper_body_source_animation and lower_body_source_animation):
+            from source.train_workflow.utils.retarget.source_animation import prepare_source_animation
+            source = prepare_source_animation(self.source_csv,vmd=source_vmd,leg_mode=source_leg_mode)
+            upper_body_source_animation = upper_body_source_animation or str(source)
+            lower_body_source_animation = lower_body_source_animation or str(source)
+        if retarget_mode == 'legacy' and (upper_body_source_animation or lower_body_source_animation):
+            raise ValueError('Legacy mode cannot use new limb solvers')
         out = h5_sibling_path_for_csv(self.source_csv) if path is None else os.path.abspath(str(path))
-        out = write_hdf5_motion(out, self.build_motion())
-        import h5py
-
+        motion = self.build_motion()
         baseline = np.zeros(len(self.compile_joint_names), dtype=np.float32)
         for runtime_i, compile_i in enumerate(self._runtime_to_compile):
             if compile_i >= 0:
                 baseline[compile_i] = self.baseline_joint_pos[runtime_i]
+        report = None
+        lower_report = None
+        joint_report = None
+        if upper_body_source_animation:
+            from pathlib import Path
+            from source.train_workflow.utils.retarget.upper_body_export import solve_upper_body_arrays
+            robot_usd = Path(__file__).resolve().parents[4] / 'assets/g1_29dof_o6_hand_V3.usd'
+            motion.joint_pos_delta, report = solve_upper_body_arrays(
+                motion.joint_pos_delta, motion.joint_names, baseline, motion.fps,
+                upper_body_source_animation, robot_usd)
+            report['source_csv'] = self.source_csv
+            report['export_mode'] = 'direct-in-memory'
+        if lower_body_source_animation:
+            from pathlib import Path
+            from scipy.spatial.transform import Rotation
+            from source.train_workflow.utils.retarget.lower_body_ik import solve_lower_body_arrays
+            robot_usd = Path(__file__).resolve().parents[4] / 'assets/g1_29dof_o6_hand_V3.usd'
+            root_pos = motion.root_pos_delta + np.asarray(self.root_anchor_pos)
+            dq = motion.root_quat_delta_wxyz[:, [1,2,3,0]]
+            aq = np.asarray(self.root_anchor_quat_wxyz)[[1,2,3,0]]
+            root_q = (Rotation.from_quat(dq)*Rotation.from_quat(aq)).as_quat()[:,[3,0,1,2]]
+            motion.joint_pos_delta, lower_report = solve_lower_body_arrays(
+                motion.joint_pos_delta, motion.joint_names, baseline, motion.fps,
+                lower_body_source_animation, robot_usd, root_pos, root_q)
+            lower_report['export_mode'] = 'direct-in-memory'
+        if retarget_mode == 'new':
+            from pathlib import Path
+            from source.train_workflow.utils.motion.joint_constraints import constrain_joint_positions
+            robot_usd = Path(__file__).resolve().parents[4] / 'assets/g1_29dof_o6_hand_V3.usd'
+            absolute,joint_report = constrain_joint_positions(
+                motion.joint_pos_delta+baseline,motion.joint_names,motion.fps,robot_usd)
+            motion.joint_pos_delta = (absolute-baseline).astype(np.float32)
+        # No H5 exists until the complete upper-body solve has succeeded.
+        out = write_hdf5_motion(out, motion)
+        import h5py
         with h5py.File(out, "r+") as stream:
+            stream.attrs['retarget_mode'] = retarget_mode
             stream.attrs["record_baseline_joint_pos"] = baseline
             stream.attrs["record_root_anchor_quat_wxyz"] = self.root_anchor_quat_wxyz
             stream.attrs["record_root_anchor_pos"] = self.root_anchor_pos
+            if report:
+                stream.attrs['upper_body_retarget_method'] = report['method']
+                stream.attrs['upper_body_source_animation'] = str(upper_body_source_animation)
+                stream.attrs['upper_body_export_mode'] = 'direct-in-memory'
+            if lower_report:
+                stream.attrs['lower_body_retarget_method'] = lower_report['method']
+                stream.attrs['lower_body_source_animation'] = str(lower_body_source_animation)
+                stream.attrs['lower_body_export_mode'] = 'direct-in-memory'
+                stream.attrs['source_leg_mode'] = lower_report.get('source_leg_mode',source_leg_mode)
+            if joint_report:
+                stream.attrs['all_joint_constraints_validated'] = joint_report['after']['passed']
+                stream.attrs['mimic_constraints_validated'] = True
+        if report:
+            import json
+            from pathlib import Path
+            Path(out).with_suffix('.upper_body.json').write_text(
+                json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+        if lower_report:
+            import json
+            from pathlib import Path
+            Path(out).with_suffix('.lower_body.json').write_text(
+                json.dumps(lower_report,ensure_ascii=False,indent=2),encoding='utf-8')
+        if joint_report:
+            import json
+            from pathlib import Path
+            Path(out).with_suffix('.joint_limits.json').write_text(
+                json.dumps(joint_report,ensure_ascii=False,indent=2),encoding='utf-8')
         return out

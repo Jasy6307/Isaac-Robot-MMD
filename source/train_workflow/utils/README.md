@@ -103,7 +103,7 @@ PD / USD 机器人配置 ──► my_task/robots/
 
 ```powershell
 python source\train_workflow\g1_vmd_0_replay.py `
-  --motion_csv "media\dance\ji_le_jing_tu.csv" `
+  --motion_csv "media\dance\ji_le_jing_tu\ji_le_jing_tu.csv" `
   --num_envs 1 --sim_fps 60
 ```
 
@@ -127,8 +127,8 @@ python source\train_workflow\g1_vmd_0_replay.py `
 
 ```powershell
 python source/train_workflow/g1_vmd_pipeline.py `
-  --vmd "media/dance/IRIS_OUT.vmd" `
-  --audio "media/dance/IRIS_OUT.wav" `
+  --vmd "media/dance/IRIS_OUT/IRIS_OUT.vmd" `
+  --audio "media/dance/IRIS_OUT/IRIS_OUT.wav" `
   --collision_correction
 ```
 

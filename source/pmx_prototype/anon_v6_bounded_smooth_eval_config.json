@@ -1,0 +1,6 @@
+{
+  "max_speed": 0.4,
+  "motion_stage": "complete_motion_transitions",
+  "imitation_command_scope": "translation_040_yaw_060",
+  "imitation_blend_seconds": 1.5
+}

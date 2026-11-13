@@ -1,0 +1,8 @@
+{
+  "natural_gait_version": 5,
+  "smooth_foot_trajectory": true,
+  "leg_action_filter_alpha": 0.55,
+  "contact_point_slip_weight": 0.65,
+  "leg_acceleration_weight": 0.8,
+  "swing_height": 0.038
+}

@@ -1,7 +1,8 @@
 """Reusable G1 reference repair: collision projection followed by local spike repair.
 
-The certification covers the selected USD-derived envelopes at frames and
-midpoints, with a 1 mm tolerance. It is not an exact mesh/PhysX guarantee.
+The certification covers selected USD-derived envelopes with a 1 mm tolerance.
+The default also checks quarter-frame interpolation; legacy checks midpoints.
+It is not an exact mesh/PhysX guarantee.
 """
 from __future__ import annotations
 
@@ -41,11 +42,13 @@ def _windows(frames, count, padding):
     return windows
 
 
-def _audit(model, q):
+def _audit(model, q,subframes=False):
     q = model._tensor(q)
     reports = {"frames": model.report(q, .004)}
     if len(q) > 1:
         reports["midpoints"] = model.report((q[:-1]+q[1:])/2, .004)
+        if subframes:
+            reports['quarterpoints']=model.report(torch.cat([q[:-1]*(1-a)+q[1:]*a for a in (.25,.75)]),.004)
     return reports
 
 
@@ -172,13 +175,23 @@ def _project_leg_patch(model, current, donor, alpha, legs, rotation, position, i
     return result.numpy()
 
 
-def repair_reference_h5(source, output, robot_usd, progress=None, iterations=600):
+def repair_reference_h5(source, output, robot_usd, progress=None, iterations=600,
+                        preserve_gestures=True, gesture_iterations=None,
+                        collision_mode='local', max_seconds=60.):
     """Repair a recorded raw H5. Never overwrites source or an existing output."""
-    source, output = Path(source).resolve(), Path(output).resolve()
+    from source.paths import resolve_dance_asset
+
+    source, output = resolve_dance_asset(source), resolve_dance_asset(output)
     if output.exists() or source == output:
         raise FileExistsError(f"Output already exists: {output}")
     if iterations < 1:
         raise ValueError("Iterations must be positive")
+    if collision_mode not in ('local','gesture'):
+        raise ValueError('Unknown collision repair mode')
+    if preserve_gestures and collision_mode=='local':
+        from .local_collision import repair_local_reference_h5
+        return repair_local_reference_h5(source,output,robot_usd,progress,
+                                         max_seconds=max_seconds,window_steps=min(iterations,8))
     torch.set_num_threads(4)
     def notify(stage, fraction=0.0, detail=""):
         if progress is not None:
@@ -191,6 +204,7 @@ def repair_reference_h5(source, output, robot_usd, progress=None, iterations=600
         fps = float(f.attrs["fps"])
         baseline = np.asarray(f.attrs.get("record_baseline_joint_pos", playback_baseline(names, ROOT/"source/my_task/g1_replay_env_cfg.py")), dtype=np.float32)
         anchor = np.asarray(f.attrs.get("record_root_anchor_quat_wxyz", [.70710678, 0, 0, .70710678]))
+        anchor_pos = np.asarray(f.attrs.get("record_root_anchor_pos", [0.,0.,.76]))
         root_quat, root_pos, root_valid = f["root_quat_delta_wxyz"][:], f["root_pos_delta"][:], f["root_valid"][:].astype(bool)
     if delta.ndim != 2 or len(delta) < 1 or delta.shape[1] != len(names) or len(set(names)) != len(names) or baseline.shape != (len(names),) or not np.isfinite(delta).all() or not np.isfinite(baseline).all() or not np.isfinite(fps) or fps <= 0:
         raise ValueError("Invalid recorded reference trajectory")
@@ -199,7 +213,7 @@ def repair_reference_h5(source, output, robot_usd, progress=None, iterations=600
     if not np.isfinite(root_quat[root_valid]).all() or not np.isfinite(root_pos[root_valid]).all() or not np.isfinite(anchor).all() or np.linalg.norm(anchor) < 1e-8 or np.any(np.linalg.norm(root_quat[root_valid], axis=1) < 1e-8):
         raise ValueError("Invalid recorded root transforms")
     notify("geometry", 0, "Reading robot geometry")
-    model = G1CollisionModel(Path(robot_usd), names, "cpu")
+    model = G1CollisionModel(Path(robot_usd), names, "cpu",articulated_hands=preserve_gestures)
     missing = sorted({j.name for j in model.joints if j.axis} - set(names))
     if missing:
         raise ValueError(f"Recorded reference is missing G1 joints: {missing}")
@@ -303,20 +317,39 @@ def repair_reference_h5(source, output, robot_usd, progress=None, iterations=600
     for lo, hi in patch_windows:
         allowed[lo:hi] = True
     assert np.array_equal(pre_spike[~allowed], repaired[~allowed])
+    spike_stage_changed_frames = int(np.any(pre_spike != repaired, axis=1).sum())
+    gesture_report = None
+    from .gesture_collision import validate_arm_motion
+    arm_before=validate_arm_motion(model,repaired,robot_usd,fps,reference=raw) if preserve_gestures else None
+    if preserve_gestures and len(raw)>1 and (not np.array_equal(raw,repaired) or not arm_before['passed']):
+        from .gesture_collision import refine_gestures
+        notify('gestures',0,'Preserving gestures with arm velocity and acceleration constraints')
+        repaired,gesture_report = refine_gestures(
+            model,raw,repaired,robot_usd,fps,root_pos+anchor_pos,rotation,
+            iterations=gesture_iterations or max(3000,5*iterations),
+            progress=lambda f,_m:notify('gestures',f))
     untouched = [i for i, n in enumerate(names) if i not in model.adjustable]
     result = delta.copy()
     result[:, model.adjustable] = (repaired[:, model.adjustable]-baseline[model.adjustable]).astype(delta.dtype)
     assert np.array_equal(result[:, untouched], delta[:, untouched])
+    from .joint_constraints import constrain_joint_positions
+    absolute,joint_report=constrain_joint_positions(result+baseline,names,fps,robot_usd)
+    result=(absolute-baseline).astype(delta.dtype)
     notify("validate", 0, "Checking complete motion and splice boundaries")
-    after = _audit(model, result+baseline)
+    after = _audit(model, result+baseline,subframes=preserve_gestures)
+    arm_after=validate_arm_motion(model,result+baseline,robot_usd,fps,reference=raw) if preserve_gestures else None
     remaining_spikes = _spikes(model, raw, result+baseline, fps)
-    report = {"schema": "g1_collision_reference_v1", "source_sha256": source_hash, "frames": len(raw), "fps": fps, "validation": "selected USD envelopes at frames and midpoints, tolerance 1mm", "before": before, "after": after, "initial_repair": initial_report, "collision_windows": collision_windows, "spike_frames": spike_frames, "spike_windows": patch_windows, "remaining_spike_frames": remaining_spikes, "spike_changed_frames": int(np.any(pre_spike != repaired, axis=1).sum()), "normal_spike_stage_frames_preserved": int((~allowed).sum())}
+    report = {"schema": "g1_collision_reference_v1", "source_sha256": source_hash, "frames": len(raw), "fps": fps, "validation": "selected USD envelopes at frames and midpoints, tolerance 1mm", "before": before, "after": after, "initial_repair": initial_report, "collision_windows": collision_windows, "spike_frames": spike_frames, "spike_windows": patch_windows, "remaining_spike_frames": remaining_spikes, "spike_changed_frames": spike_stage_changed_frames, "normal_spike_stage_frames_preserved": int((~allowed).sum()), "gesture_preservation": gesture_report}
+    if preserve_gestures:
+        report['validation']='selected USD envelopes at frames and 1/4, 1/2, 3/4 interpolation samples, tolerance 1mm'
     output.parent.mkdir(parents=True, exist_ok=True)
     report_path = output.with_suffix(".collision.json")
+    report['joint_constraints']=joint_report
+    report['arm_motion']={'before':arm_before,'after':arm_after}
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    if any(r["penetrating_frames"] for r in after.values()) or remaining_spikes:
+    if any(r["penetrating_frames"] for r in after.values()) or remaining_spikes or (arm_after is not None and not arm_after['passed']):
         np.savez_compressed(output.with_suffix(".candidate.npz"), joint_pos=repaired, baseline=baseline)
-        raise RuntimeError(f"Reference did not pass collision/spike validation. See {report_path}")
+        raise RuntimeError(f"Reference did not pass collision/spike/arm-motion validation. See {report_path}")
     if not np.isfinite(result).all() or hashlib.sha256(source.read_bytes()).hexdigest() != source_hash:
         raise RuntimeError("Non-finite result or source changed during repair")
     fd, temporary = tempfile.mkstemp(prefix=".collision-", suffix=".h5", dir=output.parent)
@@ -329,6 +362,13 @@ def repair_reference_h5(source, output, robot_usd, progress=None, iterations=600
             f.attrs["without_collision_validated"] = True
             f.attrs["collision_validation"] = report["validation"]
             f.attrs["collision_reference_source_sha256"] = source_hash
+            f.attrs['all_joint_constraints_validated']=joint_report['after']['passed']
+            f.attrs['mimic_constraints_validated']=True
+            f.attrs['collision_hand_geometry_mode']=model.hand_geometry_mode
+            f.attrs['arm_motion_validated']=bool(arm_after and arm_after['passed'])
+            if gesture_report:
+                f.attrs['collision_gesture_preservation_method'] = gesture_report['method']
+                f.attrs['collision_hand_geometry_mode']=gesture_report.get('hand_geometry_mode',model.hand_geometry_mode)
         # Exclusive reservation protects existing outputs; replace is atomic.
         with output.open("xb"):
             pass

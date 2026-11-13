@@ -13,6 +13,10 @@ import csv
 from pathlib import Path
 from typing import Iterator
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from source.paths import resolve_dance_asset
+
 
 def _read_text_with_fallback(file_path: str, encodings: tuple[str, ...]) -> list[str]:
     """按候选编码读取文本文件，返回全部行。"""
@@ -27,7 +31,7 @@ def _read_text_with_fallback(file_path: str, encodings: tuple[str, ...]) -> list
 
 def read_vmd_bones(file_path: str) -> list[dict]:
     """读取 VMD 文件中的骨骼数据，返回原始记录列表"""
-    with open(file_path, 'rb') as f:
+    with open(resolve_dance_asset(file_path), 'rb') as f:
         # 1. 跳过文件头 (30 bytes) 和 模型名 (20 bytes)
         f.seek(50)
 
@@ -243,7 +247,7 @@ def read_motion(input_path: str) -> list[dict]:
     统一读取入口：根据后缀自动分发 VMD / VPD 读取逻辑。
     支持 .vmd / .vpd（大小写不敏感）。
     """
-    path = Path(input_path)
+    path = resolve_dance_asset(input_path)
     suffix = path.suffix.lower()
     if suffix == ".vmd":
         return read_vmd_bones(str(path))
@@ -264,7 +268,9 @@ def read_motion_and_export(
     - 根据输入后缀自动选择解析器
     - 未提供 output_path 时，默认输出为同名 .csv
     """
-    path = Path(input_path)
+    path = resolve_dance_asset(input_path)
+    if output_path is not None:
+        output_path = str(resolve_dance_asset(output_path))
     if output_path is None:
         if hand_suffix:
             output_path = str(path.with_name(f"{path.stem}_hand.csv"))

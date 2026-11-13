@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 import time
 import unittest
+from unittest.mock import patch
 import uuid
 
 import h5py
@@ -78,6 +79,39 @@ class ExportTests(unittest.TestCase):
             repair_reference_h5(self.raw, out, self.usd)
         self.assertFalse(out.exists())
 
+    def test_default_collision_export_calls_generic_gesture_stage(self):
+        with h5py.File(self.raw,'r+') as f:
+            safe=f['joint_pos_delta'][:]+f.attrs['record_baseline_joint_pos']
+            f['joint_pos_delta'][:,0]=10.  # Invalid static joint range forces repair.
+        with patch('source.train_workflow.utils.motion.collision_reference.repair_poses',return_value=(safe,{})),patch('source.train_workflow.utils.motion.gesture_collision.refine_gestures',return_value=(safe,{'method':'test-cartesian'})) as refine:
+            out=self.path/'gesture.h5'
+            report=repair_reference_h5(self.raw,out,self.usd,collision_mode='gesture')
+            refine.assert_called_once()
+            self.assertEqual(report['gesture_preservation']['method'],'test-cartesian')
+            with h5py.File(out) as f:
+                self.assertEqual(f.attrs['collision_gesture_preservation_method'],'test-cartesian')
+
+    def test_legacy_collision_option_omits_gesture_stage(self):
+        with h5py.File(self.raw,'r+') as f:
+            safe=f['joint_pos_delta'][:]+f.attrs['record_baseline_joint_pos']
+            f['joint_pos_delta'][:,0]=10.
+        with patch('source.train_workflow.utils.motion.collision_reference.repair_poses',return_value=(safe,{})),patch('source.train_workflow.utils.motion.gesture_collision.refine_gestures') as refine:
+            repair_reference_h5(self.raw,self.path/'legacy.h5',self.usd,preserve_gestures=False)
+            refine.assert_not_called()
+
+    def test_collision_free_joint_jitter_still_requires_temporal_repair(self):
+        with h5py.File(self.raw,'r+') as f:
+            col=list(f['joint_names'].asstr()[:]).index('left_wrist_yaw_joint')
+            f['joint_pos_delta'][1,col]=.1
+            jitter=f['joint_pos_delta'][:]+f.attrs['record_baseline_joint_pos']
+        output=self.path/'jitter.h5'
+        # A solver returning its input must not bypass the final encoded audit.
+        with patch('source.train_workflow.utils.motion.gesture_collision.refine_gestures',return_value=(jitter,{'method':'test'})) as refine:
+            with self.assertRaisesRegex(RuntimeError,'arm-motion'):
+                repair_reference_h5(self.raw,output,self.usd,collision_mode='gesture')
+            refine.assert_called_once()
+        self.assertFalse(output.exists())
+
     def test_single_frame_static_pose_is_supported(self):
         one = self.path / "one.h5"
         with h5py.File(self.raw) as src, h5py.File(one, "w") as dst:
@@ -92,6 +126,37 @@ class ExportTests(unittest.TestCase):
         report = repair_reference_h5(one, out, self.usd)
         self.assertEqual(report["frames"], 1)
         self.assertNotIn("midpoints", report["after"])
+
+    def test_local_budget_limits_pose_restoration_without_waiving_collisions(self):
+        with h5py.File(self.raw,'r+') as f:
+            names=list(f['joint_names'].asstr()[:])
+            f['joint_pos_delta'][:,names.index('left_hip_roll_joint')]=-.25
+            f['joint_pos_delta'][:,names.index('right_hip_roll_joint')]=.25
+        original=self.raw.read_bytes();out=self.path/'local.h5'
+        with patch('source.train_workflow.utils.motion.gesture_collision.refine_gestures') as expensive:
+            report=repair_reference_h5(self.raw,out,self.usd,max_seconds=1e-6)
+            expensive.assert_not_called()
+        self.assertTrue(report['passed'])
+        self.assertTrue(report['fidelity_budget_exhausted'])
+        self.assertEqual(report['after']['penetrating_frames'],0)
+        self.assertGreater(report['before']['penetrating_frames'],0)
+        self.assertEqual(original,self.raw.read_bytes())
+        with h5py.File(self.raw) as src,h5py.File(out) as dst:
+            self.assertTrue(dst.attrs['without_collision_validated'])
+            self.assertTrue(dst.attrs['collision_continuity_validated'])
+            self.assertEqual(dst.attrs['collision_repair_mode'],'local')
+            self.assertFalse(dst.attrs['arm_motion_validated'])
+            np.testing.assert_array_equal(src['root_pos_delta'][:],dst['root_pos_delta'][:])
+            np.testing.assert_array_equal(src['root_quat_delta_wxyz'][:],dst['root_quat_delta_wxyz'][:])
+            for col,name in enumerate(names):
+                if name.startswith(('waist_','lh_','rh_')):
+                    np.testing.assert_array_equal(src['joint_pos_delta'][:,col],dst['joint_pos_delta'][:,col])
+
+    def test_quarter_frame_collision_marks_both_adjacent_source_frames(self):
+        from source.train_workflow.utils.motion.local_collision import collision_frames
+        distances=np.ones((9,1))  # 3 frames + 3*2 interpolation samples.
+        distances[4,0]=-.01
+        np.testing.assert_array_equal(collision_frames(distances,3),[1,2])
 
     def test_worker_publishes_and_versions_independent_file(self):
         job = CollisionH5Job()

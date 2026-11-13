@@ -42,6 +42,11 @@ def register_packaged_reference(path: str, reference: dict) -> None:
 
 
 def _resolve_h5_path(h5_path: str) -> str:
+    from source.paths import resolve_dance_asset
+
+    resolved = resolve_dance_asset(h5_path)
+    if resolved.is_file():
+        return str(resolved)
     if os.path.isfile(h5_path):
         return os.path.abspath(h5_path)
     # try resolving relative to repo root (parent of source)

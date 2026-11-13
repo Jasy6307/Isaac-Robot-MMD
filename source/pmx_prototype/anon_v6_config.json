@@ -1,0 +1,12 @@
+{
+  "full_body_reference": true,
+  "full_motion_path": "I:/robot_isaac/output/anon_locomotion/full_motion/forward.npz",
+  "motion_stage": "native_forward",
+  "reference_kind": "complete_100STYLE_forward_motion",
+  "episode_seconds": 10.0,
+  "crouch": 0.0,
+  "imitation_residual_scale": 0.3,
+  "max_speed": 0.8,
+  "max_yaw": 0.0,
+  "natural_gait_version": 6
+}

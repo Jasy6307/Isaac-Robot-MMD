@@ -67,7 +67,16 @@ def build_arg_parser(pose_dir: str) -> argparse.ArgumentParser:
     parser.add_argument("--motion_wav", type=str, default=None, help="指定动作的可选伴奏 WAV 路径。")
     parser.add_argument("--auto_play", action="store_true", help="启动后自动播放指定动作。")
     parser.add_argument("--auto_record_h5", action="store_true", help="从 --motion_csv 自动逐帧录制普通 H5。")
+    parser.add_argument('--retarget_mode', choices=('new','legacy'), default='new',
+                        help='H5 导出默认通用上下肢求解；legacy 保留旧映射用于对比。')
+    parser.add_argument('--source_vmd', type=str, help='CSV 对应的原始 VMD；缺省从同名文件或 motion.json 查找。')
+    parser.add_argument('--source_leg_mode', choices=('fk','ik'), default='fk',
+                        help='源动作腿部驱动方式，默认直接关节 FK；脚步 IK 动作需显式选择 ik。')
     parser.add_argument("--exit_after_h5_record", action="store_true", help="普通 H5 自动录制完成后退出。")
+    parser.add_argument("--upper_body_source_animation", type=str,
+                        help="在内存中求解通用上肢后直接导出 H5；仅用于 CSV 自动录制。")
+    parser.add_argument("--lower_body_source_animation", type=str,
+                        help="可选：在内存中求解通用下肢、足底与支撑约束后导出 H5。")
     parser.add_argument("--record_avi_path", type=str, help="自动逐帧录制 H5 回放至指定 AVI（需 --motion_h5 --auto_play）。")
     parser.add_argument("--exit_after_playback", action="store_true", help="自动录像完整播放一遍后退出。")
     parser.add_argument(

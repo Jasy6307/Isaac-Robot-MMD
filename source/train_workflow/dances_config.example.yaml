@@ -12,7 +12,7 @@
 # - motion: 必填，例如 dance/example_motion.h5
 # - audio:  选填，例如 dance/example_motion.wav；省略则不伴音
 #
-# 启动 playback 时会扫描 media/dance/*.vmd，自动生成缺失的 CSV/H5，
+# 启动 playback 时会扫描 media/dance/**/*.vmd，自动生成缺失的 CSV/H5，
 # 并追加无 key 的登记项到 dances_config.yaml（本地文件，不进 Git）。
 
 version: 1
