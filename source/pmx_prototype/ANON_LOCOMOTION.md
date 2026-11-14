@@ -3,6 +3,12 @@
 独立于 G1 舞蹈训练。物理身体来自 `anon_physical.usda`，训练不加载蒙皮和贴图，
 以原生 PhysX GPU articulation 批量仿真，通过 RSL-RL 5.4.1 的 PPO 学习。
 
+## 代码与历史配置位置
+
+训练、预览和策略检查仍使用原入口。历史 v5/v6 JSON 归档于 `archive/configs/`，原路径保留一致副本，本文既有命令继续可用；索引见 `archive/catalog.json`。离线诊断实现位于 `diagnostics/`，通过分类路径或统一入口 `pmx.py` 调用，根目录旧转发入口已移除。
+
+训练代码快照与相关发布入口通过 `source_bundle.copy_sources()` 补齐本地 Python 依赖，包括 v3/v4 的公共构建器和迁移脚本的实现。快照只读取源码，不导入或启动模拟器；旧 run 与已发布策略不改写。身体版本仍由 `full_body_reference` / `articulated_wrists` 选择，未改变观测、动作、奖励或 checkpoint 格式。
+
 ## 控制约定
 
 指令为 `(forward, left, yaw)`：前方为角色局部 -Y，左方为局部 +X，正转向绕 Z 逆时针。
@@ -201,9 +207,9 @@ python source/pmx_prototype/train_anon_locomotion.py --mode eval --num-envs 1 --
 使用 `--run-dir` 时会冻结复制一份，后续修改素材不影响当前 run。
 
 ```powershell
-python source/pmx_prototype/download_100style.py
-python source/pmx_prototype/retarget_100style.py
-python source/pmx_prototype/mocap_walk_reference.py
+python source/pmx_prototype/tools/download_100style.py
+python source/pmx_prototype/motion/retarget_100style.py
+python source/pmx_prototype/motion/mocap_walk_reference.py
 python source/pmx_prototype/train_anon_locomotion.py --checkpoint output/anon_locomotion/release_v3/policy.pt --mocap-library output/anon_locomotion/100style_reference/library.npz --iterations 300 --num-envs 2048 --run-dir logs/rsl_rl/anon_locomotion/new_100style --headless
 ```
 
@@ -431,20 +437,34 @@ V6 完整动捕版本发布于 `output/anon_locomotion/release_v6_full_motion/`�
 
 ## 键盘可视化验收界面
 
-启动 `python source\pmx_prototype\inspect_anon_policy.py`，默认最新31自由度全方向连续步行模型；`--policy run` 保留1.2m/s前进慢跑模型。窗口按钮可切换两套策略，切换时会重启预览。默认沿用批准外观08、头发裙摆PhysX及关闭驱动补偿。
+启动 `python source\pmx_prototype\inspect_anon_policy.py`，默认从零训练的31自由度全方向连续步行模型。窗口内保留两个明确标注的模型按钮：`NEW WALK | From scratch (default)`（release_v6_scratch_31dof）、`RUN | Forward 1.2 m/s + stop`（v6_run_wrists_refine）。也可通过 `--policy run` 选择启动模型。OLD WALK 已从验收入口和预加载列表移除，旧模型文件保留。默认沿用批准外观08、头发裙摆PhysX及关闭驱动补偿。
+
+两个模型预加载各自的网络、观测归一化、参考动作和控制参数，共用同一个身体物理场景及CPU后端（可显式改为cuda:0）。点击按钮后先停步，停稳后在当前位置重置到目标模型的静止姿态；窗口、相机视角、头发裙摆场景不重启，次级物理状态随角色姿态重置。切换期间暂禁移动，完成后需重新按移动键；保留步行速度、转向速度、相机和键盘启用偏好。4秒内无法停稳则取消切换并提示，模型缺失或物理设置不兼容时禁用对应按钮。此功能是验收时切换独立模型，不代表策略已学会走跑平滑过渡。
 
 步行：按住W/S前后、A/D左右（角色坐标系），Q/E转向，松键停步；+（=键也可）/-每次调整0.05m/s，范围0～0.4m/s，斜向输入归一化。转向速度可在面板设置，最高0.6rad/s。空格清除移动输入，R重置角色及次级物理，V切换四种相机。失焦会清除按键，返回后需重新按下。面板显示命令、真实速度、跌倒、重置次数与仿真/实际时间比。
 
-最新慢跑仍仅训练了1.2m/s前进/停步，界面明确限制为W/停步，拒绝侧移、后退、转向及加减速；不会把这些按键静默映射成前进。全方向按钮现已换为31自由度连续策略；此前25自由度模型保留在历史发布目录。
+最新慢跑仍仅训练了1.2m/s前进/停步，界面明确限制为W/停步，拒绝侧移、后退、转向及加减速，速度与转向滑块禁用；不会把这些按键静默映射成前进。默认步行为31自由度全方向连续策略；旧版步行模型保留在历史发布目录。
 
-每次会话输出到 `output/anon_locomotion/inspector/` 独立目录；`inspection_state.json` 记录最近命令变化及实际状态，关闭窗口后保存会话报告和轨迹。此界面为交互检查，不能替代固定命令、多个随机种子的系统验收。
+每次会话输出到 `output/anon_locomotion/inspector/` 独立目录；`inspection_state.json` 记录当前模型、切换状态、最近命令变化及实际状态，关闭窗口后保存会话报告和轨迹。`policy_trace.npz` 的 `policy_ids` 逐帧标识模型；报告记录切换时间线及进程/场景身份。此界面为交互检查，不能替代固定命令、多个随机种子的系统验收。
 
 
-## 31自由度全方向连续策略（默认验收入口）
+## 旧版31自由度全方向连续策略
 
-发布 `output/anon_locomotion/release_v6_continuous_wrists/`。0～0.4m/s任意平移、±0.6rad/s转向，保留前臂/手腕活动及摆臂外移；8192并行，运行时补偿关闭。修正不同片段的根旋转中心及对应速度项后，152秒主套件与68秒边界套件均通过、零跌倒。低速跟踪仍偏慢；不是全方向1.2m/s跑步。验收界面默认改为本版；1.2m/s前进慢跑通过--policy run单独保留。本轮含所有尝试1小时05分35秒，V6累计约5小时05分43秒，计时口径见该目录README。1080p在线演示 output/anon_locomotion/anon_continuous_wrists_1080p.mp4。
+发布 `output/anon_locomotion/release_v6_continuous_wrists/`。0～0.4m/s任意平移、±0.6rad/s转向，保留前臂/手腕活动及摆臂外移；8192并行，运行时补偿关闭。修正不同片段的根旋转中心及对应速度项后，152秒主套件与68秒边界套件均通过、零跌倒。低速跟踪仍偏慢；不是全方向1.2m/s跑步。按用户要求已从验收窗口移除，旧模型文件保留，默认为从零训练版。本轮含所有尝试1小时05分35秒，V6累计约5小时05分43秒，计时口径见该目录README。1080p在线演示 output/anon_locomotion/anon_continuous_wrists_1080p.mp4。
 
 
 ## 运行时肩部补偿已移除
 
 主动肩部偏移/残差混合执行分支、偏移状态、旧配置文件和播放器补偿开关已删除。训练的learn_arm_clearance空间奖励、参考适配和标准PD跟踪继续保留。历史null配置可加载并清理；非空旧补偿配置明确报错，不会被静默执行。当前播放轨迹使用policy_trace.npz（hands/commands/dt），不再输出伪补偿偏移。历史日志、报告、录像和冻结代码不重写，其旧命令中的补偿参数不适用于当前入口。
+
+
+## 实时验收优化
+
+默认步行验收入口现采用CPU身体仿真/策略推理、GPU渲染及小型策略线程池。保留1080p、批准外观和120Hz头发裙摆物理。实际带界面测试约26.1 FPS（静止键盘界面，600帧），零跌倒，尚未稳定30 FPS；用户确认可接受后暂停调优。CPU完整连续指令验收通过，物理/阴影一致性检查通过。详情见 `output/anon_locomotion/realtime_optimization/README.md`。启动仍为 `python source\pmx_prototype\inspect_anon_policy.py`，需要GPU身体后端时附加 `--body-device cuda:0`。
+
+
+## 2026-11-14 从零训练实测
+
+单次seed42、8192并行、31 DOF/248观测，全新actor/critic/归一化/优化器/AMP，未加载历史策略。400次、30分15秒首次通过原主/边界功能门槛；1000次、1小时16分06秒首次通过预定接近旧版的动作指标门槛。608次后在同一随机初始化链路追加接触奖励强化（0.8到4），未改验收阈值，所有训练时间均累计。CPU/GPU两套复核均通过、零跌倒；方向切换窗口几何滑移代理仍高于旧版，不宣称逐项完全等质。独立发布 `output/anon_locomotion/release_v6_scratch_31dof/`，旧默认模型保留，详情、审计与1080p同机位对比见该目录README.md。
+
+窗口内切换复核补充：CPU后端持续40秒零指令时，从零版在第524、1049帧触发跌倒重置（首次约17.5秒）；旧版同测零跌倒。单模型与三模型预加载模式的1200帧身体轨迹逐元素一致，最大差0，说明此长时间站立弱项不由切换/归一化串用引入。按用户选择仍以从零版为默认；本次界面改动未修改权重或训练行为。记录见 `output/anon_locomotion/inspector_switch_validation/idle_results.json` 与 `idle_equivalence.json`。

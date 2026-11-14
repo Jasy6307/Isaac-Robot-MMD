@@ -1,4 +1,6 @@
 """Record live native PhysX hair and skirt while playing an existing PMX dance."""
+
+from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 from pathlib import Path
 import argparse
 import json
@@ -50,7 +52,7 @@ for name in ('usd','pmx','audio'):
 args.output=args.output.resolve()
 args.output.parent.mkdir(parents=True,exist_ok=True)
 from isaacsim import SimulationApp
-app=SimulationApp({'headless':True,'width':W,'height':H,'renderer':'RaytracedLighting',
+app=SimulationApp({'headless':True,'fast_shutdown':True,'width':W,'height':H,'renderer':'RaytracedLighting',
                    'anti_aliasing':3,'extra_args':['--/app/asyncRendering=false']})
 import numpy as np
 from PIL import Image
@@ -62,7 +64,8 @@ from omni.kit.viewport.utility import get_active_viewport
 from physx_secondary import BodyMotion,PhysxSecondary
 from source.train_workflow.utils.media.viewport_avi_recorder import _capture_viewport_rgb
 
-physics=encoder=None
+physics=encoder=log=None
+exit_code=1
 temporary=args.output.with_name(args.output.stem+'.partial.mp4')
 try:
     omni.kit.app.get_app().get_extension_manager().set_extension_enabled_immediate('omni.physx.tensors',True)
@@ -234,17 +237,35 @@ try:
         camera=dict(eye=eye,target=center.tolist()),audio=str(args.audio) if args.audio else None,
         ground_unchanged=True,ground_state=ground_before,bangs_shadow_enabled=bangs_shadow is not None,
         hair_cloth_contacts=physics.hair_cloth_contacts,hair_cloth_contact_steps=physics.hair_cloth_contact_steps,
+        hair_length_cap_joints=physics.hair_length_cap_count,
+        hair_length_projection_links=len(physics.hair_length_links),
         limitations=['Rigid-node hair/skirt proxies; not triangle cloth','Body animation is kinematic',
                       'Hair self-contact enabled; skirt and hair-cloth self-contact disabled for hair quality'])
     args.output.with_suffix('.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
     print('PHYSX_RECORD_PASS',args.output,flush=True)
+    exit_code=0
 except BaseException:
     import traceback
     traceback.print_exc()
     sys.stdout.flush();sys.stderr.flush()
-    raise
 finally:
-    if encoder:
-        encoder.kill();encoder.wait()
-    if physics:physics.close()
-    app.close()
+    # All frame writes, encoder finalization and reports are complete before
+    # successful shutdown. This batch entry point has no Replicator writer.
+    # Avoid the normal profiler/framework teardown, which can hang after Kit
+    # prints "Simulation App Shutting Down" on this Windows renderer path.
+    for resource,cleanup in (
+        (encoder,lambda: (encoder.kill(),encoder.wait())),
+        (physics,lambda: physics.close()),
+        (log,lambda: log.close()),
+    ):
+        if resource is not None:
+            try:
+                cleanup()
+            except BaseException:
+                import traceback
+                traceback.print_exc()
+                exit_code=1
+    print('PHYSX_RECORD_SHUTDOWN exit_code='+str(exit_code),flush=True)
+    sys.stdout.flush();sys.stderr.flush()
+    app.close(skip_cleanup=True,exit_code=exit_code)
+sys.exit(exit_code)

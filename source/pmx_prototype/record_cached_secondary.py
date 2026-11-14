@@ -1,4 +1,6 @@
 """Re-render an immutable UsdSkel physics cache with shared character appearance."""
+
+from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 from pathlib import Path
 import argparse,json,sys,time,subprocess,hashlib
 ROOT=Path(__file__).resolve().parents[2]

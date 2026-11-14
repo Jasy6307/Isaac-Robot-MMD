@@ -1,6 +1,9 @@
 """Add a skinned PhysX skirt lattice; retain the approved body animation."""
+
+from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 from pathlib import Path
-import json, argparse, sys
+import argparse
+import json
 import numpy as np
 from pxr import Usd, UsdSkel, UsdGeom, Gf, Vt
 from convert_pmx import read_pmx

@@ -1,4 +1,6 @@
 """PhysX-driven PMX hair/skirt, scene collider interaction, 60 FPS rendering."""
+
+from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 from pathlib import Path
 import argparse
 import json
@@ -160,6 +162,8 @@ try:
                  curvature_force_triplets=len(physics.curvature_triplets) if args.quality != 'legacy' else 0,
                  hair_self_collision=args.quality in ('hair', 'cloth'), tip_limit_joints=physics.tip_limit_count,
                  skirt_length_cap_joints=physics.skirt_length_cap_count,
+                 hair_length_cap_joints=physics.hair_length_cap_count,
+                 hair_length_projection_links=len(physics.hair_length_links),
                  skirt_bend_limit_joints=physics.skirt_bend_joint_count,
                  skirt_edge_capsules=len(physics.edge_nodes),
                  hand_contact_peak_newtons=physics.hand_contact_peak,

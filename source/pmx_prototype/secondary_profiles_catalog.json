@@ -1,5 +1,5 @@
 {
-  "default": "fabric_waist_sidehair_v5_default_120hz",
+  "default": "hair_contact_drape_v10_default_120hz",
   "versions": [
     {
       "id": "legacy_builtin",
@@ -11,19 +11,22 @@
       "id": "anon_natural",
       "path": "source/pmx_prototype/anon_secondary_natural.json",
       "status": "historical",
-      "summary": "5 mm node contacts; moderate bending and shape restoration; early walking tuning."
+      "summary": "5 mm node contacts; moderate bending and shape restoration; early walking tuning.",
+      "archive_path": "source/pmx_prototype/archive/configs/anon_secondary_natural.json"
     },
     {
       "id": "anon_drape",
       "path": "source/pmx_prototype/anon_secondary_drape.json",
       "status": "historical",
-      "summary": "3 mm contacts, free drape, softer springs and damping."
+      "summary": "3 mm contacts, free drape, softer springs and damping.",
+      "archive_path": "source/pmx_prototype/archive/configs/anon_secondary_drape.json"
     },
     {
       "id": "anon_hand_contacts",
       "path": "source/pmx_prototype/anon_secondary_hand_contacts.json",
       "status": "historical",
-      "summary": "Drape plus palm proxies and skirt-edge hand contacts; previous Anon live default."
+      "summary": "Drape plus palm proxies and skirt-edge hand contacts; previous Anon live default.",
+      "archive_path": "source/pmx_prototype/archive/configs/anon_secondary_hand_contacts.json"
     },
     {
       "id": "mutsumi_short10_release",
@@ -59,23 +62,49 @@
       "id": "soft_contact_v1_default_120hz",
       "path": "source/pmx_prototype/secondary_soft_contact_v1_120hz.json",
       "status": "superseded",
-      "summary": "Previous accepted120Hz default, preserved unchanged for reproduction."
+      "summary": "Previous accepted120Hz default, preserved unchanged for reproduction.",
+      "archive_path": "source/pmx_prototype/archive/configs/secondary_soft_contact_v1_120hz.json"
     },
     {
       "id": "fabric_waist_v4_default_120hz",
       "path": "source/pmx_prototype/secondary_fabric_waist_v4_120hz.json",
       "snapshot": "source/pmx_prototype/secondary_fabric_waist_v4_120hz.json",
       "status": "superseded",
-      "summary": "Approved V4 graded waist support + V3 firmer fabric + V2 hair-skirt node/edge contacts.120Hz cloth; geometry, body motion and skirt length retained."
+      "summary": "Approved V4 graded waist support + V3 firmer fabric + V2 hair-skirt node/edge contacts.120Hz cloth; geometry, body motion and skirt length retained.",
+      "archive_path": "source/pmx_prototype/archive/configs/secondary_fabric_waist_v4_120hz.json"
     },
     {
       "id": "fabric_waist_sidehair_v5_default_120hz",
-      "path": "source/pmx_prototype/secondary_default.json",
+      "path": "source/pmx_prototype/secondary_fabric_waist_sidehair_v5_120hz.json",
       "snapshot": "source/pmx_prototype/secondary_fabric_waist_sidehair_v5_120hz.json",
+      "status": "superseded",
+      "summary": "V5 named side-hair root anchors and graded recovery; all V4 skirt/fabric/hair-cloth settings retained;120Hz cloth. Unmatched bone prefixes have no effect.",
+      "archive_path": "source/pmx_prototype/archive/configs/secondary_fabric_waist_sidehair_v5_120hz.json"
+    },
+    {
+      "id": "fabric_transition_sidehair_v6_default_120hz",
+      "path": "source/pmx_prototype/secondary_fabric_transition_sidehair_v6_120hz.json",
+      "snapshot": "source/pmx_prototype/secondary_fabric_transition_sidehair_v6_120hz.json",
+      "status": "superseded",
+      "summary": "Approved Anon Girls40s V6 transition support for16-row grids;9-row Mutsumi retains V5 curve.120Hz; prior side-hair and hair-cloth contacts preserved.",
+      "archive_path": "source/pmx_prototype/archive/configs/secondary_fabric_transition_sidehair_v6_120hz.json"
+    },
+    {
+      "id": "hairlength_v7_default_120hz",
+      "path": "source/pmx_prototype/secondary_hairlength_v7_120hz.json",
+      "snapshot": "source/pmx_prototype/secondary_hairlength_v7_120hz.json",
+      "status": "superseded",
+      "summary": "Fix true hair stretching with native radial limits and per-substep physical-state length projection;1.015 bound;120Hz. All V6 skirt/side-hair/contact parameters retained.",
+      "archive_path": "source/pmx_prototype/archive/configs/secondary_hairlength_v7_120hz.json"
+    },
+    {
+      "id": "hair_contact_drape_v10_default_120hz",
+      "path": "source/pmx_prototype/secondary_default.json",
+      "snapshot": "source/pmx_prototype/secondary_hair_contact_drape_v10_120hz.json",
       "status": "default",
-      "summary": "V5 named side-hair root anchors and graded recovery; all V4 skirt/fabric/hair-cloth settings retained;120Hz cloth. Unmatched bone prefixes have no effect."
+      "summary": "Approved V10 contact-aware hair with additional contact-only convergence and reduced artificial rearward impulses.120Hz; prior skirt waist/support, side-hair and hair-length settings retained."
     }
   ],
   "experimental_notes": "Intermediate A/B/C/D files remain in output/mutsumi_girls_* directories. Rejected pre-contact cushion/480 Hz trials are not in the default. Skirt shortening 10/20/30 percent directories are geometry variations, not separate universal physics templates.",
-  "validation_scope": "Mutsumi Girls40s V4 accepted; Anon Girls40s V5 side-hair accepted. No claim of full-dance visual acceptance on other models."
+  "validation_scope": "V10 visually accepted on Anon Girls first40s; length and proxy-contact audits available in output/anon_hair_drape_v10. Other models require their own visual review; original videos are not re-recorded."
 }

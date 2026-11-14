@@ -5,6 +5,8 @@ two-link solve with PMX knee limits, followed by the one-link toe IK solve.
 """
 from __future__ import annotations
 
+from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
+
 import argparse
 from collections import defaultdict
 import json

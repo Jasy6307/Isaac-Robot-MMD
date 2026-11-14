@@ -2,6 +2,8 @@
 
 Rendering replays link poses; no new control, root correction or motion cleanup.
 """
+
+from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 import argparse
 import json
 from pathlib import Path

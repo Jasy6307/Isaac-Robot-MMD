@@ -1,10 +1,13 @@
 """Train or evaluate Anon's physically simulated residual walking policy."""
+
+from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 import argparse
 import copy
 from datetime import datetime
 import json
 from pathlib import Path
 import shutil
+from source_bundle import copy_sources
 import sys
 import time
 
@@ -31,9 +34,20 @@ parser.add_argument('--curriculum-iterations', type=int)
 parser.add_argument('--v3', action='store_true', help='25-DOF learned upper body with authored procedural motion reference')
 parser.add_argument('--mocap-library', type=Path, help='Retargeted 100STYLE periodic style library; requires a full body policy')
 parser.add_argument('--config-override',type=Path,help='JSON environment settings applied after checkpoint config')
+parser.add_argument('--from-scratch',action='store_true',help='Require random initialization and record fresh-state evidence')
+parser.add_argument('--scratch-continuation',action='store_true',help='Continue only this experiment\'s own random-initialization lineage, keeping cumulative timing')
+parser.add_argument('--acceptance-interval',type=int,default=100,help='Scratch experiment: evaluate every N completed iterations')
+parser.add_argument('--experiment-output',type=Path,help='Scratch experiment acceptance and timing records')
 args = parser.parse_args()
+if args.from_scratch and (args.checkpoint or args.mode!='train' or not args.run_dir or not args.experiment_output):
+    parser.error('--from-scratch requires train, a new --run-dir and --experiment-output, and forbids --checkpoint')
+if args.from_scratch and (args.run_dir/'policy_final.pt').exists():parser.error('Scratch output directory already contains a trained policy')
+if args.scratch_continuation and (args.from_scratch or args.mode!='train' or not args.checkpoint or not args.run_dir or not args.experiment_output):
+    parser.error('--scratch-continuation requires train, this experiment checkpoint, a new --run-dir and --experiment-output')
+if args.acceptance_interval<1:parser.error('--acceptance-interval must be positive')
 from isaacsim import SimulationApp
 app = SimulationApp({'headless': args.headless, 'renderer': 'RaytracedLighting', 'fast_shutdown': True,
+                     'disable_viewport_updates':args.headless,
                      'extra_args': ['--/app/asyncRendering=false']})
 import numpy as np
 import torch
@@ -54,7 +68,7 @@ def agent_config():
 
 
 def load_policy(runner, env, checkpoint):
-    state = torch.load(checkpoint, map_location='cuda:0', weights_only=False)
+    state = torch.load(checkpoint, map_location=env.device, weights_only=False)
     if hasattr(env,'amp') and 'amp_state' in state and not env.cfg.get('amp_reset_discriminator',False):env.amp.load_state_dict(state['amp_state'])
     old_inputs=state['actor_state_dict']['mlp.0.weight'].shape[1]
     new_inputs=env.get_observations()['policy'].shape[1]
@@ -75,7 +89,7 @@ def load_policy(runner, env, checkpoint):
         runner.current_learning_iteration=int(state['iter'])
         return dict(kind='append_observations_zero_new_weights',old_inputs=old_inputs,new_inputs=new_inputs,optimizer='fresh')
     if state['actor_state_dict']['mlp.6.bias'].numel() == env.num_actions:
-        runner.load(str(checkpoint), map_location='cuda:0')
+        runner.load(str(checkpoint), map_location=env.device)
         return None
     if not env.full_body or state['actor_state_dict']['mlp.6.bias'].numel() != 12:
         raise ValueError('Unsupported checkpoint/action mapping')
@@ -259,6 +273,9 @@ def evaluate_imitation(env,runner):
 
 
 def evaluate_motion_bank(env,runner):
+    if env.cfg.get('unified_walk_run'):
+        from evaluate_unified_walk_run import evaluate
+        return evaluate(env,runner,args.output,args.checkpoint)
     if env.cfg.get('amp_forward_only'):
         from evaluate_amp_forward import evaluate
         return evaluate(env,runner,args.output,args.checkpoint)
@@ -337,6 +354,8 @@ def main():
         config.pop('amp_reset_discriminator',None)
         config.pop('train_reset_actor_head',None)
         config.pop('train_leg_std',None)
+        config.pop('train_normalization_rebase',None)
+        config.pop('train_reset_optimizer',None)
     if args.residual_scale is not None: config['residual_scale'] = args.residual_scale
     if args.v2: config.update(arm_swing=True, natural_gait=True, max_speed=.4, max_yaw=.6,
                               lateral_stance_gain=.15, pelvis_height_control=True, natural_gait_version=2)
@@ -388,7 +407,7 @@ def main():
     elif args.mode == 'reference':
         export_reference(env)
     elif args.mode == 'eval':
-        runner = OnPolicyRunner(env, agent_config(), log_dir=None, device='cuda:0') if args.checkpoint else None
+        runner = OnPolicyRunner(env, agent_config(), log_dir=None, device=env.device) if args.checkpoint else None
         if runner: load_policy(runner, env, args.checkpoint)
         evaluate(env, runner)
         if runner: runner.export_policy_to_jit(str(args.output), 'policy_jit.pt')
@@ -403,21 +422,38 @@ def main():
         if 'train_entropy_coef' in env.cfg:
             cfg['algorithm']['entropy_coef']=env.cfg['train_entropy_coef']
         (run/'agent_config.json').write_text(json.dumps(cfg, indent=2), encoding='utf-8')
-        for filename in ('anon_locomotion_env.py', 'train_anon_locomotion.py', 'natural_walk_reference.py', 'build_anon_v3.py', 'mocap_walk_reference.py','anon_imitation_env.py','full_motion_reference.py','build_full_motion.py','continuous_motion_reference.py','evaluate_continuous.py','continuous_command_suite.py'):
-            shutil.copyfile(HERE/filename, run/filename)
-        shutil.copyfile(HERE/'anon_config_compat.py',run/'anon_config_compat.py')
-        if env.cfg.get('amp_enabled'):shutil.copyfile(HERE/'amp_motion_prior.py',run/'amp_motion_prior.py')
+        copy_sources(run, (
+            'anon_locomotion_env.py', 'train_anon_locomotion.py',
+            'natural_walk_reference.py', 'build_anon_v3.py', 'mocap_walk_reference.py',
+            'anon_imitation_env.py', 'full_motion_reference.py', 'build_full_motion.py',
+            'continuous_motion_reference.py', 'evaluate_continuous.py',
+            'continuous_command_suite.py',
+        ))
+        copy_sources(run, ['anon_config_compat.py'])
+        if env.cfg.get('amp_enabled'):copy_sources(run, ['amp_motion_prior.py'])
+        if env.cfg.get('unified_walk_run'):
+            copy_sources(run, ['unified_walk_run_reference.py','evaluate_unified_walk_run.py'])
         if env.cfg.get('articulated_wrists'):
-            for filename in ['build_anon_v4.py','physical_character.py','migrate_articulated_policy.py']:
-                shutil.copyfile(HERE/filename,run/filename)
+            copy_sources(run, ['build_anon_v4.py','physical_character.py','migrate_articulated_policy.py'])
         runner = OnPolicyRunner(env, copy.deepcopy(cfg), log_dir=str(run), device='cuda:0')
         from amp_motion_prior import install_amp
         install_amp(runner,env)
+        scratch=None
+        if args.from_scratch or args.scratch_continuation:
+            if not hasattr(env,'amp'):raise ValueError('Scratch experiment requires the full-body AMP configuration')
+            from anon_scratch_validation import ScratchValidation
+            copy_sources(run, ['anon_scratch_validation.py'])
+            scratch=ScratchValidation(run,args.experiment_output,args.acceptance_interval,ROOT,continuation=args.scratch_continuation)
+            if args.from_scratch:scratch.audit_initialization(runner,env)
         if args.checkpoint:
             migration = load_policy(runner, env, args.checkpoint)
             if migration: (run/'migration.json').write_text(json.dumps(migration, indent=2), encoding='utf-8')
             runner.current_learning_iteration += 1
             env.iteration = runner.current_learning_iteration
+            if env.cfg.get('train_preserve_optimizer_learning_rate') and not migration:
+                runner.alg.learning_rate=float(runner.alg.optimizer.param_groups[0]['lr'])
+                (run/'resumed_learning_rate.json').write_text(json.dumps(dict(learning_rate=runner.alg.learning_rate,source=str(args.checkpoint)),indent=2),encoding='utf-8')
+        if args.scratch_continuation:scratch.audit_continuation(runner,args.checkpoint)
         if env.cfg.get('train_upper_std_cap'):
             parameter=dict(runner.alg.actor.named_parameters())['distribution.log_std_param']
             with torch.no_grad():
@@ -438,7 +474,23 @@ def main():
         if env.cfg.get('train_leg_std'):
             parameter=dict(runner.alg.actor.named_parameters())['distribution.log_std_param']
             with torch.no_grad():parameter[env.leg_ids]=float(np.log(env.cfg['train_leg_std']))
-        floor=env.cfg.get('imitation_normalizer_std_floor',0.)
+        if env.cfg.get('train_normalization_rebase'):
+            from policy_normalization_rebase import apply
+            copy_sources(run, ['policy_normalization_rebase.py'])
+            audit=apply(runner,env,env.cfg['train_normalization_rebase'])
+            (run/'normalization_rebase_audit.json').write_text(json.dumps(audit,indent=2),encoding='utf-8')
+        if env.cfg.get('train_reset_optimizer'):
+            runner.alg.optimizer.state.clear()
+            runner.alg.learning_rate=env.cfg.get('train_learning_rate',.0003)
+            for group in runner.alg.optimizer.param_groups:group['lr']=runner.alg.learning_rate
+        if env.cfg.get('train_freeze_obs_normalization'):
+            if not args.checkpoint:raise ValueError('Freezing observation normalization requires a trained checkpoint')
+            for model in [runner.alg.actor,runner.alg.critic]:model.obs_normalizer.until=0
+        if env.cfg.get('train_teacher_anchor_path'):
+            from unified_teacher_anchor import install
+            copy_sources(run,['training/unified_teacher_anchor.py'])
+            install(runner,env)
+        floor=0. if env.cfg.get('train_freeze_obs_normalization') else env.cfg.get('imitation_normalizer_std_floor',0.)
         if floor:
             for model in [runner.alg.actor,runner.alg.critic]:
                 state=model.state_dict()
@@ -449,14 +501,24 @@ def main():
                         elif name.endswith('count'):value.fill_(10000.)
                 model.load_state_dict(state)
         original_log = runner.logger.log
+        if env.cfg.get('train_normalization_rebase'):runner.save(str(run/'initial_rebased.pt'))
+        if args.from_scratch and scratch.evaluate(runner,0,0.):
+            runner.save(str(run/'policy_final.pt'))
+            runner.export_policy_to_jit(str(run),'policy_jit.pt')
+            (run/'training_time.json').write_text(json.dumps(dict(training_seconds=0.,completed_iterations=0,
+                acceptance_seconds=scratch.validation_seconds,started_from_random_weights=True,quantitative_gate_passed=True),indent=2),encoding='utf-8')
+            env.close()
+            return
         started = time.perf_counter()
+        initial_validation_seconds=scratch.validation_seconds if scratch else 0.
         target_iteration = runner.current_learning_iteration+args.iterations
         class StopTraining(Exception):
             pass
         def log(**kwargs):
             env.iteration = kwargs['it']
             original_log(**kwargs)
-            status = dict(iteration=kwargs['it'], total=target_iteration, elapsed_seconds=time.perf_counter()-started,
+            active_elapsed=time.perf_counter()-started-(scratch.validation_seconds-initial_validation_seconds if scratch else 0.)
+            status = dict(iteration=kwargs['it'], total=target_iteration, elapsed_seconds=active_elapsed,
                           num_envs=env.num_envs,gpu_peak_allocated_mb=torch.cuda.max_memory_allocated()/1024**2,
                           tracking_error=float(torch.linalg.vector_norm(env.logical_vel[:, :2]-env.commands[:, :2], dim=-1).mean()),
                           height=float(env.root[:, 2].mean()), run_dir=str(run))
@@ -464,6 +526,15 @@ def main():
             if hasattr(env,'amp'):status.update(env.amp.stats)
             (run/'status.json').write_text(json.dumps(status, indent=2), encoding='utf-8')
             if kwargs['it'] % 10 == 0: print('爱音训练 '+json.dumps(status, ensure_ascii=False), flush=True)
+            if scratch:
+                # Predeclared scratch-only exploration anneal. Mean controller,
+                # rewards, motion references and physical gains are unchanged.
+                fraction=min(1.,(kwargs['it']+1)/300.)
+                runner.alg.entropy_coef=.003+(.0005-.003)*fraction
+                parameter=dict(runner.alg.actor.named_parameters())['distribution.log_std_param']
+                with torch.no_grad():parameter[env.upper_ids]=parameter[env.upper_ids].clamp(max=float(np.log(.2+(.08-.2)*fraction)))
+                if (kwargs['it']+1)%args.acceptance_interval==0:
+                    if scratch.evaluate(runner,kwargs['it']+1,scratch.training_offset+active_elapsed):raise StopTraining
             if (run/'stop.request').is_file(): raise StopTraining
         runner.logger.log = log
         print('ANON_TRAIN_RUN '+str(run), flush=True)
@@ -474,10 +545,16 @@ def main():
             runner.logger.stop_logging_writer()
         runner.save(str(run/'policy_final.pt'))
         runner.export_policy_to_jit(str(run), 'policy_jit.pt')
-        timing=dict(training_seconds=time.perf_counter()-started,
+        timing=dict(training_seconds=time.perf_counter()-started-(scratch.validation_seconds-initial_validation_seconds if scratch else 0.),
                     completed_iteration=int(env.iteration),
                     definition='Training loop plus final checkpoint/JIT export; excludes scene setup, evaluation and video recording')
         (run/'training_time.json').write_text(json.dumps(timing,indent=2),encoding='utf-8')
+        if scratch:
+            timing.update(acceptance_seconds=scratch.validation_seconds,initial_acceptance_seconds=initial_validation_seconds,
+                          loop_wall_seconds_including_acceptance=time.perf_counter()-started,started_from_random_weights=args.from_scratch,
+                          same_scratch_lineage=True,experiment_training_seconds=scratch.training_offset+timing['training_seconds'],
+                          completed_iterations=int(env.iteration)+1,quantitative_gate_passed=bool(scratch.history[-1]['passed']))
+            (run/'training_time.json').write_text(json.dumps(timing,indent=2),encoding='utf-8')
         print('ANON_TRAIN_TIME '+json.dumps(timing),flush=True)
     env.close()
 

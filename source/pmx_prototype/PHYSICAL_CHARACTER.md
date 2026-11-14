@@ -3,6 +3,8 @@
 此实现独立于 G1 舞蹈训练，不修改 PMX、原始 `character.usdc` 或既有播放入口。
 它建立符合爱音骨长的简化刚体人形，并用实际 PhysX 连杆姿态驱动原有 628 根蒙皮骨骼。
 
+25 DOF / 31 DOF 参考身体继续通过 `build_anon_v3.ensure_asset()` / `build_anon_v4.ensure_asset()` 生成，公共写出步骤位于 `reference_asset_builder.py`。原 `output/anon_physical_v3/`、`output/anon_physical_v4/` 路径和已有资产复用规则保持不变；v3 肘部增益与 v4 手腕/固定父关节映射仍分别保留。构建必须在 Kit 启动后调用。
+
 ## 身体与控制约定
 
 - Z 向上，角色前方为 **-Y**，左侧为 +X。后续速度任务须显式适配该朝向。
@@ -21,9 +23,9 @@
 在配置好的 Isaac Sim 6.1 Python 环境运行：
 
 ```powershell
-python source/pmx_prototype/validate_physical_character.py --case stand --seconds 30 --headless --capture
-python source/pmx_prototype/validate_physical_character.py --case joints --seconds 15 --headless --capture
-python source/pmx_prototype/validate_physical_character.py --case drop --seconds 3 --headless --capture
+python source/pmx_prototype/diagnostics/validate_physical_character.py --case stand --seconds 30 --headless --capture
+python source/pmx_prototype/diagnostics/validate_physical_character.py --case joints --seconds 15 --headless --capture
+python source/pmx_prototype/diagnostics/validate_physical_character.py --case drop --seconds 3 --headless --capture
 ```
 
 也可使用项目的 `run_isaac61.bat` 调用相同脚本。去掉 `--headless` 可显示窗口，

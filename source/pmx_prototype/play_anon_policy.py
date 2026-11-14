@@ -4,9 +4,10 @@ Separate processes keep the policy's GPU articulation scene and the secondary
 CPU rigid-node scene independent. Body motion is obtained from new policy steps,
 never a saved rollout. Secondary forces do not feed back into the policy.
 """
+
+from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 import argparse
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -18,8 +19,9 @@ ROOT=Path(__file__).resolve().parents[2]
 HERE=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT))
 from source.pmx_prototype.secondary_profiles import DEFAULT_SECONDARY_PROFILE,DEFAULT_SECONDARY_QUALITY
+from anon_policy_catalog import PRESETS
 parser=argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--checkpoint',type=Path,default=ROOT/'output/anon_locomotion/release_v6_continuous/policy.pt')
+parser.add_argument('--checkpoint',type=Path,default=PRESETS['walk'])
 parser.add_argument('--pmx',type=Path,default=ROOT/'media/千早爱音_by_小麦弥望/Anon Chihaya.pmx')
 parser.add_argument('--headless',action='store_true')
 parser.add_argument('--steps',type=int,default=0,help='Finite 30 Hz steps; 0 keeps the interactive viewer open')
@@ -40,8 +42,12 @@ parser.add_argument('--body-device',choices=['cpu','cuda:0'],default='cuda:0',he
 parser.add_argument('--transport',choices=['memory','files'],default='memory')
 parser.add_argument('--legacy-compute',action='store_true',help='A/B check: retain redundant training diagnostics and substep pose reconstruction')
 parser.add_argument('--physics-threads',type=int,help='CPU PhysX worker threads; 0 runs synchronously')
+parser.add_argument('--worker-physics-threads',type=int,default=0,help='The single-body inference worker needs no parallel PhysX task pool')
 parser.add_argument('--benchmark-warmup',type=int,default=30,help='Frames excluded from steady-state timing')
 parser.add_argument('--runtime-audit',action='store_true',help='Save body and rendered skeleton arrays for behavior equivalence checks')
+parser.add_argument('--async-render',action='store_true',help='Overlap live rendering with simulation; recording remains synchronous')
+parser.add_argument('--save-preview',action='store_true',help='Save one final viewport image after the measured loop')
+parser.add_argument('--control-script',type=Path,help='Reproducible switch/command events: JSON list of frame, switch_to, command, reset')
 args=parser.parse_args()
 if args.inspector and (args.headless or args.demo):parser.error('--inspector needs a visible window and cannot be combined with --demo')
 args.quality=args.quality or ('hair' if args.legacy_secondary_physics else DEFAULT_SECONDARY_QUALITY)
@@ -61,6 +67,8 @@ from anon_policy_transport import PolicyServer
 channel=PolicyServer(ipc,args.transport)
 from isaacsim import SimulationApp
 extra=['--/app/asyncRendering=false']
+if args.async_render and not args.record_video:
+    extra=['--/app/asyncRendering=true','--/app/asyncRenderingLowLatency=true','--/app/omni.usd/asyncHandshake=true','--/omni/replicator/asyncRendering=true']
 if args.physics_threads is not None:extra.append(f'--/persistent/physics/numThreads={args.physics_threads}')
 app=SimulationApp({'headless':args.headless,'width':W,'height':H,'renderer':'RaytracedLighting',
                    'anti_aliasing':args.anti_aliasing,'extra_args':extra})
@@ -100,20 +108,24 @@ def receive(seq,timeout=120):
 
 
 physics=encoder=inspector=None
-restart_policy=None
-def request_restart(preset):
-    global restart_policy
-    restart_policy=preset
+queued_switch='';switch_inflight=False
+def request_switch(preset):
+    global queued_switch,switch_inflight
+    queued_switch=preset;switch_inflight=True
 result=0
 try:
-    worker_args=[sys.executable,str(HERE/'anon_policy_worker.py'),'--checkpoint',str(args.checkpoint),'--ipc',str(ipc),'--body-device',args.body_device,*channel.worker_args]
+    worker_args=[sys.executable,str(resolve_source('anon_policy_worker.py')),'--checkpoint',str(args.checkpoint),'--ipc',str(ipc),'--body-device',args.body_device,*channel.worker_args]
     if args.legacy_compute:worker_args+=['--legacy-compute']
-    if args.physics_threads is not None:worker_args+=['--physics-threads',str(args.physics_threads)]
+    worker_args+=['--physics-threads',str(args.worker_physics_threads)]
     if args.policy_config_override:worker_args+=['--config-override',str(args.policy_config_override.resolve())]
-    hand_trace=[];command_trace=[];body_trace=[];skeleton_p=[];skeleton_q=[]
+    if args.inspector or args.control_script:worker_args+=['--preload-presets']
+    hand_trace=[];command_trace=[];body_trace=[];skeleton_p=[];skeleton_q=[];policy_trace=[];switches=[];fall_events=[];identities=set()
     worker=subprocess.Popen(worker_args,
                             stdout=worker_log,stderr=subprocess.STDOUT,creationflags=subprocess.CREATE_NO_WINDOW)
     state=receive(-1)
+    active_policy=str(state['policy_id']);active_checkpoint=str(state['checkpoint'])
+    catalog=json.loads(str(state['catalog_json']))
+    policy_config=json.loads(str(state['config_json']))
     motion=LiveBodyMotion(ROOT/'output/pmx_prototype/character.usdc',args.pmx,secondary_profile=args.secondary_profile if not args.legacy_secondary_physics else None)
     motion.rig_settings['max_node_distance_from_target_m']=2.
     manifest=json.loads((Path(policy_config['asset']).parent/'manifest.json').read_text(encoding='utf-8'))
@@ -168,13 +180,14 @@ try:
     models=[ui.SimpleFloatModel(0) for _ in range(3)]
     if args.inspector:
         from anon_inspector_ui import PolicyInspector
-        inspector=PolicyInspector(policy_config,args.checkpoint,args.output,request_restart)
+        inspector=PolicyInspector(policy_config,args.checkpoint,args.output,request_switch,catalog,active_policy)
     elif not args.headless:
         panel=ui.Window('Anon live policy | Hair and skirt PhysX',width=390,height=230)
         with panel.frame:
             with ui.VStack(spacing=7):
                 ui.Label(f'Live v{version} policy / native PhysX hair and skirt')
-                for name,model,low,high in zip(['Forward m/s','Left m/s','Yaw rad/s'],models,[-.4,-.4,-.6],[.4,.4,.6]):
+                maximum=policy_config.get('max_speed',.4);yaw_max=policy_config.get('max_yaw',.6)
+                for name,model,low,high in zip(['Forward m/s','Left m/s','Yaw rad/s'],models,[-maximum,-maximum,-yaw_max],[maximum,maximum,yaw_max]):
                     ui.Label(name); ui.FloatSlider(model=model,min=low,max=high)
                 def stop():
                     for model in models: model.set_value(0.)
@@ -195,6 +208,9 @@ try:
                   (3,(0,0,0)),(6,(0,.35,0)),(6,(0,-.35,0)),(3,(0,0,0)),(4,(.15,0,.6)),
                   (4,(.15,0,-.6)),(4,(0,0,.6)),(4,(0,0,-.6)),(3,(0,0,0))]
     def command_at(t):
+        if policy_config.get('unified_walk_run'):
+            from unified_command_suite import demo_command
+            return demo_command(t)
         if policy_config.get('continuous_commands') and not policy_config.get('amp_forward_only'):
             from continuous_command_suite import demo_command
             return demo_command(t,pivots=policy_config.get('demo_pivots',False))
@@ -208,22 +224,53 @@ try:
         encoder=subprocess.Popen([ff,'-y','-v','error','-f','rawvideo','-pix_fmt','rgb24','-s',f'{W}x{H}','-r','30','-i','pipe:0',
                                   '-c:v','libx264','-crf','16','-preset','fast','-pix_fmt','yuv420p','-movflags','+faststart',str(args.record_video)],stdin=subprocess.PIPE)
     font=ImageFont.truetype('C:/Windows/Fonts/msyh.ttc',round(23*H/720))
-    deviations={'hair':[],'skirt':[]}; costs=[]; completed=falls=0; started=time.perf_counter(); last=state['poses']
+    deviations={'hair':[],'skirt':[]}; costs=[]; details=[];frame_intervals=[]; completed=falls=0; started=time.perf_counter(); last=state['poses']
     limit=args.steps or (sum(x[0] for x in schedule)*30 if args.headless and args.demo else 0)
+    script_events={} if not args.control_script else {int(e['frame']):e for e in json.loads(args.control_script.read_text(encoding='utf-8'))}
+    script_command=[0.,0.,0.];script_reset=False
     if not args.steps and args.headless and args.demo and policy_config.get('continuous_commands') and not policy_config.get('amp_forward_only'):
-        from continuous_command_suite import segments
-        limit=round(sum(s for _,s in segments(True,pivots=policy_config.get('demo_pivots',False)))*30)
+        if policy_config.get('unified_walk_run'):
+            from unified_command_suite import demo_seconds
+            limit=round(demo_seconds()*30)
+        else:
+            from continuous_command_suite import segments
+            limit=round(sum(s for _,s in segments(True,pivots=policy_config.get('demo_pivots',False)))*30)
     def choose_command(index):
-        cmd=inspector.command() if inspector else command_at(index/30) if args.demo else tuple(m.get_value_as_float() for m in models)
+        global script_command,script_reset
+        if index in script_events:
+            event=script_events[index]
+            if event.get('switch_to'):
+                script_command=[0.,0.,0.];request_switch(event['switch_to'])
+            if 'command' in event:script_command=event['command']
+            script_reset=bool(event.get('reset',False))
+        cmd=script_command if args.control_script else inspector.command() if inspector else command_at(index/30) if args.demo else tuple(m.get_value_as_float() for m in models)
+        if switch_inflight:cmd=[0.,0.,0.]
         cmd=np.array(cmd,dtype=float); cmd[:2]*=min(1.,policy_config.get('max_speed',.4)/max(np.linalg.norm(cmd[:2]),1e-6)); cmd[2]=np.clip(cmd[2],-policy_config.get('max_yaw',.6),policy_config.get('max_yaw',.6))
         return cmd.tolist()
     def send_command(seq,command):
-        atomic_request(dict(seq=seq,command=command,reset=inspector.controls.consume_reset() if inspector else False))
+        global queued_switch,script_reset
+        data=dict(seq=seq,command=command,reset=inspector.controls.consume_reset() if inspector else script_reset)
+        if queued_switch:data['switch_to']=queued_switch;queued_switch=''
+        atomic_request(data);script_reset=False
     pending_command=choose_command(0)
     send_command(0,pending_command)
-    while app.is_running() and not restart_policy and (not limit or completed<limit):
+    while app.is_running() and (not limit or completed<limit):
         tick=time.perf_counter(); cmd=pending_command
         state=receive(completed,30)
+        identities.add((int(state['worker_pid']),int(state['physics_stage_id']),int(context.get_stage_id()),id(physics)))
+        if str(state['policy_id'])!=active_policy:
+            switches.append(dict(frame=completed,previous=active_policy,policy=str(state['policy_id']),generation=int(state['generation'])))
+            active_policy=str(state['policy_id']);active_checkpoint=str(state['checkpoint'])
+            policy_config=json.loads(str(state['config_json']))
+            switch_inflight=False
+            if inspector:inspector.apply_policy(policy_config,active_policy)
+        if str(state.get('switch_error','')):
+            switch_inflight=False
+            switches.append(dict(frame=completed,error=str(state['switch_error']),policy=active_policy))
+        if str(state.get('switch_complete','')):
+            switch_inflight=False
+            if inspector:inspector.apply_policy(policy_config,active_policy)
+        policy_trace.append(active_policy)
         if 'command' in state:cmd=state['command'].tolist()
         policy_done=time.perf_counter()
         # The next policy step can overlap this frame's secondary physics/render.
@@ -232,9 +279,11 @@ try:
             pending_command=choose_command(completed+1)
             send_command(completed+1,pending_command)
         current=state['poses']; falls+=int(state['done'])
+        if bool(state['done']):fall_events.append(dict(frame=completed,policy=active_policy))
         hand_world=current[[links.index('left_hand'),links.index('right_hand')],:3]-current[pelvis,:3]
         hand_trace.append(Rotation.from_quat(current[pelvis,3:]).inv().apply(hand_world))
         command_trace.append(cmd)
+        body_started=time.perf_counter()
         if physics:
             if bool(state['done']) or bool(state.get('reset',False)):
                 motion.live=body_pose(current); physics.initial_nodes=motion.live[2][motion.nodes].copy(); physics.reset(); last=current.copy()
@@ -257,14 +306,17 @@ try:
             p,q=motion.live[:2]
         if args.runtime_audit:
             body_trace.append(current.copy());skeleton_p.append(p.copy());skeleton_q.append(q.copy())
+        secondary_finished=time.perf_counter()
         center=current[pelvis,:3].astype(float); center[2]=.88
         UsdGeom.Xformable(face_softbox).GetOrderedXformOps()[0].Set(
             Gf.Vec3d(float(center[0]),float(center[1]-2.5),1.7))
         offset=inspector.camera_offset() if inspector else [2.3,-4,1.15]
         camera_op.Set(Gf.Matrix4d().SetLookAt(Gf.Vec3d(*(center+np.array(offset))),Gf.Vec3d(*center),Gf.Vec3d(0,0,1)).GetInverse())
         if inspector:inspector.update(state,falls,completed+1,time.perf_counter()-started)
+        look_started=time.perf_counter()
         if appearance is not None:appearance.update(completed)
         secondary_done=time.perf_counter()
+        details.append([(secondary_finished-body_started)*1000,(look_started-secondary_finished)*1000,(secondary_done-look_started)*1000])
         app.update()
         if completed==0:
             for _ in range(5):app.update()
@@ -274,7 +326,7 @@ try:
             if rgb is None:raise RuntimeError('Viewport capture failed')
             im=Image.fromarray(rgb); draw=ImageDraw.Draw(im)
             draw.rectangle((0,0,W,round(85*H/720)),fill=(17,23,33))
-            draw.text((round(24*W/1280),round(10*H/720)),f'爱音 · v{version} 在线策略 + 头发 / 裙摆 PhysX',font=font,fill=(245,247,250))
+            draw.text((round(24*W/1280),round(10*H/720)),f'爱音 · {catalog[active_policy]["label"]} + 头发 / 裙摆 PhysX',font=font,fill=(245,247,250))
             draw.text((round(24*W/1280),round(47*H/720)),f'前后 {cmd[0]:+.2f} m/s  左右 {cmd[1]:+.2f} m/s  转向 {cmd[2]:+.2f} rad/s',font=font,fill=(120,218,255))
             draw.rectangle((0,round(681*H/720),W,H),fill=(17,23,33))
             draw.text((round(24*W/1280),round(687*H/720)),f'在线策略推理 | {physics.physics_hz if physics else 0} Hz 头发与裙摆物理 | 外观物理单向驱动',font=font,fill=(220,227,235))
@@ -284,22 +336,35 @@ try:
         costs.append([(policy_done-tick)*1000,(secondary_done-policy_done)*1000,(render_done-secondary_done)*1000,(time.perf_counter()-render_done)*1000])
         if completed%150==0:print('ANON_LIVE_SECONDARY',completed,flush=True)
         if not args.headless and not encoder:time.sleep(max(0,1/30-(time.perf_counter()-tick)))
+        frame_intervals.append((time.perf_counter()-tick)*1000)
     if encoder:
         encoder.stdin.close()
         if encoder.wait()!=0:raise RuntimeError('Video encoder failed')
         encoder=None
-    np.savez_compressed(args.output/'policy_trace.npz',hands=hand_trace,commands=command_trace,dt=1/30)
+    np.savez_compressed(args.output/'policy_trace.npz',hands=hand_trace,commands=command_trace,policy_ids=policy_trace,dt=1/30)
     if args.runtime_audit:np.savez_compressed(args.output/'runtime_audit.npz',body=body_trace,translations=skeleton_p,rotations=skeleton_q)
+    if args.save_preview:
+        for _ in range(5):app.update()
+        rgb=_capture_viewport_rgb()
+        if rgb is None:raise RuntimeError('Final preview capture failed')
+        Image.fromarray(rgb).save(args.output/'preview.png')
     measured=np.sum(np.asarray(costs)[min(args.benchmark_warmup,max(0,len(costs)-1)):],axis=1)
     report=dict(method='Live PPO inference in isolated PhysX worker; native CPU PhysX secondary rigid-node simulation; no rollout input',
                 body_device=args.body_device,transport=args.transport,legacy_compute=args.legacy_compute,physics_threads=args.physics_threads,
+                worker_physics_threads=args.worker_physics_threads,
+                asynchronous_rendering=bool(args.async_render and not args.record_video),
                 benchmark=dict(warmup_frames=min(args.benchmark_warmup,max(0,len(costs)-1)),frames=len(measured),fps=1000/float(np.mean(measured)),frame_ms_p50=float(np.percentile(measured,50)),frame_ms_p95=float(np.percentile(measured,95)),frame_ms_p99=float(np.percentile(measured,99))),
-                secondary_cost_ms=dict(zip(['prepare','physics_fetch_fabric','reconstruct','contact_feedback_and_diagnostics'],(physics.runtime_costs/max(1,physics.runtime_calls)).tolist())) if physics else {},
+                delivered_fps=1000/float(np.mean(frame_intervals[min(args.benchmark_warmup,max(0,len(frame_intervals)-1)):])),
+                secondary_cost_ms=dict(zip(['prepare','simulate','fetch','fabric','reconstruct','contact_feedback_and_diagnostics'],(physics.runtime_costs/max(1,physics.runtime_calls)).tolist())) if physics else {},
                 secondary_diagnostics_collected=args.legacy_compute,
+                frame_detail_ms=dict(zip(['secondary_and_skeleton','camera_and_ui','appearance'],np.mean(details[min(args.benchmark_warmup,max(0,len(details)-1)):],axis=0).tolist())),
                 character_appearance='bright_soft' if args.appearance=='bright-soft' else 'shared_default',
                 appearance_source_sha256=hashlib.sha256(look_source.encode()).hexdigest(),secondary_source_sha256=secondary_source_hash,
                 runtime_compensation_removed=True,
-                checkpoint=str(args.checkpoint),frames=completed,simulated_seconds=completed/30,falls=falls,
+                checkpoint=str(args.checkpoint),final_checkpoint=active_checkpoint,models=catalog,policy_switches=switches,
+                fall_events=fall_events,
+                scene_identities=[list(identity) for identity in identities],
+                frames=completed,simulated_seconds=completed/30,falls=falls,
                 video_resolution=[W,H],video_crf=16,
                 anti_aliasing=args.anti_aliasing,
                 wall_seconds=time.perf_counter()-started,secondary_physics=physics is not None,
@@ -324,6 +389,9 @@ try:
                 steps_with_body_contact=physics.body_contact_steps if physics else 0,
                 limitations=['Rigid-node approximation of PMX hair/skirt; not triangle cloth',
                              'One-way body-to-secondary coupling; no secondary force feedback into RL articulation'])
+    if not args.legacy_compute:
+        for key in ['hand_skirt_contact_steps','edge_hand_contact_steps','hand_skirt_contact_peak_n','body_contact_peak_n','steps_with_body_contact']:
+            report[key]=None
     (args.output/'report.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
     print(json.dumps(report),flush=True)
 except Exception:
@@ -340,6 +408,4 @@ finally:
         except subprocess.TimeoutExpired:worker.terminate();worker.wait(timeout=10)
     channel.close()
     worker_log.close()
-    if restart_policy:
-        subprocess.Popen([sys.executable,str(HERE/'inspect_anon_policy.py'),'--policy',restart_policy],cwd=str(ROOT),creationflags=subprocess.CREATE_NO_WINDOW)
     app.close(exit_code=result)

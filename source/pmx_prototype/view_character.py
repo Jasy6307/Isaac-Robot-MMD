@@ -1,4 +1,6 @@
 """Open the converted PMX in Isaac Sim. Default: repeat the eight-second demo."""
+
+from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 from pathlib import Path
 import argparse
 import json

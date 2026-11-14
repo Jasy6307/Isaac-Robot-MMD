@@ -1,0 +1,9 @@
+{
+  "full_motion_path": "I:/robot_isaac/output/anon_locomotion/full_motion/directions_bank.npz",
+  "motion_stage": "cardinal_directions",
+  "imitation_motion_probabilities": [0.1,0.1,0.2,0.2,0.15,0.125,0.125],
+  "imitation_blend_seconds": 0.8,
+  "imitation_transition_training": true,
+  "imitation_normalizer_std_floor": 0.1,
+  "episode_seconds": 15.0
+}

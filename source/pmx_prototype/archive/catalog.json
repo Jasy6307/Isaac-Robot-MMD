@@ -1,0 +1,114 @@
+{
+  "configs": [
+    {
+      "legacy_path": "anon_v5_config.json",
+      "archive_path": "archive/configs/anon_v5_config.json",
+      "sha256": "ea9993f542cb5bf8deadf3db90df315dadb96fc584e99ac1d539cfd3ae652d59"
+    },
+    {
+      "legacy_path": "anon_v5_flow_config.json",
+      "archive_path": "archive/configs/anon_v5_flow_config.json",
+      "sha256": "1c385d4caf9f3436e676978082c0fb374f8f23820e77f2f83a134e8b94293d03"
+    },
+    {
+      "legacy_path": "anon_v6_aligned_config.json",
+      "archive_path": "archive/configs/anon_v6_aligned_config.json",
+      "sha256": "1741f6c0d93c82ac969f5378592b5fda2caba682e3af6d6cdbe6f0207ab7a59b"
+    },
+    {
+      "legacy_path": "anon_v6_bounded_eval_config.json",
+      "archive_path": "archive/configs/anon_v6_bounded_eval_config.json",
+      "sha256": "a7ddb7edae4a730c89ee3b81200adb38e959a57cafdd71718f63d32717579e7d"
+    },
+    {
+      "legacy_path": "anon_v6_bounded_smooth_eval_config.json",
+      "archive_path": "archive/configs/anon_v6_bounded_smooth_eval_config.json",
+      "sha256": "351418b61f87912a119b6ec48ef351bde9fe25a62ddc5aeb628c8279ed507d95"
+    },
+    {
+      "legacy_path": "anon_v6_config.json",
+      "archive_path": "archive/configs/anon_v6_config.json",
+      "sha256": "4f38ab9e4b475129457af3909e24c0b1194af9f6176f72c5547ca193781f2373"
+    },
+    {
+      "legacy_path": "anon_v6_directions_config.json",
+      "archive_path": "archive/configs/anon_v6_directions_config.json",
+      "sha256": "e079fb0a8c83c7dce975622b9ab3b73299f55e75736b959d1666ce99942485ca"
+    },
+    {
+      "legacy_path": "anon_v6_heading_config.json",
+      "archive_path": "archive/configs/anon_v6_heading_config.json",
+      "sha256": "b07bbeaeac9058180eecef7665ed404ee8fbbee955ef35b0009b9c84571db244"
+    },
+    {
+      "legacy_path": "anon_v6_speeds_config.json",
+      "archive_path": "archive/configs/anon_v6_speeds_config.json",
+      "sha256": "26ff36de6b3f0620fe5c3d3b90fffb21c9d34e7690dcf2a9257b2aab527fcb57"
+    },
+    {
+      "legacy_path": "anon_v6_steady_eval_config.json",
+      "archive_path": "archive/configs/anon_v6_steady_eval_config.json",
+      "sha256": "797980860558cc24f467c562e4e4b4487d5fd006f79716038e5337337536aa4f"
+    },
+    {
+      "legacy_path": "anon_v6_steering_config.json",
+      "archive_path": "archive/configs/anon_v6_steering_config.json",
+      "sha256": "b674c55c4117f74488d408f172580313cb002269b2bc9f049a7d89d189d709a2"
+    },
+    {
+      "legacy_path": "anon_v6_tracking_config.json",
+      "archive_path": "archive/configs/anon_v6_tracking_config.json",
+      "sha256": "aca202c5969d67995fb2575980378f7a4268976a78b81fab664b1f21dae45666"
+    },
+    {
+      "legacy_path": "anon_v6_transition_config.json",
+      "archive_path": "archive/configs/anon_v6_transition_config.json",
+      "sha256": "eac5dd904ad3a8996feebd0383afd0e572d17ae6315f9ca96c3d8a1a5d171db2"
+    },
+    {
+      "legacy_path": "anon_secondary_natural.json",
+      "archive_path": "archive/configs/anon_secondary_natural.json",
+      "sha256": "42c0f043919808aa2c14c2f4beefdcfc35a8627214b51fd6df2a74bd247af16f"
+    },
+    {
+      "legacy_path": "anon_secondary_drape.json",
+      "archive_path": "archive/configs/anon_secondary_drape.json",
+      "sha256": "6ec62a1768fb1acbc1499cb6c85785bf688e108935b941369224dc8995036b2c"
+    },
+    {
+      "legacy_path": "anon_secondary_hand_contacts.json",
+      "archive_path": "archive/configs/anon_secondary_hand_contacts.json",
+      "sha256": "f9f1d7bd8b6cd9f466e8b2d99b163cf3b977a53659ab0de433ef12724111eeb9"
+    },
+    {
+      "legacy_path": "secondary_soft_contact_v1_120hz.json",
+      "archive_path": "archive/configs/secondary_soft_contact_v1_120hz.json",
+      "sha256": "f267c289132eaeb331852820f4e6fabb291b0d6b7e01f24d7cfba8e9cf030011"
+    },
+    {
+      "legacy_path": "secondary_fabric_waist_v4_120hz.json",
+      "archive_path": "archive/configs/secondary_fabric_waist_v4_120hz.json",
+      "sha256": "7cc80f46b3f1e08d3350d3c0f9d20b2b8c9b086cbe54ede1924ee4ec9edf9fce"
+    },
+    {
+      "legacy_path": "secondary_fabric_waist_sidehair_v5_120hz.json",
+      "archive_path": "archive/configs/secondary_fabric_waist_sidehair_v5_120hz.json",
+      "sha256": "a35c113d9770249ab7c16ea1a2200b6eb23a8c2b08e3bc1ecd7b4f600b537f8e"
+    },
+    {
+      "legacy_path": "secondary_fabric_transition_sidehair_v6_120hz.json",
+      "archive_path": "archive/configs/secondary_fabric_transition_sidehair_v6_120hz.json",
+      "sha256": "3b65e95ed42536166f94450e2d76c746ce45249f3b73875d1d6c017504045810"
+    },
+    {
+      "legacy_path": "secondary_hairlength_v7_120hz.json",
+      "archive_path": "archive/configs/secondary_hairlength_v7_120hz.json",
+      "sha256": "55cb3e53e6045cae5fe9632a7757e980bd72d6e2642d7d2c184e099ce8c19ae6"
+    }
+  ],
+  "retained_runtime_options": {
+    "legacy-secondary-physics": "Historical physics comparison; still used by batch recording to avoid applying defaults twice.",
+    "quality=legacy": "Original PhysX quality for historical comparison.",
+    "legacy-compute": "Inference/physics equivalence and performance validation."
+  }
+}

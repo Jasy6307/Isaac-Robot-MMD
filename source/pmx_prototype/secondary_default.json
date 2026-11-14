@@ -73,7 +73,21 @@
         5.0,
         2.0,
         1.0
-      ]
+      ],
+      "shape_gain_by_grid_rows": {
+        "16": [
+          1.0,
+          12.0,
+          12.0,
+          11.0,
+          8.0,
+          5.5,
+          3.5,
+          2.0,
+          1.25,
+          1.0
+        ]
+      }
     },
     "local_hair_support": {
       "bone_prefixes": [
@@ -94,9 +108,18 @@
       "bend_multiplier": 1.5
     }
   },
-  "description": "Approved120Hz cloth default: V5 named side-hair root anchors and graded recovery, retaining V4 waist support, V3 fabric and V2 hair-skirt contacts. Side-hair prefix matching leaves unmatched models unchanged.",
-  "profile_id": "fabric_waist_sidehair_v5",
+  "description": "Approved120Hz cloth default V10: contact-aware hair length/bending/body/skirt constraints, native tangent velocity with contact correction and15% projection velocity blend, plus24 contact-only refinement iterations. Prior model-adapted skirt waist/support and named side-hair settings retained.",
+  "profile_id": "hair_contact_drape_v10",
   "quality_profile": "cloth",
   "physics_hz": 120,
-  "skirt_max_stretch": 1.02
+  "skirt_max_stretch": 1.02,
+  "hair_max_stretch": 1.015,
+  "hair_constraint_solver": {
+    "iterations": 48,
+    "bend_relaxation": 0.06,
+    "velocity_mode": "native_tangent",
+    "contact_velocity": true,
+    "projection_velocity_blend": 0.15,
+    "contact_refine_iterations": 24
+  }
 }

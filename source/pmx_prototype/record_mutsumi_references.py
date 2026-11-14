@@ -4,6 +4,8 @@ Run with a regular Python containing imageio-ffmpeg. Each Isaac worker uses the
 project's verified runtime. A manifest supports safe resume; defaults are only
 updated after every requested movie is decoded and verified.
 """
+
+from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 from pathlib import Path
 import argparse, hashlib, json, os, struct, subprocess, sys
 
@@ -15,11 +17,11 @@ from source.pmx_prototype.secondary_profiles import DEFAULT_SECONDARY_PROFILE
 from source.pmx_prototype.appearance_defaults import DEFAULT_LOOK,LOOK_CHOICES
 
 p=argparse.ArgumentParser()
-p.add_argument('--dances',nargs='+',default=['IRIS_OUT','ni_zui_zhong_yao','hal_ia_yeah_oh_ahhh_oh','ji_le_jing_tu','girls','galaxias','deepbluetown','hal_ia_yeah_oh_ahhh_oh_short'])
+p.add_argument('--dances',nargs='+',default=['IRIS_OUT','ni_zui_zhong_yao','hal_ia_yeah_oh_ahhh_oh','ji_le_jing_tu','girls','deepbluetown','hal_ia_yeah_oh_ahhh_oh_short'])
 p.add_argument('--preserve-existing-dances',nargs='*',default=['IRIS_OUT'],help='Keep approved existing movies byte-for-byte, even with --force; pass an empty list to opt out')
 p.add_argument('--leg-clearance-dances',nargs='*',default=[],help='Explicit opt-in only; alters foot trajectories and may distort choreography')
 p.add_argument('--force',action='store_true',help='Regenerate even verified movies')
-p.add_argument('--secondary-profile',type=Path,default=DEFAULT_SECONDARY_PROFILE,help='Secondary physics profile; defaults to the approved V5 fabric/waist/side-hair/contact template at120Hz')
+p.add_argument('--secondary-profile',type=Path,default=DEFAULT_SECONDARY_PROFILE,help='Secondary physics profile; defaults to the approved V10 hair-contact/drape and existing fabric/waist/side-hair template at120Hz')
 p.add_argument('--legacy-secondary-physics',action='store_true',help='Use the original Mutsumi rig recipe without the new default profile')
 p.add_argument('--look',choices=LOOK_CHOICES,default=DEFAULT_LOOK)
 p.add_argument('--mesh-camera-dances',nargs='*',default=['hal_ia_yeah_oh_ahhh_oh_short'],help='Fit rendered mesh bounds for low-pose clips')

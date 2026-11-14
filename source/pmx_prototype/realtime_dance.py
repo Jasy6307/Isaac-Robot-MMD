@@ -1,4 +1,6 @@
 """Live XPBD + VMD dance in Isaac Sim, with rendered frame timings and probes."""
+
+from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 from pathlib import Path
 import argparse
 import json

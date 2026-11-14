@@ -1,0 +1,9 @@
+{
+  "full_motion_path": "I:/robot_isaac/output/anon_locomotion/full_motion/forward_bank.npz",
+  "motion_stage": "forward_speeds",
+  "imitation_motion_probabilities": [0.35,0.25,0.25,0.15],
+  "imitation_blend_seconds": 0.6,
+  "imitation_transition_training": true,
+  "imitation_normalizer_std_floor": 0.1,
+  "episode_seconds": 15.0
+}

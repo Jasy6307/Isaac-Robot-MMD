@@ -8,6 +8,8 @@ The source PMX and textures are never modified.
 """
 from __future__ import annotations
 
+from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
+
 import argparse
 from collections import Counter
 import json
