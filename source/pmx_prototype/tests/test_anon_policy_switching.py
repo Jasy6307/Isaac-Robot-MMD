@@ -40,9 +40,10 @@ class SwitchingTests(unittest.TestCase):
         self.assertEqual(c.command(),[0.,0.,0.]);self.assertEqual((c.speed,c.yaw_speed),(.3,.5))
         c.enabled=False;c.configure(WALK);self.assertFalse(c.enabled)
 
-    def test_catalog_default_and_distinct_weights(self):
-        self.assertIn('scratch',str(PRESETS['walk']))
-        self.assertEqual(len(set(PRESETS.values())),2)
+    def test_catalog_has_one_unified_default(self):
+        self.assertIn('unified_walk_run',str(PRESETS['walk']))
+        self.assertEqual(len(set(PRESETS.values())),1)
+        self.assertTrue(PRESETS['walk'].is_file())
         for key,path in PRESETS.items():
             self.assertEqual(identify(path),key)
 

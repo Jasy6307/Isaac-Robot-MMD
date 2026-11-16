@@ -10,10 +10,66 @@ from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 import unittest
 from types import SimpleNamespace
 import torch
-from unified_walk_run_reference import components,sample,velocity_at_offset
+from unified_walk_run_reference import components,sample,velocity_at_offset,sample_commands,heading_velocity
 from full_motion_reference import FullMotionReference
 
 class UnifiedReferenceTests(unittest.TestCase):
+    def test_command_velocity_uses_the_controller_heading(self):
+        heading=torch.tensor([0.,torch.pi/2,-torch.pi,.7]);cmd=torch.tensor([[1.2,.2]]*4)
+        c=heading.cos();s=heading.sin();f,l=cmd.unbind(-1)
+        world=torch.stack([c*l+s*f,s*l-c*f,torch.zeros_like(f)],-1)
+        self.assertTrue(torch.allclose(heading_velocity(world,heading),cmd,atol=1e-6))
+
+    def test_difficult_skill_keeps_reserved_rollout_time_after_resets(self):
+        torch.manual_seed(42);n=1000
+        cfg=dict(max_speed=1.2,max_yaw=.6,unified_high_speed_focus=True,unified_backward_env_fraction=.4,
+                 unified_backward_curriculum_start=100,unified_backward_curriculum_iterations=250)
+        env=SimpleNamespace(num_envs=n,device='cpu',evaluation=False,iteration=100,cfg=cfg,
+                            commands=torch.zeros(n,3),continuous_ref_commands=torch.zeros(n,3),command_age=torch.ones(n))
+        ids=torch.arange(n);assigned=ids.remainder(100)<40
+        for _ in range(3):
+            sample_commands(env,ids,on_reset=True)
+            self.assertTrue((env.commands[assigned,0]<-.39).all())
+            self.assertTrue((env.commands[assigned,:2].norm(dim=-1)<=.60001).all())
+            self.assertTrue((env.commands[assigned,2]==0).all())
+        env.iteration=400;sample_commands(env,ids,on_reset=True)
+        self.assertGreater(float(env.commands[assigned,:2].norm(dim=-1).max()),1.19)
+        self.assertGreater(float(env.commands[assigned,2].abs().max()),.5)
+        env.iteration=100;cfg['unified_right_env_fraction']=.2
+        sample_commands(env,ids,on_reset=True)
+        right=(ids.remainder(100)>=40)&(ids.remainder(100)<60)
+        self.assertTrue((env.commands[right,1]<-.39).all())
+        self.assertTrue((env.commands[right,2]==0).all())
+        self.assertTrue((env.commands[right,:2].norm(dim=-1)<=1.00001).all())
+        env.iteration=400;cfg.update(unified_backward_pure_fraction=.4,unified_backward_boundary_fraction=.3,
+                                    unified_right_pure_fraction=.4,unified_right_boundary_fraction=.3)
+        sample_commands(env,ids,on_reset=True)
+        direction=env.commands[:,:2]/env.commands[:,:2].norm(dim=-1,keepdim=True).clamp_min(.001)
+        corners=(direction.abs()[:,0]-2**-.5).abs()<1e-5
+        self.assertGreater(int(corners[assigned].sum()),80)
+        self.assertGreater(int(corners[right].sum()),30)
+        cfg['unified_lateral_both_directions']=True
+        sample_commands(env,ids,on_reset=True)
+        self.assertTrue((env.commands[assigned,0]<-.28).all())
+        lateral=env.commands[right,1]
+        self.assertGreater(int((lateral>.28).sum()),60)
+        self.assertGreater(int((lateral<-.28).sum()),60)
+        self.assertLessEqual(float(env.commands[:,:2].norm(dim=-1).max()),1.20001)
+
+    def test_focused_sampler_covers_run_directions_turns_and_rehearsal(self):
+        torch.manual_seed(42);n=16384
+        env=SimpleNamespace(num_envs=n,device='cpu',evaluation=False,iteration=1000,
+                            cfg=dict(max_speed=1.2,max_yaw=.6,unified_high_speed_focus=True,unified_idle_hold_seconds=8.),
+                            commands=torch.zeros(n,3),continuous_ref_commands=torch.zeros(n,3),command_age=torch.ones(n))
+        sample_commands(env,torch.arange(n),on_reset=True)
+        cmd=env.commands;speed=cmd[:,:2].norm(dim=-1)
+        self.assertLessEqual(float(speed.max()),1.20001);self.assertLessEqual(float(cmd[:,2].abs().max()),.6)
+        self.assertGreater(float((speed>.8).float().mean()),.5)
+        self.assertGreater(float((cmd.abs().sum(-1)<.001).float().mean()),.05)
+        for axis,sign in [(0,1),(0,-1),(1,1),(1,-1)]:
+            self.assertGreater(int(((cmd[:,axis]*sign>.8)&(cmd[:,2].abs()>.3)).sum()),100)
+        self.assertTrue(torch.equal(cmd,env.continuous_ref_commands))
+
     def test_rotating_body_origin_and_com_velocities_are_distinct(self):
         velocity=torch.tensor([[0.,0.,0.,0.,0.,2.]])
         rotation=torch.tensor([[0.,0.,2**-.5,2**-.5]])

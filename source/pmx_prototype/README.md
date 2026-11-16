@@ -1,5 +1,7 @@
 # PMX 角色骨骼原型
 
+已验收的睦舞蹈回放请先看 [PLAYBACK.md](PLAYBACK.md)：统一1K/2K入口及当前默认设置。
+
 ## 代码导航
 
 本目录同时保留当前运行链路与历史实验。先按下表定位入口；历史章节中的能力描述只对应当时阶段，当前外观和物理默认以本文开头的说明为准。
@@ -7,16 +9,16 @@
 | 功能 | 入口与公共实现 |
 | --- | --- |
 | PMX 转换、VMD 烘焙、资产查看 | `convert_pmx.py`、`load_vmd.py`、`view_character.py` |
-| 舞蹈实时预览 | `physx_dance.py`（原生 PhysX）、`realtime_dance.py` / `realtime_xpbd.py`（XPBD） |
+| 舞蹈实时预览 | `tools/preview_dance.py`（角色舞蹈标准入口），`physx_dance.py`（原生 PhysX）、`realtime_dance.py` / `realtime_xpbd.py`（XPBD） |
 | 录像与缓存重录 | `record_physx_video.py`、`record_cached_secondary.py`、`record_mutsumi_references.py` |
 | 统一外观 | `appearance_defaults.py` → `character_appearance.py`；`character_semantics.py`、`bangs_shadow.py`、`mmd_cel.mdl` |
-| 头发、裙摆物理 | `secondary_profiles.py`、`secondary_default.json` → `physx_secondary.py`；XPBD 实现在 `secondary_motion.py` |
+| 头发、裙摆物理 | `secondary_profiles.py`、`configs/physics/secondary_default.json` → `physx_secondary.py`；XPBD 实现在 `secondary_motion.py` |
 | 策略训练与播放 | `train_anon_locomotion.py`、`play_anon_policy.py`、`inspect_anon_policy.py`；详见 `ANON_LOCOMOTION.md` |
 | 物理角色构建 | `physical_character.py`、`build_anon_v3.py`（25 DOF）、`build_anon_v4.py`（31 DOF）；详见 `PHYSICAL_CHARACTER.md` |
 | 动作参考与处理 | `*_reference.py`、`build_*motion*.py`、`retarget_100style.py` 及平衡、平滑、审计脚本 |
 | 验证 | `test_*.py` 为单元测试；`check_*.py`、`validate_*.py` 多数需要 Isaac Sim、资产或音频设备 |
 
-`anon_*.json` 是训练/评估参数覆盖；`secondary_*.json` 是物理预设，版本与状态见 `secondary_profiles_catalog.json`。文件名中的旧版本号不代表可以删除：构建器仍由环境按配置选择，部分配置和脚本仍被发布打包与训练快照使用。
+`anon_*.json` 是训练/评估参数覆盖；`secondary_*.json` 是物理预设，版本与状态见 `configs/physics/secondary_profiles_catalog.json`。文件名中的旧版本号不代表可以删除：构建器仍由环境按配置选择，部分配置和脚本仍被发布打包与训练快照使用。
 
 整理约定：先保持现有文件路径、命令行参数、导入名称和启动顺序。Isaac Sim 入口中的 `SimulationApp` 初始化与后续 `pxr` / `omni` 导入有先后要求，不能简单按普通 Python 导入排序。输出、缓存和历史录像继续写入项目既有目录。
 
@@ -32,6 +34,7 @@
 | `diagnostics/` | 检查、评估、审计及诊断录像 |
 | `tools/` | 发布打包、数据下载、外观对比和外部渲染工具 |
 | `tests/` | 单元与兼容性测试 |
+| `configs/` | 按用途分类的训练覆盖与物理配置，见 [配置说明](configs/README.md) |
 | `archive/` | 历史实验与冻结配置 |
 
 统一列出和运行工具（仍在项目根目录执行）：
@@ -44,9 +47,9 @@ python source/pmx_prototype/pmx.py tools package_anon_policy --help
 
 分类前缀可以省略，也可直接运行分类目录里的脚本。旧名称到新位置的完整映射见 `module_locations.json`；上文历史命令已改到对应分类路径。外部代码建议通过 `source.pmx_prototype.<原模块名>` 导入；独立脚本如使用原来的裸模块导入，先 `import source_layout` 初始化分类搜索路径。
 
-共享源文件定位统一走 `resolve_source()`；源码快照由 `source_bundle.py` 解析本地依赖并保留分类目录，不会在复制时启动模拟器。v3/v4 继续复用同一个资产构建器，保留版本差异。JSON 参数和 MDL 资源暂保留原路径，训练覆盖和历史配置读取方式不变。
+共享源文件定位统一走 `resolve_source()`；源码快照由 `source_bundle.py` 解析本地依赖并保留分类目录，不会在复制时启动模拟器。v3/v4 继续复用同一个资产构建器，保留版本差异。JSON 参数已按用途迁入 `configs/`；MDL 资源保留原路径。配置参数内容不变，旧项目配置路径可由入口参数兼容解析。
 
-测试发现命令：`python -m unittest discover -s source/pmx_prototype/tests`。依赖 USD 的测试仍须在 Isaac 环境执行。
+统一测试入口：`python run_tests.py --suite cpu --area pmx`；需要本机角色、动作或策略文件的测试用 `--suite assets --area pmx`。依赖与报告说明见 [测试指南](../../TESTING.md)。旧的 `python -m unittest discover -s source/pmx_prototype/tests` 仍可用，但会尝试执行整个目录，不按依赖分层筛选。
 
 ## 默认角色外观：第 8 版最新微调版（2026-11-13）
 
@@ -107,7 +110,7 @@ PhysX `cloth` 模式可通过物理 profile 的 `appearance.hair_skirt_contacts=
 `record_cached_secondary.py` 可用既有完整 UsdSkel 物理缓存重录外观，要求原物理报告为完整的 120 Hz 版本。录制时不启动物理，直接读取缓存每帧姿态，检查缓存哈希、抽样姿态、原地面属性与相机构图，并输出 `render_report.json`。2026-11-13 首次仅将《极乐净土》验收参考切换为 `mmd-toon`，保留既有 120 Hz 缓存及 10% 缩短裙长；其他舞蹈仍保持原视频。
 
 
-当前实时头发／裙子物理默认模板为 `secondary_default.json`（hair_contact_drape_v10），**120 Hz**、30 FPS 时每帧 **4** 子步、`cloth` 质量。适用于原生物理舞蹈播放、录制、睦批录和爱音在线播放。模型网格尺寸自动解析；静态裙长、动作、骨骼编号不放入公共模板。历史索引见 `secondary_profiles_catalog.json`，历史参数文件保持可选。
+当前实时头发／裙子物理默认模板为 `configs/physics/secondary_default.json`（V1，原 hair_contact_drape_v10），**120 Hz**、30 FPS 时每帧 **4** 子步、`cloth` 质量。适用于原生物理舞蹈播放、录制、睦批录和爱音在线播放。模型网格尺寸自动解析；静态裙长、动作、骨骼编号不放入公共模板。历史索引见 `configs/physics/secondary_profiles_catalog.json`，旧版参数文件已清理；历史实验文字仅供参考。
 
 将 PMX 的网格、UV、基础贴图、骨骼及蒙皮权重直接转换成 USD UsdSkel，
 在 Isaac Sim 6.1 中循环展示左臂、左肘、左髋和左膝的独立旋转。
@@ -574,13 +577,13 @@ max_pushout_m_s=0.3，linear_damping=10；不改变腰线、网格尺寸与前�
 
 ### Girls 新物理对照试验
 
-`output/mutsumi_girls_physics_update/rig.json` 在现有 Girls 动作与缩短 10% 的裙子上合并 `anon_secondary_hand_contacts.json`，保留前发锁定、防拉长约束和接触释放设置，并将旧 `skirt_contact_smoothing.linear_damping` 改为新配置的 2，避免覆盖新阻尼。实际场景检查通过：57 个头发动态节点阻尼 2.2，168 个裙子动态节点阻尼 2，半径均 3 mm，168 个裙边胶囊及两个手掌代理。身体动作与镜头保持一致。此为独立试验片，完整对比为 `girls_physics_before_after.mp4`，左旧右新。新版裙摆卷折明显增加，未替换原验收参考片；所有原舞蹈视频均通过 SHA256 保留检查。
+`output/mutsumi_girls_physics_update/rig.json` 在现有 Girls 动作与缩短 10% 的裙子上合并 `configs/physics/presets/anon_secondary_hand_contacts.json`，保留前发锁定、防拉长约束和接触释放设置，并将旧 `skirt_contact_smoothing.linear_damping` 改为新配置的 2，避免覆盖新阻尼。实际场景检查通过：57 个头发动态节点阻尼 2.2，168 个裙子动态节点阻尼 2，半径均 3 mm，168 个裙边胶囊及两个手掌代理。身体动作与镜头保持一致。此为独立试验片，完整对比为 `girls_physics_before_after.mp4`，左旧右新。新版裙摆卷折明显增加，未替换原验收参考片；所有原舞蹈视频均通过 SHA256 保留检查。
 
-批录器支持显式 `--secondary-profile source/pmx_prototype/anon_secondary_hand_contacts.json`，默认不迁移新参数；缓存签名包含配置内容。启用新配置时同步处理裙子阻尼覆盖。
+批录器支持显式 `--secondary-profile source/pmx_prototype/configs/physics/presets/anon_secondary_hand_contacts.json`，默认不迁移新参数；缓存签名包含配置内容。启用新配置时同步处理裙子阻尼覆盖。
 
 ### 睦 Girls 防卷折校准
 
-`mutsumi_secondary_girls.json` 为睦专用试验配置，仅验证 Girls，不改变 USD 静态裙长、蒙皮、身体动作或相机。保留新版后发物理和前发锁定，分别控制裙子/头发的自由垂落，恢复裙子支撑与接触厚度；将手部代理拟合范围从整只张开手（约 16 cm）改为掌部（约 7.5 cm）；裙子下段边胶囊允许与大腿/膝腿代理接触，上段排除新增腿部接触；168 条纵向边胶囊之间增加 147 个 PhysX SphericalJoint 弯曲限位，使用 Z 轴 30° 双锥参数。该参数为关节设置，不等于保证所有渲染顶点折角小于 30°。所有新增行为均须由配置显式启用，默认不改变爱音。
+`configs/physics/models/mutsumi_secondary_girls.json` 为睦专用试验配置，仅验证 Girls，不改变 USD 静态裙长、蒙皮、身体动作或相机。保留新版后发物理和前发锁定，分别控制裙子/头发的自由垂落，恢复裙子支撑与接触厚度；将手部代理拟合范围从整只张开手（约 16 cm）改为掌部（约 7.5 cm）；裙子下段边胶囊允许与大腿/膝腿代理接触，上段排除新增腿部接触；168 条纵向边胶囊之间增加 147 个 PhysX SphericalJoint 弯曲限位，使用 Z 轴 30° 双锥参数。该参数为关节设置，不等于保证所有渲染顶点折角小于 30°。所有新增行为均须由配置显式启用，默认不改变爱音。
 
 验收文件在 `output/mutsumi_girls_physics_tuned/`：`girls_before_after_tuned.mp4` 左侧是上次直接迁移爱音配置的卷裙版本，右侧为睦校准版；`results.json` 提供整首同时间点的卷折及共用腿部碰撞代理指标，`body_motion_audit.json` 提供身体矩阵逐帧检查。`analyze_mutsumi_cloth_cache.py` 评估真实蒙皮裙子顶点对共用 PMX 腿部胶囊的穿入，不能作为三角网格精确无穿模的证明。完整旧参考库保留不变。
 
@@ -596,7 +599,7 @@ Girls 接触突跳版本：`output/mutsumi_girls_contact_cushion/girls_contact_b
 
 ### 当前默认与历史物理版本
 
-2026-11-14：用户确认 V10 头发优化成为默认。冻结快照 `secondary_hair_contact_drape_v10_120hz.json`；升级前 V7 完整保存在 `secondary_hairlength_v7_120hz.json`，另有本次字节备份 `output/secondary_default_v10_promotion/previous_default_v7.json`。V10 仅新增 `hair_constraint_solver`，原裙腰、裙子支撑、侧发、防拉长和 **120 Hz / cloth** 参数逐项保留。视觉依据为爱音 Girls 前 40 秒 V9/V10 对比；仍有瞬时残余穿入，其他角色未作完整舞蹈视觉复验。现有视频和缓存不覆盖，后续默认启动使用新参数。
+历史记录（旧参数文件现已清理）：2026-11-14 用户确认 V10 头发优化成为默认。冻结快照 `configs/physics/snapshots/secondary_hair_contact_drape_v10_120hz.json`；升级前 V7 完整保存在 `configs/physics/snapshots/secondary_hairlength_v7_120hz.json`，另有本次字节备份 `output/secondary_default_v10_promotion/previous_default_v7.json`。V10 仅新增 `hair_constraint_solver`，原裙腰、裙子支撑、侧发、防拉长和 **120 Hz / cloth** 参数逐项保留。视觉依据为爱音 Girls 前 40 秒 V9/V10 对比；仍有瞬时残余穿入，其他角色未作完整舞蹈视觉复验。现有视频和缓存不覆盖，后续默认启动使用新参数。
 
 V8 头发接触实验（未应用默认）：`hair_constraint_solver` 在原生 PhysX 子步后交替处理原始曲率、发段长度、身体代理、裙节点/边及非相邻发束接触，最后保留长度上限，回写刚体位置/速度。`iterations=24`、`bend_relaxation=.12` 的爱音 Girls 前 40 秒对比在 `output/anon_hair_contact_v8/`。身体穿入为骨骼代理指标，手掌盒使用原始胶囊近似，不能等同于可见三角网格穿透深度；仍有瞬时残余穿入。该历史实验阶段默认仍为 V7。
 
@@ -604,13 +607,13 @@ V9 自然垂落实验（未应用默认）：`hair_constraint_solver.velocity_mo
 
 V10（已批准为默认）：`contact_refine_iterations=24` 在主约束求解后追加不施加曲率回形的接触/长度收敛，主求解仍为 48 次，`bend_relaxation=.06`、`projection_velocity_blend=.15`。爱音 Girls 前 40 秒 V9/V10 对比保存于 `output/anon_hair_drape_v10/`，V10 参数已合入默认配置；此次升级不重录视频。
 
-2026-11-14：V7 修复头发在交互后持续拉长。`hair_max_stretch=1.015` 按模型静态发骨长度创建原生限位，并在每个 120 Hz 子步后按根到梢顺序校正超长发段，回写 PhysX 位置与线速度；渲染和下一子步均使用校正状态。不是修改原网格长度或单独缩短显示骨骼。快照 `secondary_hairlength_v7_120hz.json`；V6 裙腰、侧发与发裙碰撞参数保留。爱音 Girls 前 40 秒验证：后发整束最大长度比例约1.015，所有发段最大比例低于1.016，身体动作逐帧一致。仍可能瞬时压缩或发生代理网格穿模，不保证所有碰撞问题一并解决。对比在 `output/anon_hair_length_v7/`，原正式参考视频不覆盖。
+2026-11-14：V7 修复头发在交互后持续拉长。`hair_max_stretch=1.015` 按模型静态发骨长度创建原生限位，并在每个 120 Hz 子步后按根到梢顺序校正超长发段，回写 PhysX 位置与线速度；渲染和下一子步均使用校正状态。不是修改原网格长度或单独缩短显示骨骼。快照 `configs/physics/snapshots/secondary_hairlength_v7_120hz.json`；V6 裙腰、侧发与发裙碰撞参数保留。爱音 Girls 前 40 秒验证：后发整束最大长度比例约1.015，所有发段最大比例低于1.016，身体动作逐帧一致。仍可能瞬时压缩或发生代理网格穿模，不保证所有碰撞问题一并解决。对比在 `output/anon_hair_length_v7/`，原正式参考视频不覆盖。
 
-历史：2026-11-14：用户暂定将爱音 V6 裙腰至裙身过渡支撑记录为默认，冻结快照为 `secondary_fabric_transition_sidehair_v6_120hz.json`。`skirt_waist_support.shape_gain_by_grid_rows` 在原生网格解析后选用对应支撑曲线：当前 16 行爱音使用 `[1,12,12,11,8,5.5,3.5,2,1.25,1]`；9 行睦及未匹配网格继续用已确认的 V5 基础曲线。其余参数逐项保留，包括侧发、发裙碰撞、裙长约束和 **120 Hz**。视觉依据为 `output/anon_girls_waist_transition_v6/` 中 Girls 前 40 秒第二轮实验；平均外鼓改善温和、仍有残余外撑。此次仅记录并更新默认，不重录或覆盖既有视频。V5 及更早快照保留。
+历史：2026-11-14：用户暂定将爱音 V6 裙腰至裙身过渡支撑记录为默认，冻结快照为 `configs/physics/snapshots/secondary_fabric_transition_sidehair_v6_120hz.json`。`skirt_waist_support.shape_gain_by_grid_rows` 在原生网格解析后选用对应支撑曲线：当前 16 行爱音使用 `[1,12,12,11,8,5.5,3.5,2,1.25,1]`；9 行睦及未匹配网格继续用已确认的 V5 基础曲线。其余参数逐项保留，包括侧发、发裙碰撞、裙长约束和 **120 Hz**。视觉依据为 `output/anon_girls_waist_transition_v6/` 中 Girls 前 40 秒第二轮实验；平均外鼓改善温和、仍有残余外撑。此次仅记录并更新默认，不重录或覆盖既有视频。V5 及更早快照保留。
 
-历史：2026-11-14：用户确认将爱音 V5 侧发优化加入默认模板，继续 **120 Hz / cloth**。当前冻结参数为 `secondary_fabric_waist_sidehair_v5_120hz.json`，V4 快照继续保留。仅新增 `local_hair_support`，V4 裙子与发裙碰撞参数逐项保持不变；侧发只匹配 `rclh_ / lclh_ / rch_ / lch_`，不匹配这些名称的角色保持原有头发设置。依据为爱音 Girls 前 40 秒 V4/V5 对比；此次升级不重录或覆盖任何现有动作视频、缓存或验收参考记录。
+历史：2026-11-14：用户确认将爱音 V5 侧发优化加入默认模板，继续 **120 Hz / cloth**。当前冻结参数为 `configs/physics/snapshots/secondary_fabric_waist_sidehair_v5_120hz.json`，V4 快照继续保留。仅新增 `local_hair_support`，V4 裙子与发裙碰撞参数逐项保持不变；侧发只匹配 `rclh_ / lclh_ / rch_ / lch_`，不匹配这些名称的角色保持原有头发设置。依据为爱音 Girls 前 40 秒 V4/V5 对比；此次升级不重录或覆盖任何现有动作视频、缓存或验收参考记录。
 
-历史：2026-11-13：用户确认将 V4 裙腰贴合、V3 裙料支撑/回落和 V2 发裙碰撞一起应用到默认模板，继续 **120 Hz / cloth**。冻结参数见 `secondary_fabric_waist_v4_120hz.json`，上一版默认完整保存在 `secondary_soft_contact_v1_120hz.json`。新默认不包含模型骨骼编号或网格/裙长变更；上部 `qun_` 行使用渐变半径、接触偏移与恢复力。视觉依据为睦 Girls 前 40 秒 V3/V4 对比，其他角色未作完整舞蹈视觉复验。此次只更新默认配置，不重录、替换或重新标记现有参考视频/缓存。
+历史：2026-11-13：用户确认将 V4 裙腰贴合、V3 裙料支撑/回落和 V2 发裙碰撞一起应用到默认模板，继续 **120 Hz / cloth**。冻结参数见 `configs/physics/snapshots/secondary_fabric_waist_v4_120hz.json`，上一版默认完整保存在 `configs/physics/snapshots/secondary_soft_contact_v1_120hz.json`。新默认不包含模型骨骼编号或网格/裙长变更；上部 `qun_` 行使用渐变半径、接触偏移与恢复力。视觉依据为睦 Girls 前 40 秒 V3/V4 对比，其他角色未作完整舞蹈视觉复验。此次只更新默认配置，不重录、替换或重新标记现有参考视频/缓存。
 
 默认模板由 `secondary_profiles.py` 统一定位。`physx_dance.py`、`record_physx_video.py`、`record_mutsumi_references.py`、`play_anon_policy.py` 默认载入同一份参数；显式 secondary-profile 可选择旧配置，legacy-secondary-physics 可跳过公共模板。睦批录先合并参数到模型 rig，再禁用工作进程的二次默认覆盖，确保自定义或历史配置不被覆盖。爱音在线播放在拓扑/蒙皮初始化前加载参数，子步数量按实际 Hz/30 计算；默认依然 120 Hz、每帧 4 步。
 
@@ -628,10 +631,10 @@ V10（已批准为默认）：`contact_refine_iterations=24` 在主约束求解�
 
 HAL 短版最终补充取景修正：原辅助骨骼包围范围令相机高度约 1.4 cm，低姿态时拍到地面侧面黑带。此片改为 `fit-camera-mesh`，按蒙皮顶点范围取景并将相机高度下限设为 0.55 m，保留原动作、原裙长、原地面及物理参数。1240 帧逐帧黑带扫描通过；其他六片取景和 IRIS OUT 均未改。批录器同时检查渲染成功标志，避免 Kit 脚本异常但退出码为零时误用旧报告。
 
-### 当前睦参考库：V10 / 1080p / mmd-toon
+### 当前睦参考库与标准回放
 
-2026-11-14 后续维护：用户停用 Galaxias，已删除 `media/dance/galaxias`，移除默认批录和 G1 参考配置中的该动作；历史输出和备份保留。当前有效参考为 7 支、H5 变体为 23 个，下述八支描述为本批最初录制记录。Deep Blue Town 原 WAV 峰值约 -25.079 dBFS，使用固定增益 +24.079 dB 将峰值归一至 -1 dBFS（无压缩/限幅；未找到未衰减母带，不能声称逐样本还原原始增益）。录制仍采用共用 0.25 音量；已更新当前 V10 参考音轨，视频编码数据完全不变。低音量 WAV 和更新前参考备份、增益及哈希记录见 `output/audio_library_maintenance_20261114/`。
+已验收的实时回放标准见 [PLAYBACK.md](PLAYBACK.md)，统一入口为 `tools/preview_dance.py --model mutsumi|anon --dance <舞蹈名> --resolution 1k|2k`。默认 V1（原 V10）、120 Hz、mmd-toon、原地面、并行物理、相机缓存、加载隐藏及两秒第0帧预热；预设位于 `configs/playback/mutsumi_deepbluetown.json`。支持现有6支舞蹈及各自音源，资产表位于 `configs/playback/mutsumi_dances.json`；完整实时性能验证基准仍为睦 Deep Blue Town。
 
-2026-11-14 按用户要求完整重录全部八支参考（此次包含 IRIS OUT）：统一 `hair_contact_drape_v10`、120 Hz / cloth、30 FPS、原竖版比例 `1080×1350`、共享默认 mmd-toon 外观及原版地面。复用每支已确认的 character、rig 和场景相机，不重新转换 VMD；身体动作、原有腿部修正及缩短 10% 的静态裙长保持不变。新物理缓存先完成完整解算，再通过 `record_cached_secondary.py` 渲染；每片检查完整解码、帧数、源资产哈希、地面及相机构图后才替换标准参考路径。
+现有 G1 参考库保留六支动作的原标准路径：`source/train_workflow/validation_videos.json` 与 `output/mutsumi_validation_references/manifest.json`。Galaxias 已退役，Deep Blue Town 音源已恢复音量；旧参考片备份保留于 `output/mutsumi_validation_v10_1080/previous/`。本次启动优化不重录或替换这些参考片。
 
-本次输出位于 `output/mutsumi_validation_v10_1080/`，`video_index.txt` 列出八支视频及各自旧版备份，`verification.json` 保存总核验。替换前的八支 MP4、sidecar、参考库 manifest 和配置快照保存在 `previous/`，旧视频 SHA256 已核对。主库 `output/mutsumi_validation_references/manifest.json` 已逐片更新；G1 继续读取原标准路径，八支参考及 24 个 H5 变体解析均通过。既有历史 G1 合成视频保留，后续合成使用新版参考；另生成 `ji_le_jing_tu_G1_iter10000_v10.mp4` 作为新版对比样片，复用既有 G1 验收录像，不改变策略、评分或验收时钟。上节提亮版及 IRIS OUT 保留说明仅描述历史批次。
+当前通过的预热对比样片、验收数据保留在 `output/mutsumi_startup_v4/`。阶段性的性能实验和临时脚本进入 `output/archive/mutsumi_playback_history_*/`，清单包含原路径、新路径和 SHA-256。历史说明集中在 [archive/MUTSUMI_PLAYBACK_HISTORY.md](archive/MUTSUMI_PLAYBACK_HISTORY.md)，不再把各实验版混列为当前默认。

@@ -1,0 +1,26 @@
+{
+  "id": "mutsumi_deepbluetown",
+  "actor": "若叶睦",
+  "motion": "Deep Blue Town",
+  "usd": "output/mutsumi_validation_120hz_bright/deepbluetown/character.usdc",
+  "pmx": "media/mutsmi/mutsmi v1.pmx",
+  "rig_data": "output/mutsumi_validation_120hz_bright/deepbluetown/rig.json",
+  "music": "media/dance/deepbluetown/deepbluetown.wav",
+  "physics_profile": "secondary_default.json",
+  "expected_profile_id": "hair_contact_drape_v1",
+  "physics_hz": 120,
+  "look": "mmd-toon",
+  "quality": "cloth",
+  "default_resolution": "2k",
+  "default_render_fps": 30,
+  "resolutions": {
+    "1k": [
+      1080,
+      1350
+    ],
+    "2k": [
+      1440,
+      1800
+    ]
+  }
+}

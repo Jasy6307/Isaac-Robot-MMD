@@ -1,0 +1,8 @@
+{
+  "girls": {
+    "motion": "Girls",
+    "usd": "output/anon_girls_mutsumi_physics/body.usdc",
+    "music": "media/dance/girls/girls.wav",
+    "aliases": []
+  }
+}

@@ -5,7 +5,7 @@ from pathlib import Path as _Path
 _source_dir = _Path(__file__).resolve().parents[1]
 if str(_source_dir) not in _sys.path:
     _sys.path.insert(0, str(_source_dir))
-from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
+from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source, config_path
 
 import argparse
 import json
@@ -16,7 +16,7 @@ import time
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--checkpoint',type=Path,required=True)
 parser.add_argument('--ipc',type=Path,required=True)
-parser.add_argument('--config-override',type=Path)
+parser.add_argument('--config-override',type=config_path)
 parser.add_argument('--body-device',choices=['cpu','cuda:0'],default='cuda:0')
 parser.add_argument('--address')
 parser.add_argument('--authkey')
@@ -38,7 +38,7 @@ connection=None
 result=0
 try:
     torch.set_num_threads(1)
-    from anon_policy_catalog import PRESETS,LABELS,identify
+    from anon_policy_catalog import PRESETS,LABELS,identify,label_for
     from anon_config_compat import clean_legacy_config
     profiles={};catalog={};initial_actions={};active=identify(args.checkpoint)
     paths={active:args.checkpoint}
@@ -70,7 +70,7 @@ try:
             if args.preload_presets:
                 with torch.inference_mode():initial_actions[key]=infer(candidate.get_observations()).clone()
             profiles[key]=(candidate,runner,infer,str(path.resolve()))
-            catalog[key]=dict(label=LABELS.get(key,'CUSTOM | '+path.parent.name),checkpoint=str(path.resolve()),available=True)
+            catalog[key]=dict(label=label_for(key,config,path),checkpoint=str(path.resolve()),available=True)
             print('POLICY_PRELOADED',key,path,flush=True)
         except Exception as error:
             if key==active:raise

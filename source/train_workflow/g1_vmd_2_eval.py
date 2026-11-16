@@ -69,6 +69,18 @@ parser.add_argument("--export_deployment_bundle", type=str, default=None,
 parser.add_argument("--task", type=str, default="Isaac-G1-Vmd-Train-C1-v0")
 parser.add_argument("--num_envs", type=int, default=16)
 parser.add_argument(
+    "--live_anon",
+    action="store_true",
+    default=False,
+    help="Show and synchronize the Anon PMX dancer with the G1 policy in the same live Isaac Sim stage.",
+)
+parser.add_argument(
+    "--live_anon_usd",
+    type=str,
+    default=os.path.join(_WORKSPACE_ROOT, "output", "iris_out_policy_20261115", "IRIS_OUT_anon_physx_baked.usdc"),
+    help="Baked PMX PhysX USD cache synchronized with the live policy rollout.",
+)
+parser.add_argument(
     "--seed", type=int, default=None,
     help="Optional reproducible rollout reset seed (incremented per episode).",
 )
@@ -246,6 +258,16 @@ parser.add_argument(
     ),
 )
 parser.add_argument(
+    "--record_policy_h5",
+    type=str,
+    default=None,
+    help=(
+        "Export the actual simulated robot joint/root poses during one --play rollout "
+        "to a replay-compatible HDF5 file. Requires --auto_start, --num_envs 1, "
+        "and --num_episodes 1."
+    ),
+)
+parser.add_argument(
     "--record_avi_fps",
     type=float,
     default=60.0,
@@ -305,6 +327,23 @@ if args_cli.render_interval is not None and args_cli.render_interval < 1:
     parser.error("--render_interval must be >= 1")
 if args_cli.viewport_resolution is not None and min(args_cli.viewport_resolution) < 1:
     parser.error("--viewport_resolution dimensions must be >= 1")
+if args_cli.live_anon:
+    if not args_cli.play:
+        parser.error("--live_anon requires --play")
+    if not os.path.isfile(args_cli.live_anon_usd):
+        parser.error(
+            f"--live_anon_usd baked cache not found: {args_cli.live_anon_usd}. "
+            "Build it with source/pmx_prototype/physx_dance.py --bake-usd first."
+        )
+if args_cli.record_policy_h5:
+    if not args_cli.play or not args_cli.auto_start:
+        parser.error("--record_policy_h5 requires --play and --auto_start")
+    if args_cli.num_envs != 1 or args_cli.num_episodes != 1:
+        parser.error("--record_policy_h5 requires --num_envs 1 and --num_episodes 1")
+    if args_cli.eval_motion_starts or args_cli.eval_motion_start is not None:
+        parser.error("--record_policy_h5 does not support motion-start overrides")
+    if os.path.exists(args_cli.record_policy_h5):
+        parser.error(f"--record_policy_h5 output already exists: {args_cli.record_policy_h5}")
 sim_compat.prepare_launcher_args(args_cli)
 if args_cli.jump_diagnostics:
     if not 0 <= args_cli.jump_diagnostics_env < args_cli.num_envs:
@@ -338,6 +377,7 @@ import carb  # noqa: E402
 import gymnasium as gym  # noqa: E402
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
+import h5py  # noqa: E402
 
 from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 
@@ -1486,6 +1526,14 @@ def main() -> None:
         _hide_default_ground_visuals(env_unwrapped)
     wrapped = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
+    live_anon = None
+    if args_cli.live_anon:
+        from source.pmx_prototype.runtime.live_anon_scene import LiveAnonScene
+        live_anon = LiveAnonScene(
+            env_unwrapped.sim.stage,
+            pmx_usd=args_cli.live_anon_usd,
+        )
+
     _apply_viewport_performance_options()
 
     runner = OnPolicyRunner(wrapped, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
@@ -1552,6 +1600,28 @@ def main() -> None:
             f"[INFO] --play tail enabled: +{post_play_steps} steps "
             f"({post_play_seconds:.2f}s), rollout steps={rollout_steps}"
         )
+
+    policy_pose_records: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    policy_joint_names: list[str] = []
+
+    def _capture_policy_pose() -> None:
+        """Snapshot the articulated state after policy control for H5 replay."""
+        robot = env_unwrapped.scene["robot"]
+        joint_pos = sim_compat.as_torch(robot.data.joint_pos)[0].detach().cpu().numpy().astype(np.float32)
+        root_state = sim_compat.as_torch(getattr(robot.data, "root_state_w", None))
+        if root_state is None or root_state.ndim != 2 or root_state.shape[1] < 7:
+            raise RuntimeError("Robot articulation does not expose a valid root_state_w")
+        root_xyzw = root_state[0, 3:7].detach().cpu().numpy().astype(np.float32)
+        root_pos = root_state[0, :3].detach().cpu().numpy().astype(np.float32)
+        if not policy_joint_names:
+            policy_joint_names.extend(str(name) for name in robot.joint_names)
+            if len(policy_joint_names) != len(joint_pos):
+                raise RuntimeError(
+                    f"joint name/state size mismatch: {len(policy_joint_names)} vs {len(joint_pos)}"
+                )
+        # IsaacLab's root_state_w tensor is XYZW; this motion H5 schema is WXYZ.
+        root_wxyz = root_xyzw[[3, 0, 1, 2]]
+        policy_pose_records.append((joint_pos, root_pos.copy(), root_wxyz.copy()))
     if float(args_cli.perf_log_interval) > 0.0:
         print(
             f"[INFO] Perf logging every {float(args_cli.perf_log_interval):.1f}s "
@@ -1935,6 +2005,11 @@ def main() -> None:
             env_cfg.events.reset_robot_joints.params["motion_start_seconds"] = start
             env_unwrapped.event_manager.get_term_cfg("reset_robot_joints").params["motion_start_seconds"] = start
         obs_raw, _ = _env_reset(wrapped, seed=rollout_seed)
+        if live_anon is not None:
+            live_anon.reset()
+        if args_cli.record_policy_h5:
+            policy_pose_records.clear()
+            _capture_policy_pose()
         if jump_diagnostics is not None:
             jump_diagnostics.begin(episode_idx, buf, {
                 "checkpoint": os.path.abspath(resume_path), "dance": DANCE_NAME,
@@ -1970,6 +2045,8 @@ def main() -> None:
         if export_avi:
             _finalize_live_avi_recording(reason="stop")
         _reset_to_standing_pose(env_unwrapped)
+        if live_anon is not None:
+            live_anon.reset()
         obs_raw = wrapped.get_observations()
         print("[INFO] Policy rollout stopped.")
 
@@ -2073,6 +2150,13 @@ def main() -> None:
                         break
                 except Exception:
                     pass
+                if live_anon is not None:
+                    live_anon.advance(
+                        live_anon.start_frame
+                        + min(steps_done + 1, rollout_steps) * live_anon.fps / control_hz
+                    )
+                if args_cli.record_policy_h5 and len(policy_pose_records) < rollout_steps:
+                    _capture_policy_pose()
                 if not skip_step_tracking_error:
                     with torch.no_grad():
                         err = joint_pos_tracking_error(env_unwrapped, h5_path, window_s)
@@ -2139,6 +2223,8 @@ def main() -> None:
                 break
 
             _reset_to_standing_pose(env_unwrapped)
+            if live_anon is not None:
+                live_anon.reset()
             if wait_for_key:
                 assert start_listener is not None
                 print(
@@ -2149,6 +2235,62 @@ def main() -> None:
             else:
                 _begin_rollout(episode_idx=episode)
     finally:
+        if live_anon is not None:
+            live_anon.close()
+        if args_cli.record_policy_h5 and policy_pose_records:
+            from pathlib import Path
+            from source.train_workflow.utils.format.hdf5 import Hdf5Motion, write_hdf5_motion
+            out_path = Path(args_cli.record_policy_h5).resolve()
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            poses = policy_pose_records[:rollout_steps]
+            absolute_joints = np.stack([row[0] for row in poses]).astype(np.float32)
+            root_positions = np.stack([row[1] for row in poses]).astype(np.float32)
+            root_quaternions = np.stack([row[2] for row in poses]).astype(np.float32)
+            root_quaternions /= np.maximum(
+                np.linalg.norm(root_quaternions, axis=1, keepdims=True), 1e-8
+            )
+            baseline = absolute_joints[0].copy()
+            anchor_pos = root_positions[0].copy()
+            anchor_quat = root_quaternions[0].copy()
+
+            def _quat_mul_wxyz(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+                aw, ax, ay, az = a
+                bw, bx, by, bz = b
+                return np.asarray((aw*bw-ax*bx-ay*by-az*bz,
+                                   aw*bx+ax*bw+ay*bz-az*by,
+                                   aw*by-ax*bz+ay*bw+az*bx,
+                                   aw*bz+ax*by-ay*bx+az*bw), dtype=np.float32)
+
+            quat_delta = np.stack([
+                _quat_mul_wxyz(q, anchor_quat * np.asarray((1., -1., -1., -1.), dtype=np.float32))
+                for q in root_quaternions
+            ])
+            quat_delta /= np.maximum(np.linalg.norm(quat_delta, axis=1, keepdims=True), 1e-8)
+            motion = Hdf5Motion(
+                frames=np.arange(len(poses), dtype=np.int32),
+                joint_names=policy_joint_names,
+                joint_pos_delta=(absolute_joints - baseline).astype(np.float32),
+                root_pos_delta=(root_positions - anchor_pos).astype(np.float32),
+                root_quat_delta_wxyz=quat_delta.astype(np.float32),
+                root_valid=np.ones(len(poses), dtype=np.uint8),
+                root_rot_bone=[""] * len(poses),
+                root_rpy_deg=np.zeros((len(poses), 3), dtype=np.float32),
+                source_csv="",
+                has_hand_data=True,
+                fps=float(control_hz),
+            )
+            write_hdf5_motion(str(out_path), motion)
+            with h5py.File(out_path, "a") as stream:
+                stream.attrs["record_baseline_joint_pos"] = baseline
+                stream.attrs["record_root_anchor_pos"] = anchor_pos
+                stream.attrs["record_root_anchor_quat_wxyz"] = anchor_quat
+                stream.attrs["retarget_mode"] = "policy"
+                stream.attrs["upper_body_retarget_method"] = "trained-policy-playback"
+                stream.attrs["lower_body_retarget_method"] = "trained-policy-playback"
+                stream.attrs["policy_checkpoint"] = os.path.abspath(resume_path)
+                stream.attrs["source_reference_h5"] = os.path.abspath(h5_path)
+                stream.attrs["rollout_seed"] = int(args_cli.seed if args_cli.seed is not None else -1)
+            print(f"[INFO] Exported policy pose replay: {out_path} ({len(poses)} frames)")
         if jump_diagnostics is not None:
             jump_diagnostics.close()
         if step_profiler is not None:

@@ -16,6 +16,12 @@ import torch
 import numpy as np
 
 
+def heading_velocity(velocity,heading):
+    """Forward/left progression in the command controller's heading frame."""
+    c=heading.cos();s=heading.sin()
+    return torch.stack([s*velocity[:,0]-c*velocity[:,1],c*velocity[:,0]+s*velocity[:,1]],-1)
+
+
 def velocity_at_offset(velocity,rotation,offset):
     """Move a world-space origin velocity to a body-local COM offset."""
     local=offset.expand_as(velocity[...,:3]);xyz=rotation[...,:3]
@@ -169,14 +175,100 @@ def sample_commands(env,ids,on_reset=False):
         fast=torch.rand(n,device=device)<cfg.get('unified_high_speed_fraction',.65)
         lower=min(maximum,cfg.get('unified_high_speed_start',.85))
         speed[fast]=lower+torch.rand(n,device=device)[fast]*(maximum-lower)
-        angle=torch.where(torch.rand(n,device=device)<cfg.get('unified_forward_fraction',.25),torch.zeros_like(angle),angle)
+        direction_choice=torch.rand(n,device=device);forward_fraction=cfg.get('unified_forward_fraction',.25)
+        backward_fraction=cfg.get('unified_backward_fraction',0.)
+        angle=torch.where(direction_choice<forward_fraction,torch.zeros_like(angle),angle)
+        angle=torch.where((direction_choice>=forward_fraction)&(direction_choice<forward_fraction+backward_fraction),torch.full_like(angle,torch.pi),angle)
         cmd=torch.stack([speed*torch.cos(angle),speed*torch.sin(angle),(torch.rand(n,device=device)*2-1)*cfg['max_yaw']],-1)
         cmd[torch.rand(n,device=device)<.5,2]=0.
         idle=cfg.get('unified_idle_fraction',.08);pivot=cfg.get('unified_pivot_fraction',.07)
         cmd[choose<idle]=0.;cmd[(choose>=idle)&(choose<idle+pivot),:2]=0.
+        if not on_reset and cfg.get('unified_transition_stop_fraction',0.):
+            stopping=(env.commands[ids,:2].norm(dim=-1)>.8)&(torch.rand(n,device=device)<cfg['unified_transition_stop_fraction'])
+            cmd[stopping]=0.
+    # Reserve environments for the difficult skill: random task selection on
+    # every failure otherwise gives short-lived tasks very little rollout time.
+    if cfg.get('unified_backward_env_fraction',0.) and not env.evaluation:
+        assigned=ids.remainder(100)<round(100*cfg['unified_backward_env_fraction'])
+        elapsed=max(0.,getattr(env,'iteration',0)-cfg.get('unified_backward_curriculum_start',0))
+        progress=min(1.,elapsed/cfg.get('unified_backward_curriculum_iterations',250))
+        limit=cfg.get('unified_backward_initial_speed',.6)+(cfg['max_speed']-cfg.get('unified_backward_initial_speed',.6))*progress
+        speed=.4+torch.rand(n,device=device)*max(0.,limit-.4)
+        speed=torch.where(torch.rand(n,device=device)<.6,torch.full_like(speed,limit),speed)
+        steering=min(1.,max(0.,(elapsed-100)/150))
+        spread=cfg.get('unified_backward_spread_radians',torch.pi/4)*steering
+        angle=torch.pi+(torch.rand(n,device=device)*2-1)*spread
+        choice=torch.rand(n,device=device);pure=cfg.get('unified_backward_pure_fraction',.5)
+        boundary=cfg.get('unified_backward_boundary_fraction',0.)
+        angle=torch.where(choice<pure,torch.full_like(angle,torch.pi),angle)
+        sign=torch.where(torch.rand(n,device=device)<.5,-torch.ones_like(angle),torch.ones_like(angle))
+        angle=torch.where((choice>=pure)&(choice<pure+boundary),torch.pi+sign*spread,angle)
+        dedicated=torch.stack([speed*torch.cos(angle),speed*torch.sin(angle),(torch.rand(n,device=device)*2-1)*cfg['max_yaw']*steering],-1)
+        dedicated[torch.rand(n,device=device)<.5,2]=0.
+        if not on_reset:
+            stopping=(env.commands[ids,:2].norm(dim=-1)>.4)&(torch.rand(n,device=device)<cfg.get('unified_transition_stop_fraction',.35))
+            dedicated[stopping]=0.
+        cmd[assigned]=dedicated[assigned]
+    if cfg.get('unified_right_env_fraction',0.) and not env.evaluation:
+        first=round(100*cfg.get('unified_backward_env_fraction',0.))
+        last=first+round(100*cfg['unified_right_env_fraction'])
+        if last>100:raise ValueError('Reserved directional environment fractions exceed one')
+        assigned=(ids.remainder(100)>=first)&(ids.remainder(100)<last)
+        elapsed=max(0.,getattr(env,'iteration',0)-cfg.get('unified_backward_curriculum_start',0))
+        progress=min(1.,elapsed/cfg.get('unified_right_curriculum_iterations',100))
+        limit=cfg.get('unified_right_initial_speed',1.)+(cfg['max_speed']-cfg.get('unified_right_initial_speed',1.))*progress
+        speed=.4+torch.rand(n,device=device)*max(0.,limit-.4)
+        speed=torch.where(torch.rand(n,device=device)<.6,torch.full_like(speed,limit),speed)
+        steering=min(1.,max(0.,(elapsed-100)/150))
+        angle=-torch.pi/2+(torch.rand(n,device=device)*2-1)*(torch.pi/4)*steering
+        choice=torch.rand(n,device=device);pure=cfg.get('unified_right_pure_fraction',.5)
+        boundary=cfg.get('unified_right_boundary_fraction',0.)
+        angle=torch.where(choice<pure,torch.full_like(angle,-torch.pi/2),angle)
+        sign=torch.where(torch.rand(n,device=device)<.5,-torch.ones_like(angle),torch.ones_like(angle))
+        angle=torch.where((choice>=pure)&(choice<pure+boundary),-torch.pi/2+sign*(torch.pi/4)*steering,angle)
+        dedicated=torch.stack([speed*torch.cos(angle),speed*torch.sin(angle),(torch.rand(n,device=device)*2-1)*cfg['max_yaw']*steering],-1)
+        dedicated[torch.rand(n,device=device)<.5,2]=0.
+        if not on_reset:
+            stopping=(env.commands[ids,:2].norm(dim=-1)>.4)&(torch.rand(n,device=device)<cfg.get('unified_transition_stop_fraction',.35))
+            dedicated[stopping]=0.
+        cmd[assigned]=dedicated[assigned]
+        if cfg.get('unified_lateral_both_directions'):
+            left=assigned&(torch.rand(n,device=device)<.5)
+            cmd[left,:2]*=-1
+    pivot_hold=None
+    if cfg.get('unified_pivot_training',False) and not env.evaluation:
+        # Apply after directional pools and stop sampling: these commands must
+        # never be overwritten by the running curriculum or zero-yaw branch.
+        first=round(100*cfg.get('unified_backward_env_fraction',0.))+round(100*cfg.get('unified_right_env_fraction',0.))
+        pure_count=round(100*cfg.get('unified_pivot_env_fraction',.10))
+        reverse_count=round(100*cfg.get('unified_reversal_env_fraction',.10))
+        if min(first,pure_count,reverse_count)<0 or first+pure_count+reverse_count>100:
+            raise ValueError('Directional, pivot and reversal environment pools must fit within 100 percent')
+        bucket=ids.remainder(100)
+        pure=(bucket>=first)&(bucket<first+pure_count)
+        reverse=(bucket>=first+pure_count)&(bucket<first+pure_count+reverse_count)
+        reserved=pure|reverse
+        sign=torch.where(bucket.remainder(2)==0,1.,-1.)
+        previous=env.commands[ids,2]
+        if not on_reset:
+            sign=torch.where(reverse&(previous.abs()>1e-4),-previous.sign(),sign)
+        maximum_yaw=float(cfg['max_yaw'])
+        minimum_yaw=float(cfg.get('unified_pivot_min_yaw',.15))
+        boundary=float(cfg.get('unified_pivot_boundary_fraction',.5))
+        if not 0<minimum_yaw<=maximum_yaw or not 0<=boundary<=1:
+            raise ValueError('Pivot yaw range or boundary fraction is invalid')
+        magnitude=minimum_yaw+torch.rand(n,device=device)*(maximum_yaw-minimum_yaw)
+        magnitude=torch.where(torch.rand(n,device=device)<boundary,maximum_yaw,magnitude)
+        # A reversal changes direction at the same speed, including boundaries.
+        if not on_reset:magnitude=torch.where(reverse&(previous.abs()>1e-4),previous.abs().clamp(minimum_yaw,maximum_yaw),magnitude)
+        cmd[reserved,:2]=0.;cmd[reserved,2]=(sign*magnitude)[reserved]
+        pivot_hold=(reserved,float(cfg.get('unified_pivot_hold_seconds',6.))+torch.rand(n,device=device)*float(cfg.get('unified_pivot_hold_jitter_seconds',2.)))
     if env.evaluation:cmd.zero_()
     env.commands[ids]=cmd;env.command_age[ids]=0.
     if not hasattr(env,'unified_command_hold'):env.unified_command_hold=torch.zeros(env.num_envs,device=device)
     env.unified_command_hold[ids]=torch.where(cmd.abs().sum(-1)<.001,torch.full((n,),cfg.get('unified_idle_hold_seconds',40.),device=device),
                                             cfg.get('unified_moving_hold_min_seconds',6.)+torch.rand(n,device=device)*6.)
+    if pivot_hold is not None:
+        reserved,hold=pivot_hold
+        env.unified_command_hold[ids[reserved]]=hold[reserved]
     if on_reset:env.continuous_ref_commands[ids]=cmd

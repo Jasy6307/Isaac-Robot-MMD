@@ -5,7 +5,7 @@ CPU rigid-node scene independent. Body motion is obtained from new policy steps,
 never a saved rollout. Secondary forces do not feed back into the policy.
 """
 
-from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
+from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source, config_path
 import argparse
 import json
 from pathlib import Path
@@ -15,7 +15,7 @@ import sys
 import time
 import uuid
 
-ROOT=Path(__file__).resolve().parents[2]
+ROOT=PROJECT_ROOT
 HERE=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT))
 from source.pmx_prototype.secondary_profiles import DEFAULT_SECONDARY_PROFILE,DEFAULT_SECONDARY_QUALITY
@@ -29,10 +29,10 @@ parser.add_argument('--demo',action='store_true',help='Autonomous forward, rever
 parser.add_argument('--inspector',action='store_true',help='Visual keyboard inspector; WASD/QE, +/- speed, Space stop, R reset')
 parser.add_argument('--record-video',type=Path)
 parser.add_argument('--no-secondary-physics',action='store_true')
-parser.add_argument('--secondary-profile',type=Path,default=DEFAULT_SECONDARY_PROFILE,help='JSON appearance physics settings')
+parser.add_argument('--secondary-profile',type=config_path,default=DEFAULT_SECONDARY_PROFILE,help='JSON appearance physics settings')
 parser.add_argument('--quality',choices=['hair','cloth'],default=None)
 parser.add_argument('--legacy-secondary-physics',action='store_true',help='Use the previous thick collision and rigid skirt profile for comparison')
-parser.add_argument('--policy-config-override',type=Path,help='Explicit controller configuration override for controlled comparisons')
+parser.add_argument('--policy-config-override',type=config_path,help='Explicit controller configuration override for controlled comparisons')
 parser.add_argument('--appearance',choices=['default','bright-soft'],default='default',help='Use the shared default or explicitly lock the bright soft-light look')
 parser.add_argument('--video-width',type=int,default=1920)
 parser.add_argument('--video-height',type=int,default=1080)
@@ -41,6 +41,8 @@ parser.add_argument('--output',type=Path,default=ROOT/'output/anon_locomotion/li
 parser.add_argument('--body-device',choices=['cpu','cuda:0'],default='cuda:0',help='Body physics and policy inference device; secondary physics stays on CPU')
 parser.add_argument('--transport',choices=['memory','files'],default='memory')
 parser.add_argument('--legacy-compute',action='store_true',help='A/B check: retain redundant training diagnostics and substep pose reconstruction')
+parser.add_argument('--reference-hair-compute',action='store_true',help='A/B check: use the previous hair solve and chain-velocity calculation, preserving all physics parameters')
+parser.add_argument('--secondary-worker',action='store_true',help='Run secondary simulation in a separate process')
 parser.add_argument('--physics-threads',type=int,help='CPU PhysX worker threads; 0 runs synchronously')
 parser.add_argument('--worker-physics-threads',type=int,default=0,help='The single-body inference worker needs no parallel PhysX task pool')
 parser.add_argument('--benchmark-warmup',type=int,default=30,help='Frames excluded from steady-state timing')
@@ -49,6 +51,7 @@ parser.add_argument('--async-render',action='store_true',help='Overlap live rend
 parser.add_argument('--save-preview',action='store_true',help='Save one final viewport image after the measured loop')
 parser.add_argument('--control-script',type=Path,help='Reproducible switch/command events: JSON list of frame, switch_to, command, reset')
 args=parser.parse_args()
+accelerated_hair=not (args.legacy_compute or args.reference_hair_compute)
 if args.inspector and (args.headless or args.demo):parser.error('--inspector needs a visible window and cannot be combined with --demo')
 args.quality=args.quality or ('hair' if args.legacy_secondary_physics else DEFAULT_SECONDARY_QUALITY)
 W,H=args.video_width,args.video_height
@@ -107,7 +110,7 @@ def receive(seq,timeout=120):
     raise TimeoutError('Policy worker response timed out')
 
 
-physics=encoder=inspector=None
+physics=encoder=inspector=secondary_stream=None
 queued_switch='';switch_inflight=False
 def request_switch(preset):
     global queued_switch,switch_inflight
@@ -151,10 +154,14 @@ try:
         animation.GetTranslationsAttr().Set(Vt.Vec3fArray.FromNumpy(p.astype(np.float32)))
         animation.GetRotationsAttr().Set(Vt.QuatfArray.FromNumpy(q.astype(np.float32)))
     publish(*motion.live[:2])
-    if not args.no_secondary_physics: physics=PhysxSecondary(stage,motion,obstacles=False,quality=args.quality)
+    if not args.no_secondary_physics and not args.secondary_worker: physics=PhysxSecondary(stage,motion,obstacles=False,quality=args.quality)
     if physics:
         floor=UsdGeom.Xformable(stage.GetPrimAtPath('/World/PhysxGround'))
         next(op for op in floor.GetOrderedXformOps() if op.GetOpType()==UsdGeom.XformOp.TypeScale).Set(Gf.Vec3f(1000,1000,.05))
+    elif not args.no_secondary_physics and args.secondary_worker:
+        floor=UsdGeom.Cube.Define(stage,'/World/PhysxGround');floor.CreateSizeAttr(1)
+        xf=UsdGeom.Xformable(floor);xf.AddTranslateOp().Set(Gf.Vec3f(0,0,-.04));xf.AddScaleOp().Set(Gf.Vec3f(1000,1000,.05))
+        floor.CreateDisplayColorAttr([(.18,.21,.26)])
     UsdLux.DomeLight.Define(stage,'/World/Light').CreateIntensityAttr(900)
     light=UsdLux.DistantLight.Define(stage,'/World/Key'); light.CreateIntensityAttr(1600)
     UsdGeom.Xformable(light).AddRotateXYZOp().Set(Gf.Vec3f(25,-25,-35))
@@ -175,7 +182,9 @@ try:
     for _ in range(30): app.update()
     if physics:
         physics.start(context.get_stage_id())
-        for _ in range(physics.physics_hz): physics.step(0,produce_pose=args.legacy_compute,diagnostics=args.legacy_compute)
+        for _ in range(physics.physics_hz):
+            physics.step(0,produce_pose=args.legacy_compute,diagnostics=args.legacy_compute,
+                         compiled_hair=accelerated_hair,optimized_contacts=accelerated_hair)
         physics.runtime_costs[:]=0;physics.runtime_calls=0
     models=[ui.SimpleFloatModel(0) for _ in range(3)]
     if args.inspector:
@@ -192,6 +201,11 @@ try:
                 def stop():
                     for model in models: model.set_value(0.)
                 ui.Button('Stop',clicked_fn=stop)
+    # Build the live UI before waiting on the isolated PhysX worker. Worker
+    # startup can take a while on first launch, so keep the viewport responsive.
+    if not args.no_secondary_physics and args.secondary_worker:
+        from anon_secondary_stream import AnonSecondaryStream
+        secondary_stream=AnonSecondaryStream(args,state['poses'],manifest,links,app)
     schedule=[(2,(0,0,0)),(6,(.35,0,0)),(2,(0,0,0)),(4,(-.25,0,0)),(4,(0,.3,0)),(4,(0,-.3,0)),
               (4,(.2,0,.6)),(4,(.2,0,-.6)),(4,(0,0,.6)),(3,(0,0,0))]
     if policy_config.get('motion_stage') in ['forward_speeds','forward_speeds_aligned']:
@@ -254,9 +268,12 @@ try:
         atomic_request(data);script_reset=False
     pending_command=choose_command(0)
     send_command(0,pending_command)
+    prefetched_state=None
     while app.is_running() and (not limit or completed<limit):
         tick=time.perf_counter(); cmd=pending_command
-        state=receive(completed,30)
+        state=prefetched_state if prefetched_state is not None else receive(completed,30)
+        prefetched_state=None
+        if secondary_stream and completed==0:secondary_stream.send(completed,state,args.runtime_audit)
         identities.add((int(state['worker_pid']),int(state['physics_stage_id']),int(context.get_stage_id()),id(physics)))
         if str(state['policy_id'])!=active_policy:
             switches.append(dict(frame=completed,previous=active_policy,policy=str(state['policy_id']),generation=int(state['generation'])))
@@ -284,7 +301,11 @@ try:
         hand_trace.append(Rotation.from_quat(current[pelvis,3:]).inv().apply(hand_world))
         command_trace.append(cmd)
         body_started=time.perf_counter()
-        if physics:
+        if secondary_stream:
+            secondary_state=secondary_stream.receive(completed)
+            p,q=secondary_state['p'],secondary_state['q'];publish(p,q)
+            deviations['hair'].append(secondary_state['deviations'][0]);deviations['skirt'].append(secondary_state['deviations'][1])
+        elif physics:
             if bool(state['done']) or bool(state.get('reset',False)):
                 motion.live=body_pose(current); physics.initial_nodes=motion.live[2][motion.nodes].copy(); physics.reset(); last=current.copy()
             qa,qb=last[:,3:],current[:,3:].copy(); qb[(qa*qb).sum(-1)<0]*=-1
@@ -295,7 +316,8 @@ try:
                 interpolated[:,3:]=qa*(1-alpha)+qb*alpha
                 interpolated[:,3:]/=np.linalg.norm(interpolated[:,3:],axis=-1,keepdims=True)
                 motion.live=body_pose(interpolated)
-                p,q=physics.step(0,produce_pose=args.legacy_compute or substep==substeps-1,diagnostics=args.legacy_compute)
+                p,q=physics.step(0,produce_pose=args.legacy_compute or substep==substeps-1,diagnostics=args.legacy_compute,
+                                 compiled_hair=accelerated_hair,optimized_contacts=accelerated_hair)
             publish(p,q)
             target=motion.live[2][motion.nodes][physics.dynamic_order]
             distance=np.linalg.norm(physics.last_positions-target,axis=-1)
@@ -317,6 +339,9 @@ try:
         if appearance is not None:appearance.update(completed)
         secondary_done=time.perf_counter()
         details.append([(secondary_finished-body_started)*1000,(look_started-secondary_finished)*1000,(secondary_done-look_started)*1000])
+        if secondary_stream and (not limit or completed+1<limit):
+            prefetched_state=receive(completed+1,30)
+            secondary_stream.send(completed+1,prefetched_state,args.runtime_audit)
         app.update()
         if completed==0:
             for _ in range(5):app.update()
@@ -329,7 +354,8 @@ try:
             draw.text((round(24*W/1280),round(10*H/720)),f'爱音 · {catalog[active_policy]["label"]} + 头发 / 裙摆 PhysX',font=font,fill=(245,247,250))
             draw.text((round(24*W/1280),round(47*H/720)),f'前后 {cmd[0]:+.2f} m/s  左右 {cmd[1]:+.2f} m/s  转向 {cmd[2]:+.2f} rad/s',font=font,fill=(120,218,255))
             draw.rectangle((0,round(681*H/720),W,H),fill=(17,23,33))
-            draw.text((round(24*W/1280),round(687*H/720)),f'在线策略推理 | {physics.physics_hz if physics else 0} Hz 头发与裙摆物理 | 外观物理单向驱动',font=font,fill=(220,227,235))
+            hz=physics.physics_hz if physics else secondary_stream.metadata['physics_hz'] if secondary_stream else 0
+            draw.text((round(24*W/1280),round(687*H/720)),f'在线策略推理 | {hz} Hz 头发与裙摆物理 | 外观物理单向驱动',font=font,fill=(220,227,235))
             encoder.stdin.write(np.asarray(im).tobytes())
             if completed%150==0:im.save(args.output/f'frame_{completed:04d}.jpg')
         last=current.copy(); completed+=1
@@ -342,7 +368,7 @@ try:
         if encoder.wait()!=0:raise RuntimeError('Video encoder failed')
         encoder=None
     np.savez_compressed(args.output/'policy_trace.npz',hands=hand_trace,commands=command_trace,policy_ids=policy_trace,dt=1/30)
-    if args.runtime_audit:np.savez_compressed(args.output/'runtime_audit.npz',body=body_trace,translations=skeleton_p,rotations=skeleton_q)
+    if args.runtime_audit:np.savez_compressed(args.output/'runtime_audit.npz',body=body_trace,translations=skeleton_p,rotations=skeleton_q,link_names=links,dt=1/30)
     if args.save_preview:
         for _ in range(5):app.update()
         rgb=_capture_viewport_rgb()
@@ -352,10 +378,12 @@ try:
     report=dict(method='Live PPO inference in isolated PhysX worker; native CPU PhysX secondary rigid-node simulation; no rollout input',
                 body_device=args.body_device,transport=args.transport,legacy_compute=args.legacy_compute,physics_threads=args.physics_threads,
                 worker_physics_threads=args.worker_physics_threads,
+                compiled_hair=accelerated_hair,optimized_hair_contacts=accelerated_hair,
+                reference_hair_compute=args.reference_hair_compute,
                 asynchronous_rendering=bool(args.async_render and not args.record_video),
                 benchmark=dict(warmup_frames=min(args.benchmark_warmup,max(0,len(costs)-1)),frames=len(measured),fps=1000/float(np.mean(measured)),frame_ms_p50=float(np.percentile(measured,50)),frame_ms_p95=float(np.percentile(measured,95)),frame_ms_p99=float(np.percentile(measured,99))),
                 delivered_fps=1000/float(np.mean(frame_intervals[min(args.benchmark_warmup,max(0,len(frame_intervals)-1)):])),
-                secondary_cost_ms=dict(zip(['prepare','simulate','fetch','fabric','reconstruct','contact_feedback_and_diagnostics'],(physics.runtime_costs/max(1,physics.runtime_calls)).tolist())) if physics else {},
+                secondary_cost_ms=dict(zip(['prepare','simulate','fetch','fabric','reconstruct','contact_feedback_and_diagnostics'],(physics.runtime_costs/max(1,physics.runtime_calls)).tolist() if physics else secondary_state['runtime_costs'])) if (physics or secondary_stream) else {},
                 secondary_diagnostics_collected=args.legacy_compute,
                 frame_detail_ms=dict(zip(['secondary_and_skeleton','camera_and_ui','appearance'],np.mean(details[min(args.benchmark_warmup,max(0,len(details)-1)):],axis=0).tolist())),
                 character_appearance='bright_soft' if args.appearance=='bright-soft' else 'shared_default',
@@ -367,26 +395,28 @@ try:
                 frames=completed,simulated_seconds=completed/30,falls=falls,
                 video_resolution=[W,H],video_crf=16,
                 anti_aliasing=args.anti_aliasing,
-                wall_seconds=time.perf_counter()-started,secondary_physics=physics is not None,
+                wall_seconds=time.perf_counter()-started,secondary_physics=physics is not None or secondary_stream is not None,
+                secondary_worker=secondary_stream is not None,
+                secondary_worker_task_threads=secondary_stream.metadata['task_threads'] if secondary_stream else None,
                 mean_stage_cost_ms=dict(zip(['policy_wait','secondary','render','capture'],np.mean(costs,axis=0).tolist() if costs else [0.]*4)),
                 inspector_mode=args.inspector,
                 inference_pipeline='One step ahead; every body state consumed in order',
-                secondary_steps=physics.steps if physics else 0,quality=args.quality,
-                physics_hz=physics.physics_hz if physics else None,
-                secondary_substeps_per_frame=physics.physics_hz//30 if physics else 0,
-                dynamic_nodes=physics.dynamic_view.count if physics else 0,
+                secondary_steps=physics.steps if physics else (secondary_state['steps'] if secondary_stream else 0),quality=args.quality,
+                physics_hz=physics.physics_hz if physics else (secondary_stream.metadata['physics_hz'] if secondary_stream else None),
+                secondary_substeps_per_frame=physics.physics_hz//30 if physics else (secondary_stream.metadata['physics_hz']//30 if secondary_stream else 0),
+                dynamic_nodes=physics.dynamic_view.count if physics else (secondary_stream.metadata['dynamic_nodes'] if secondary_stream else 0),
                 secondary_profile=str(args.secondary_profile.resolve()) if args.secondary_profile and not args.legacy_secondary_physics else 'previous_default',
-                secondary_settings=motion.rig_settings,
-                hand_collision_body_indices=motion.hand_body_indices if physics else [],
-                palm_proxy_dimensions_m={str(i):(2*shape[0]).tolist() for i,shape in motion.hand_proxy_shapes.items()} if physics else {},
-                skirt_edge_capsules=len(physics.edge_nodes) if physics else 0,
-                hand_skirt_contact_steps=physics.hand_contact_steps if physics else 0,
-                edge_hand_contact_steps=physics.edge_hand_contact_steps if physics else 0,
-                hand_skirt_contact_peak_n=physics.hand_contact_peak if physics else 0,
-                hair_mean_deviation_m=float(np.mean(deviations['hair'])) if physics else 0,
-                skirt_mean_deviation_m=float(np.mean(deviations['skirt'])) if physics else 0,
-                body_contact_peak_n=physics.body_contact_peak if physics else 0,
-                steps_with_body_contact=physics.body_contact_steps if physics else 0,
+                secondary_settings=secondary_stream.metadata['settings'] if secondary_stream else motion.rig_settings,
+                hand_collision_body_indices=motion.hand_body_indices if physics else (secondary_stream.metadata['hand_body_indices'] if secondary_stream else []),
+                palm_proxy_dimensions_m={str(i):(2*shape[0]).tolist() for i,shape in motion.hand_proxy_shapes.items()} if physics else (secondary_stream.metadata['palm_proxy_dimensions_m'] if secondary_stream else {}),
+                skirt_edge_capsules=len(physics.edge_nodes) if physics else (secondary_stream.metadata['edge_nodes'] if secondary_stream else 0),
+                hand_skirt_contact_steps=physics.hand_contact_steps if physics else (secondary_state['hand_contact_steps'] if secondary_stream else 0),
+                edge_hand_contact_steps=physics.edge_hand_contact_steps if physics else (secondary_state['edge_hand_contact_steps'] if secondary_stream else 0),
+                hand_skirt_contact_peak_n=physics.hand_contact_peak if physics else (secondary_state['hand_contact_peak'] if secondary_stream else 0),
+                hair_mean_deviation_m=float(np.mean(deviations['hair'])) if (physics or secondary_stream) else 0,
+                skirt_mean_deviation_m=float(np.mean(deviations['skirt'])) if (physics or secondary_stream) else 0,
+                body_contact_peak_n=physics.body_contact_peak if physics else (secondary_state['body_contact_peak'] if secondary_stream else 0),
+                steps_with_body_contact=physics.body_contact_steps if physics else (secondary_state['body_contact_steps'] if secondary_stream else 0),
                 limitations=['Rigid-node approximation of PMX hair/skirt; not triangle cloth',
                              'One-way body-to-secondary coupling; no secondary force feedback into RL articulation'])
     if not args.legacy_compute:
@@ -400,6 +430,7 @@ except Exception:
 finally:
     if inspector:inspector.close()
     if encoder:encoder.kill();encoder.wait()
+    if secondary_stream:secondary_stream.close()
     if physics:physics.close()
     if worker:
         try:atomic_request(dict(stop=True))

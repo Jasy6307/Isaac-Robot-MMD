@@ -12,6 +12,24 @@ from realtime_xpbd import njit
 
 
 @njit(cache=True)
+def limit_chain_velocity(velocity, particles, weights, links):
+    """Same ordered three-pass tangent solve, compiled without fast-math."""
+    for _ in range(3):
+        for k in range(len(links)):
+            parent,child,length=int(links[k,0]),int(links[k,1]),links[k,2]
+            delta=particles[child]-particles[parent];distance=np.linalg.norm(delta)
+            total=weights[parent]+weights[child]
+            if distance<length*.98 or distance<1e-10 or total==0:continue
+            normal=delta/distance
+            separation=np.dot(velocity[child]-velocity[parent],normal)
+            if separation>0:
+                impulse=normal*(separation/total)
+                velocity[parent]+=weights[parent]*impulse
+                velocity[child]-=weights[child]*impulse
+    return velocity
+
+
+@njit(cache=True)
 def correct_velocity(velocity,p,hair,radii,ca,cb,cr,allowed,body_velocity,dt):
     for slot in range(len(hair)):
         node=hair[slot]

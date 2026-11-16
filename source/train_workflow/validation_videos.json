@@ -36,19 +36,6 @@
       "start_seconds": 0.0,
       "actor": "若叶睦",
       "label": "Mutsumi PhysX reference"
-    },
-    "hal_ia_yeah_oh_ahhh_oh_short": {
-      "video": "media/dance/hal_ia_yeah_oh_ahhh_oh/hal_ia_yeah_oh_ahhh_oh_short_mutsumi_reference.mp4",
-      "start_seconds": 0.0,
-      "actor": "若叶睦",
-      "label": "Mutsumi PhysX reference"
-    },
-    "hal_ia_yeah_oh_ahhh_oh_short_collision_corrected_v2_raw": {
-      "video": "media/dance/hal_ia_yeah_oh_ahhh_oh/hal_ia_yeah_oh_ahhh_oh_short_mutsumi_reference.mp4",
-      "start_seconds": 0.0,
-      "actor": "若叶睦",
-      "label": "Mutsumi PhysX reference",
-      "alias_of": "hal_ia_yeah_oh_ahhh_oh_short"
     }
   }
 }

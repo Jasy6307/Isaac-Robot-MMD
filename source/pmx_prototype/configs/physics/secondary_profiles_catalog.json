@@ -1,0 +1,12 @@
+{
+  "default": "hair_contact_drape_v1_default_120hz",
+  "versions": [
+    {
+      "id": "hair_contact_drape_v1_default_120hz",
+      "path": "source/pmx_prototype/configs/physics/secondary_default.json",
+      "status": "default",
+      "summary": "Finalized V1 baseline; same physics as previously approved V10, 120 Hz cloth."
+    }
+  ],
+  "validation_scope": "Former V10 visually accepted on Anon and Mutsumi Girls; other models require visual review."
+}

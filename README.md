@@ -16,6 +16,12 @@
 
 ---
 
+## 开发导航与测试
+
+- [架构与代码导航](source/OVERVIEW.md)：G1 与 PMX 两条链路、主要入口、模块职责、配置和数据边界。
+- [统一测试指南](TESTING.md)：`python run_tests.py` 默认运行 CPU 测试；USD、本地资产与 Isaac 冒烟分别显式选择。
+- [PMX 角色说明](source/pmx_prototype/README.md)与[已验收回放](source/pmx_prototype/PLAYBACK.md)：角色预览、外观、物理、录像及当前入口。
+
 ## 项目简介
 
 机器人全身动作的主流来源是WBC遥操、开源动作库或者视频数据逆解析，但 **MMD 社区** 已沉淀近二十年的 VMD 舞蹈资源，数量大、种类多、骨骼关节信息准确。因此，本项目提供一条解析VMD格式源文件（MMD动作数据），导入到IsaacSim进行回放，训练的整条流水线：
@@ -26,7 +32,7 @@
 4. **PPO 训练与验证**：以H5数据集为参考轨迹，用 PPO（RSL-RL） 训练腿部策略checkpoint；
 5. **策略2Sim验证**：通过 eval 脚本在仿真中加载 checkpoint，对比 H5 关节跟踪误差。
 
-整条链路围绕三个入口脚本组织（见下节），其余模块（环境注册、重定向算法、UI 等）为它们提供支撑。
+G1 链路围绕三个入口脚本组织（见下节），由环境注册、重定向算法和 UI 等模块支撑。PMX 角色转换、预览、录像及角色策略链路独立组织在 `source/pmx_prototype/`，完整关系见架构导航。
 
 ### H5 默认重定向
 
@@ -109,6 +115,8 @@ flowchart LR
 | 路径                                                                | 作用                                                 |
 | ----------------------------------------------------------------- | -------------------------------------------------- |
 | `[source/train_workflow/](source/train_workflow/)`                | 三个 `g1_vmd_*` 入口、重定向工具、UI、辅助脚本                     |
+| `[source/pmx_prototype/](source/pmx_prototype/)` | PMX 转换、角色预览与录像、运动策略、诊断和分类配置 |
+| `[tests/](tests/)` / `[run_tests.py](run_tests.py)` | 测试分层清单与统一运行入口 |
 | `[source/my_task/](source/my_task/)`                              | Gym 环境注册、MDP、机器人与训练配置                              |
 | `[media/](media/)`                                                | **仅本地**（gitignore）：`dance/`、`pose/`、VMD/CSV/H5/WAV |
 | `[docs/](docs/)`                                                  | 项目文档（本地，gitignore）                                 |
@@ -143,7 +151,7 @@ Windows 快速验证和启动：
 
 不带参数的启动运行 300 步后自动退出；`--steps 0` 保持窗口开启。2026-10-01 已在本机 RTX 5090 D v2 / 驱动 617.14 上验证 GUI、无窗口仿真、一次 PPO 更新、新 checkpoint 加载和原回放 UI 启动。安装版本、测试命令、日志路径和兼容性范围见 [ISAAC61_MIGRATION.md](ISAAC61_MIGRATION.md)。
 
-CSV/H5 中的四元数继续使用 WXYZ；仿真 API 使用 XYZW，转换由项目边界代码完成。旧 RSL-RL checkpoint 需要另行迁移和验证，建议先用新版生成一个短训练 checkpoint。
+CSV 的 `quat_x/y/z/w` 列使用 XYZW，读入后的骨字典与 H5 的 `root_quat_delta_wxyz` 使用 WXYZ；当前 Lab 仿真状态 API 使用 XYZW，转换由项目边界代码完成。旧 RSL-RL checkpoint 需要另行迁移和验证，建议先用新版生成一个短训练 checkpoint。
 
 也已另建 **Conda 环境 `isaac61`**，可以直接使用环境中的 Python：
 
@@ -230,7 +238,7 @@ cp pyrightconfig.example.json pyrightconfig.json
 - [ ] **VMD更多参数调整**：toe IK，表情，motion scale，部分关节锁定的动作执行等
 - [ ] **Sim2Sim**：更好的policy eval效率，完善sim2im部署UI界面
 - [ ] **Sim2Real**：策略导出与真机部署验证（暂无实机喵）
-- [ ] **PMX暴力导入isaacsim**：PMX转URDF？……真的可以吗？至少尝试下吧
+- [x] **PMX 角色链路**：已支持转换、VMD 烘焙、实时预览、物理与录像；当前范围见 PMX 角色说明。
 - [ ] **RTX ON**：测试更高的画质，更好的物理解算，堂堂取代Blender（误
 
 ---

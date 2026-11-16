@@ -1,163 +1,85 @@
-# source 总体说明
+# 架构与代码导航
 
-本文档概括 `source` 包的结构、数据流、关键模块与运行方式，并附简要代码检视结论。
+本文描述当前工作区的模块边界。使用说明见 [根 README](../README.md)，测试分层与依赖见 [TESTING.md](../TESTING.md)。
 
----
+## 两条主要链路
 
-## 1. 项目定位
-
-本仓库在 **Isaac Lab** 中注册 **宇树 G1（29 DOF）** 的「站立」环境，并通过 **`train_workflow`** 将 **MMD 骨骼动作（CSV）** 回放为仿真中的关节与根位姿，可选 **WAV 伴音**（Windows）与 **关节映射调试 UI**。
-
-- **强化学习环境 ID**：`Isaac-G1-Vmd-Replay-v0`（`source/my_task/__init__.py`）
-- **交互演示入口**：`train_workflow/run_stand.py`（键盘触发动画、pose 循环、导出等）
-
----
-
-## 2. 目录结构（与本文相关部分）
-
-| 路径 | 作用 |
-|------|------|
-| `source/my_task/` | Gym 注册、env 配置、MDP、`RSL-RL` 占位配置 |
-| `source/my_task/robots/` | G1 机器人配置：O6 USD spawn、执行器 PD |
-| `source/train_workflow/` | MMD→仿真流水线：入口 `g1_vmd_*`、`utils/`（含 retarget）、`ui/` |
-| `media/` | 资源根目录：`dance/`、`pose/` 等；YAML 中路径相对此目录 |
-| `docs/` | 项目文档 |
-| `source/train_workflow/dances_config.yaml` | 舞蹈登记：按键、CSV、可选音频 |
-
----
-
-## 3. 数据流总览
+- **G1 动作跟踪**：VMD → CSV → 重定向/约束处理 → H5 参考轨迹 → PPO 训练 → checkpoint → 策略验证与录像。
+- **PMX 角色**：PMX → USD 角色资产，VMD → 骨骼动画；运行时结合外观、头发/裙摆物理进行预览与录像。另有角色运动策略的训练、评估与发布链路。
 
 ```mermaid
 flowchart LR
-  subgraph offline [离线准备]
-    VMD[VMD/VPD] --> vmd2csv[vmd_2_csv.py]
-    vmd2csv --> CSV[骨骼 CSV]
-    gen[generate_csv_for_joint_map_.py] --> CSV
-  end
-  subgraph runtime [运行时]
-    YAML[dances_config.yaml] --> run[run_stand.py]
-    CSV --> run
-    run --> loader[csv_motion_loader]
-    loader --> sim[Isaac Sim G1]
-    run --> ui[ui_mapping]
-    ui --> loader
-  end
+  VMD --> CSV
+  CSV --> Retarget[重定向与约束处理]
+  Retarget --> H5
+  H5 --> Train[G1 PPO 训练]
+  Train --> Checkpoint
+  Checkpoint --> Eval[策略验证与录像]
+  H5 --> Eval
+  PMX --> USD
+  VMD --> Bake[VMD 烘焙]
+  USD --> Bake
+  Bake --> Preview[PMX 预览与录像]
 ```
 
-1. **离线**：用 `vmd_2_csv.py` 将 VMD/VPD 转为四元数列 CSV；或用 `generate_csv_for_joint_map_.py` 生成映射测试动作。
-2. **配置**：在 `dances_config.yaml` 中为每个舞蹈绑定单字符键、`motion`（相对 `media/`）、可选 `audio`。
-3. **运行**：`run_stand.py` 启动 Isaac、加载环境、监听键盘；播放时按 30 FPS（`VMD_FPS`）与 `play_speed` 推进帧，将 MMD 骨骼插值后经 **Swing-Twist + 轴映射** 转为 G1 关节角，并同步根平移/朝向。
+## 从功能找入口
 
----
+以下路径相对本目录；脚本完整参数以入口代码为准。
 
-## 4. 核心模块说明
+| 功能 | 入口 | 配套说明 |
+| --- | --- | --- |
+| G1 回放、映射 UI、H5 导出 | [g1_vmd_0_replay.py](train_workflow/g1_vmd_0_replay.py) | [共享库导航](train_workflow/utils/README.md) |
+| G1 训练 | [g1_vmd_1_train.py](train_workflow/g1_vmd_1_train.py) | [Auto-Jump 工作流](train_workflow/AUTO_JUMP_TRAINING.md) |
+| G1 策略验证与播放 | [g1_vmd_2_eval.py](train_workflow/g1_vmd_2_eval.py) | [部署包](train_workflow/DEPLOYMENT.md) |
+| VMD → H5 → 视频流水线 | [g1_vmd_pipeline.py](train_workflow/g1_vmd_pipeline.py) | [根 README](../README.md) |
+| PMX 转换、动作烘焙、资产查看 | [convert_pmx.py](pmx_prototype/convert_pmx.py)、[load_vmd.py](pmx_prototype/load_vmd.py)、[view_character.py](pmx_prototype/view_character.py) | [PMX 总览](pmx_prototype/README.md) |
+| 角色舞蹈预览 | [preview_dance.py](pmx_prototype/tools/preview_dance.py)、[physx_dance.py](pmx_prototype/physx_dance.py) | [已验收回放](pmx_prototype/PLAYBACK.md) |
+| PMX 录像 | [record_physx_video.py](pmx_prototype/record_physx_video.py)、[record_cached_secondary.py](pmx_prototype/record_cached_secondary.py) | [PMX 总览](pmx_prototype/README.md) |
+| 角色策略训练与播放 | [train_anon_locomotion.py](pmx_prototype/train_anon_locomotion.py)、[play_anon_policy.py](pmx_prototype/play_anon_policy.py)、[inspect_anon_policy.py](pmx_prototype/inspect_anon_policy.py) | [角色运动训练](pmx_prototype/ANON_LOCOMOTION.md) |
+| 分类工具发现 | [pmx.py](pmx_prototype/pmx.py) 的 `list` 子命令 | [分类配置](pmx_prototype/configs/README.md) |
+| 测试与冒烟验证 | [run_tests.py](../run_tests.py) | [测试指南](../TESTING.md) |
 
-### 4.1 `run_stand.py`（主程序）
+## 模块职责与现有依赖
 
-- **职责**：`AppLauncher` 启仿真；创建 `Isaac-G1-Vmd-Replay-v0`；`Se3Keyboard` 绑定按键；主循环内驱动动作与 `env.step`。
-- **舞蹈**：从 `dances_config.yaml`（默认同目录下的 `dances_config.yaml`，常量 `DANCES_CONFIG_PATH`）读取；需 **`PyYAML`**，否则抛清晰 `ImportError`。
-- **Pose 循环**：`media/pose/` 下 CSV，`--pose_cycle_key`（默认 `P`）按文件名顺序切换。
-- **动作回放模式**：`--motion_playback`（默认开）：不固定根、关重力、增阻尼等（见脚本内逻辑）。
-- **根位姿**：从 CSV 的 `グルーブ` / `センター` 等骨骼取平移（带 `--groove_pos_to_world` 缩放）；旋转候选含 `グルーブ`、`センター親`、`腰` 等。对「位移写在センター、グルーブ静态」的数据会自动优先 `センター` 平移。
-- **控制**：每帧 `write_joint_state_to_sim` + 关节位置 action，并维护 `joint_pos` 的 `_offset`，避免 zero action 把姿态拉回旧默认。
+| 目录/模块 | 职责 |
+| --- | --- |
+| `my_task/` | Gym 环境注册、G1 环境配置；`mdp/` 定义动作、观测、奖励和重置；`motion_reference/` 缓存训练参考轨迹 |
+| `my_task/robots/` | G1 USD 配置、执行器 PD；`agents/` 提供 RSL-RL 配置 |
+| `train_workflow/utils/format/` | CSV/H5 读写；目前 CSV 插值、重定向和 H5 编译也在此处 |
+| `train_workflow/utils/retarget/`、`ik/` | 关节映射、上下肢重定向、足部 FK/IK |
+| `train_workflow/utils/motion/` | 动作解析、来源追踪、同步、关节约束和碰撞修正 |
+| `train_workflow/utils/playback/`、`media/` | 回放控制辅助、状态写入、录制、伴音与视频合成 |
+| `train_workflow/utils/` 顶层 | 训练控制、质量验收、进度、checkpoint、部署和验证录像 |
+| `train_workflow/ui/` | Isaac UI 面板与回调；`scripts/` 包含离线工具及历史位置的 G1 单元测试 |
+| `pmx_prototype/runtime/` | 外观、角色语义、头发/裙摆物理、音频、实时物理 worker 与场景辅助 |
+| `pmx_prototype/training/` | 角色环境、策略通信、检查器、AMP 和训练辅助 |
+| `pmx_prototype/motion/` | 动作参考、重定向、参考库构建与处理 |
+| `pmx_prototype/diagnostics/`、`tools/` | 诊断评估、批处理、预览包装、发布与下载工具 |
+| `pmx_prototype/configs/`、`archive/` | 分类运行配置；历史实验、冻结配置和校验目录 |
+| `paths.py`、`sim_compat.py` | 公共资产定位；Sim 6.1 / Lab 3 API 与四元数边界适配 |
 
-### 4.2 `csv_motion_loader.py`
+当前尚非严格单向分层：`my_task` 使用 `train_workflow.utils` 中的 H5/质量计算；PMX 录像复用该目录的视频捕获；G1 重定向调用 PMX 烘焙，评估也可接入 PMX 同屏场景。修改公共实现时应同时考虑两条链路。
 
-- **职责**：读 CSV（欧拉或 **xyzw 四元数** 列）；缺帧插值；`build_joint_positions_from_frame` 将骨骼字典转为 G1 关节向量。
-- **约定**：文件列 `quat_x…w` 为 **xyzw**；内存骨字典用 **`quat_wxyz`**，与 Isaac `root_state` 一致。
-- **映射表**：由 `utils/retarget/joint_axis_map.G1_JOINT_AXIS_MAP_RAW` 展开；支持运行时覆盖（供 UI）。
-- **膝/肘**：可选将 MMD 非铰链分量吸收到父骨（`--mmd_knee_hinge_projection` / `BooleanOptionalAction`），便于单轴膝关节表现。
+PMX 分类迁移通过 `source_layout.py`、`module_locations.json` 和包搜索路径兼容旧名称；`source_bundle.py` 为训练快照和发布包收集源码。移动文件时应同步映射、资源定位、打包依赖和目录兼容性测试。此次导航更新不改变导入规则。
 
-### 4.3 `utils/retarget/`
+## 必须明确的运行边界
 
-- **joint_axis_map**：G1↔MMD 关节映射表。
-- **unitree_g1**：链式骨骼 MMD→G1 反解与 tune。
+- **初始化顺序**：Isaac 入口先创建 `AppLauncher` / `SimulationApp`，再导入需要 Kit 的 `omni`、`pxr` 或仿真模块。不要通过导入入口脚本来获取其函数或参数。
+- **四元数**：CSV 的 `quat_x/y/z/w` 列为 XYZW；读取后的骨字典 `quat_wxyz` 与 H5 的 `root_quat_delta_wxyz` 为 WXYZ；当前 Lab 3 仿真状态接口使用 XYZW，由 `sim_compat.py` 和边界写入代码转换。不能对所有文件格式或 USD 类型一概套用同一顺序。
+- **外观默认**：[runtime/appearance_defaults.py](pmx_prototype/runtime/appearance_defaults.py) 保存已认可的 `mmd-toon` 参数；实现见 `character_appearance.py`、`bangs_shadow.py` 与 `mmd_cel.mdl`。新入口应复用共享设置，地面保持场景原版。
+- **物理与配置**：共享物理默认在 `configs/physics/secondary_default.json`；旧配置路径由 `config_path()` 兼容，自定义已有文件优先。历史版本保留原因见配置目录与 archive 说明。
+- **诊断与测试**：`check_*` / `validate_*` 不自动等同于单元测试，部分会启动仿真、读取本地资产或生成录像；统一入口只运行显式登记的项目。
 
-### 4.4 `my_task/robots/`
+## 数据、输出与文档位置
 
-- **g1_29dof_o6_cfg**：O6 手部 USD 的 `ArticulationCfg`（spawn）。
-- **actuator_pd**：执行器 PD profile（`deploy` / `isaaclab`），供 replay、train、eval 及 `g1_train_env_cfg` 选用。
+| 路径（相对仓库根） | 用途与版本管理 |
+| --- | --- |
+| `assets/` | 仓库内 G1 USD 资产及演示图 |
+| `media/dance/<舞蹈>/`、其他 `media/` 子目录 | 本地动作、音频、角色资源及录像；媒体数据不提交 |
+| `logs/`、`policy/`、`output/` | 训练结果、策略包、转换缓存和诊断产物；不提交 |
+| `output/tests/<运行编号>/` | 统一测试入口的逐文件日志与 JSON 汇总 |
+| `source/train_workflow/dances_config.yaml` | 本地舞蹈登记；从受版本控制的 example 文件复制 |
+| 根 README、`source/` 内 Markdown | 当前使用与模块说明，随代码版本管理 |
+| `docs/` | 本地资料目录，已被 gitignore；共享架构文档不放这里 |
 
-### 4.5 `trans_util.py`
-
-- **职责**：**wxyz** 四元数运算、归一化、乘积；`mmd_root_offset_quat_to_world` 等与根朝向复合相关的工具（与 CSV/仿真根对齐）。
-- **注意**：任何与 `root_state_w` 列 3–6 交互的代码须使用 **wxyz**（见仓库内 skill `isaac-root-state-quaternion-wxyz`）。
-
-### 4.6 `ui_mapping.py` / `ui_retargeting_tune.py`
-
-- **职责**：在 Isaac Sim **Window** 菜单注册 **「G1 Joint Mapping」**（欧拉主轴索引与缩放、播放 scrub、Root R/P/Y）；另注册 **「G1 Retarget Tune」**（肩/腿 basis 的 Rz·Ry·Rx），面板构建见 ``ui_retargeting_tune.py``。
-- 显示当前关节角（度）；膝/肘可显示 hinge 分解附加行。
-- 映射变更通过回调触发主循环在「暂停态」下按最后一帧重算姿态。
-
-### 4.7 `vmd_2_csv.py`
-
-- **职责**：解析 VMD 骨骼关键帧、VPD 单帧；导出 `frame,bone,pos_*,quat_*`（**文件内 quat 仍为 xyzw 列名与顺序**）。
-
-### 4.8 `audio_util.py`
-
-- **职责**：**Windows** 下 `winsound` 异步播放/停止 WAV；非 Windows 为 no-op 并打印警告。
-
-### 4.9 `reduce_wav_gain.py`
-
-- **职责**：16-bit PCM WAV 整体乘增益另存，便于降低伴音响度；默认输入可在脚本内指向 `media/dance/` 下某文件。
-
-### 4.10 `generate_csv_for_joint_map_.py`
-
-- **职责**：生成按时间块单骨骼 0°→90° 的测试 CSV，用于快速肉眼验证上半身映射。
-
-### 4.11 `my_task/g1_replay_env_cfg.py`
-
-- **职责**：`G1VmdReplayEnvCfg` — 平地 T-pose，供 MMD 回放（``Isaac-G1-Vmd-Replay-v0``）。
-
-### 4.12 `my_task/agents/rsl_rl_ppo_cfg.py`
-
-- **职责**：占位 PPO 配置，满足 `gym.register` 对 `rsl_rl_cfg_entry_point` 的要求；零动作演示不依赖训练。
-
----
-
-## 5. 配置文件：`dances_config.yaml`
-
-- **`dances`**：列表项含 `key`（单字符）、`motion`（相对 `media/`）、可选 `audio`、可选 `id`（日志用）。
-- 同一 `key` 重复时后项忽略（见 `_load_dances_from_yaml` 日志）。
-
----
-
-## 6. 运行示例
-
-在已配置 **Isaac Lab** 的 Python 环境中，将工作区根目录加入 `PYTHONPATH`（`run_stand.py` 已尝试加入仓库根），例如：
-
-```bash
-python source/train_workflow/run_stand.py
-```
-
-常用参数（完整列表见 `run_stand.py` 内 `argparse`）：
-
-- `--play_speed`：播放倍速  
-- `--groove_pos_to_world`：根骨平移到米制缩放（默认 `0.1`）  
-- `--no-mmd_knee_hinge_projection`：关闭膝铰链投影  
-
-**舞蹈 YAML 依赖**：`pip install pyyaml`（若未安装，启动加载配置时会报错提示）。
-
----
-
-## 7. 代码检视（简要）
-
-| 方面 | 说明 |
-|------|------|
-| **结构** | 数据路径清晰：离线 `vmd_2_csv` / 运行时 `csv_motion_loader` + `run_stand`；四元数约定在 loader 首部与 `trans_util` 中明确。 |
-| **健壮性** | 根骨骼缺失、API 不支持 `write_root_state` / `write_joint_state` 时有降级与一次性告警；动作切换时停音频、重置控制参考，避免姿态回弹。 |
-| **平台** | 音频仅 Windows `winsound`；跨平台需替换实现或接受无音频。 |
-| **依赖** | `dances_config.yaml` 依赖 PyYAML；与 Isaac 版本强绑定，需在目标 Lab 版本下验证。 |
-
-整体而言，**`train_workflow` 面向「MMD CSV → G1 仿真回放与映射调试」闭环完整**；若需生产级多平台音频或 CI，可再剥离 I/O 与纯数学单元测试。
-
----
-
-## 8. 相关根目录文件
-
-- 仓库根 [README.md](../README.md) 提供项目介绍、快速开始、许可证与免责声明；本文档侧重模块级细节。
-
----
-
-*文档生成依据仓库内源文件结构与注释；参数与路径以当前代码为准。*
+环境安装见 [CONDA_ISAAC61.md](../CONDA_ISAAC61.md) 与 [ISAAC61_MIGRATION.md](../ISAAC61_MIGRATION.md)。历史实验的参数与结论仅对应其记录时的阶段；当前行为以入口实现、共享配置和已验收说明为准。

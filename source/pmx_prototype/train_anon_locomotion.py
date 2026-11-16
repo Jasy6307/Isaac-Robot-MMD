@@ -1,6 +1,6 @@
 """Train or evaluate Anon's physically simulated residual walking policy."""
 
-from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
+from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source, config_path
 import argparse
 import copy
 from datetime import datetime
@@ -33,11 +33,15 @@ parser.add_argument('--arm-swing-gain', type=float, default=None)
 parser.add_argument('--curriculum-iterations', type=int)
 parser.add_argument('--v3', action='store_true', help='25-DOF learned upper body with authored procedural motion reference')
 parser.add_argument('--mocap-library', type=Path, help='Retargeted 100STYLE periodic style library; requires a full body policy')
-parser.add_argument('--config-override',type=Path,help='JSON environment settings applied after checkpoint config')
+parser.add_argument('--config-override',type=config_path,help='JSON environment settings applied after checkpoint config')
 parser.add_argument('--from-scratch',action='store_true',help='Require random initialization and record fresh-state evidence')
 parser.add_argument('--scratch-continuation',action='store_true',help='Continue only this experiment\'s own random-initialization lineage, keeping cumulative timing')
-parser.add_argument('--acceptance-interval',type=int,default=100,help='Scratch experiment: evaluate every N completed iterations')
+parser.add_argument('--acceptance-interval',type=int,default=500,help='Scratch experiment: lightweight screen every N completed iterations')
+parser.add_argument('--scratch-acceptance-mode',choices=['staged','full-every-checkpoint'],default='staged',help='Staged mode screens often and reserves the complete suite for periodic, promising and final checkpoints')
+parser.add_argument('--scratch-full-interval',type=int,default=2500,help='Staged mode: run full acceptance at least every N completed iterations')
+parser.add_argument('--scratch-continue-after-pass',action='store_true',help='Keep collecting the agreed sample budget after a passing scratch checkpoint')
 parser.add_argument('--experiment-output',type=Path,help='Scratch experiment acceptance and timing records')
+parser.add_argument('--scratch-target',choices=['continuous_wrists','latest_unified'],default='continuous_wrists',help='Acceptance target for a fresh random initialization')
 args = parser.parse_args()
 if args.from_scratch and (args.checkpoint or args.mode!='train' or not args.run_dir or not args.experiment_output):
     parser.error('--from-scratch requires train, a new --run-dir and --experiment-output, and forbids --checkpoint')
@@ -45,6 +49,9 @@ if args.from_scratch and (args.run_dir/'policy_final.pt').exists():parser.error(
 if args.scratch_continuation and (args.from_scratch or args.mode!='train' or not args.checkpoint or not args.run_dir or not args.experiment_output):
     parser.error('--scratch-continuation requires train, this experiment checkpoint, a new --run-dir and --experiment-output')
 if args.acceptance_interval<1:parser.error('--acceptance-interval must be positive')
+if args.scratch_full_interval<1:parser.error('--scratch-full-interval must be positive')
+if args.scratch_target=='latest_unified' and args.scratch_acceptance_mode=='staged' and args.scratch_full_interval%args.acceptance_interval:
+    parser.error('--scratch-full-interval must be divisible by --acceptance-interval in staged mode')
 from isaacsim import SimulationApp
 app = SimulationApp({'headless': args.headless, 'renderer': 'RaytracedLighting', 'fast_shutdown': True,
                      'disable_viewport_updates':args.headless,
@@ -378,6 +385,9 @@ def main():
     if args.curriculum_iterations is not None: config['curriculum_iterations'] = args.curriculum_iterations
     if args.config_override:
         config.update(json.loads(args.config_override.read_text(encoding='utf-8')))
+    if args.mode=='eval' and config.get('unified_walk_run'):
+        for key in ['measure_ground_contact','unified_eval_force_flight','unified_substep_support_forces','unified_command_frame_metrics']:
+            config.setdefault(key,True)
     if config.get('full_motion_path') and args.mode=='train' and args.run_dir:
         args.run_dir.mkdir(parents=True,exist_ok=True)
         source=Path(config['full_motion_path']).resolve();frozen=args.run_dir.resolve()/'full_motion.npz'
@@ -436,6 +446,9 @@ def main():
         if env.cfg.get('articulated_wrists'):
             copy_sources(run, ['build_anon_v4.py','physical_character.py','migrate_articulated_policy.py'])
         runner = OnPolicyRunner(env, copy.deepcopy(cfg), log_dir=str(run), device='cuda:0')
+        if args.from_scratch and env.cfg.get('train_learning_rate'):
+            runner.alg.learning_rate=float(env.cfg['train_learning_rate'])
+            for group in runner.alg.optimizer.param_groups:group['lr']=runner.alg.learning_rate
         from amp_motion_prior import install_amp
         install_amp(runner,env)
         scratch=None
@@ -443,7 +456,8 @@ def main():
             if not hasattr(env,'amp'):raise ValueError('Scratch experiment requires the full-body AMP configuration')
             from anon_scratch_validation import ScratchValidation
             copy_sources(run, ['anon_scratch_validation.py'])
-            scratch=ScratchValidation(run,args.experiment_output,args.acceptance_interval,ROOT,continuation=args.scratch_continuation)
+            scratch=ScratchValidation(run,args.experiment_output,args.acceptance_interval,ROOT,continuation=args.scratch_continuation,target=args.scratch_target,
+                                      acceptance_mode=args.scratch_acceptance_mode,full_interval=args.scratch_full_interval)
             if args.from_scratch:scratch.audit_initialization(runner,env)
         if args.checkpoint:
             migration = load_policy(runner, env, args.checkpoint)
@@ -512,6 +526,7 @@ def main():
         started = time.perf_counter()
         initial_validation_seconds=scratch.validation_seconds if scratch else 0.
         target_iteration = runner.current_learning_iteration+args.iterations
+        if scratch:scratch.final_iteration=target_iteration
         class StopTraining(Exception):
             pass
         def log(**kwargs):
@@ -529,12 +544,14 @@ def main():
             if scratch:
                 # Predeclared scratch-only exploration anneal. Mean controller,
                 # rewards, motion references and physical gains are unchanged.
-                fraction=min(1.,(kwargs['it']+1)/300.)
+                fraction=min(1.,(kwargs['it']+1)/float(env.cfg.get('scratch_anneal_iterations',300.)))
                 runner.alg.entropy_coef=.003+(.0005-.003)*fraction
                 parameter=dict(runner.alg.actor.named_parameters())['distribution.log_std_param']
                 with torch.no_grad():parameter[env.upper_ids]=parameter[env.upper_ids].clamp(max=float(np.log(.2+(.08-.2)*fraction)))
-                if (kwargs['it']+1)%args.acceptance_interval==0:
-                    if scratch.evaluate(runner,kwargs['it']+1,scratch.training_offset+active_elapsed):raise StopTraining
+                completed=kwargs['it']+1
+                if completed%args.acceptance_interval==0 or completed>=target_iteration:
+                    passed=scratch.evaluate(runner,completed,scratch.training_offset+active_elapsed,force_full=completed>=target_iteration)
+                    if passed and not args.scratch_continue_after_pass:raise StopTraining
             if (run/'stop.request').is_file(): raise StopTraining
         runner.logger.log = log
         print('ANON_TRAIN_RUN '+str(run), flush=True)

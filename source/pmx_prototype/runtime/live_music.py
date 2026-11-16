@@ -22,7 +22,7 @@ from source.paths import resolve_dance_asset
 
 
 class LiveMusic:
-    def __init__(self, path, volume=.2):
+    def __init__(self, path, volume=.2, drift_tolerance=.15):
         os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
         import pygame
         self.pygame = pygame
@@ -42,6 +42,9 @@ class LiveMusic:
         pygame.mixer.set_num_channels(channel_id+1)
         self.channel = pygame.mixer.Channel(channel_id)
         self.volume = max(0., min(1., volume))
+        self.drift_tolerance = float(drift_tolerance)
+        if self.drift_tolerance <= 0:
+            raise ValueError('drift_tolerance must be positive')
         self.channel.set_volume(self.volume)
         self.whole_sound = pygame.mixer.Sound(buffer=self.pcm)
         self.current_sound = None
@@ -59,7 +62,9 @@ class LiveMusic:
             self.current_sound = None
             return
         offset = sample*self.channels*2
-        self.current_sound = self.whole_sound if offset == 0 else self.pygame.mixer.Sound(buffer=self.pcm[offset:])
+        # Avoid copying the entire remaining WAV into an intermediate bytes
+        # object each time a seek is required; SDL still receives the same PCM.
+        self.current_sound = self.whole_sound if offset == 0 else self.pygame.mixer.Sound(buffer=memoryview(self.pcm)[offset:])
         self.channel.play(self.current_sound)
         self.origin_motion = sample/self.rate
         self.origin_wall = time.perf_counter()
@@ -90,7 +95,7 @@ class LiveMusic:
         elapsed = time.perf_counter()-self.origin_wall
         drift = self.origin_motion+elapsed-position
         self.max_drift = max(self.max_drift, abs(drift))
-        if (abs(drift) > .15 and elapsed > .5) or not self.channel.get_busy():
+        if (abs(drift) > self.drift_tolerance and elapsed > .5) or not self.channel.get_busy():
             self.resyncs += 1
             self._start(position, 'drift_resync')
 
@@ -98,7 +103,8 @@ class LiveMusic:
         return dict(file=str(self.path), enabled=self.enabled, playing=bool(self.channel.get_busy()),
                     backend='pygame PCM channel', sample_rate=self.rate, duration_seconds=self.duration,
                     starts=self.starts, resyncs=self.resyncs, max_estimated_drift_seconds=self.max_drift,
-                    last_start_motion_seconds=self.origin_motion, volume=self.volume, events=self.events)
+                    last_start_motion_seconds=self.origin_motion, volume=self.volume,
+                    drift_tolerance_seconds=self.drift_tolerance, events=self.events)
 
     def close(self):
         self.channel.stop()

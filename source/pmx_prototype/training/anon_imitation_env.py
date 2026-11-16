@@ -54,6 +54,11 @@ class AnonImitationEnv(AnonLocomotionEnv):
             self.cfg['reference_root_com_local_m']=self.root_com_local.cpu().tolist()
             self.cfg['reference_root_link_name']=self.links[0]
         self.pelvis_reference_id=self.motion.links.index('pelvis')
+        self.foot_reference_ids=[self.motion.links.index(s+'_ankle_roll') for s in ['left','right']]
+        if self.cfg.get('leg_acceleration_from_positions',False):
+            self.leg_difference_velocity=torch.zeros_like(self.q[:,self.leg_ids])
+        if self.cfg.get('stance_slip_weight',0.):
+            self.foot_com_local=self.robot.get_coms()[0,self.foot_ids,:3].to(self.device).clone()
         self.key_names=['waist_pitch','head','left_knee_pitch','right_knee_pitch',
                         'left_ankle_roll','right_ankle_roll','left_hand','right_hand']
         self.key_ids=[self.links.index(n) for n in self.key_names]
@@ -269,6 +274,22 @@ class AnonImitationEnv(AnonLocomotionEnv):
         return TensorDict({'policy':obs.clamp(-20,20)},batch_size=[self.num_envs],device=self.device)
 
     def step(self,actions):
+        reward_diagnostics=not (self.evaluation and self.cfg.get('runtime_inference_only',False))
+        leg_smooth_enabled=bool(self.cfg.get('leg_acceleration_weight',0.)) and reward_diagnostics
+        if leg_smooth_enabled:
+            if self.cfg.get('leg_acceleration_from_positions',False):
+                previous_leg_q=self.q[:,self.leg_ids].clone()
+            else:
+                previous_leg_qd=self.qd[:,self.leg_ids].clone()
+        geometric_slip_enabled=bool(self.cfg.get('stance_displacement_weight',0.) or self.cfg.get('stance_displacement_speed_weight',0.)) and reward_diagnostics
+        if geometric_slip_enabled:
+            old_feet=self.poses[:,self.foot_ids]
+            old_quat=old_feet[:,:,None,3:].expand(-1,-1,8,-1)
+            old_conjugate=torch.cat([-old_quat[...,:3],old_quat[...,3:]],-1)
+            old_offset=quat_rotate_inverse(old_conjugate,self.foot_corners[None].expand(self.num_envs,-1,-1,-1))
+            old_sole=old_feet[:,:,None,:3]+old_offset
+            old_heights=old_sole[:,:,:,2];old_bottom=old_heights.amin(-1)
+            old_near=(old_heights<old_bottom[:,:,None]+.003)&(old_bottom[:,:,None]<self.cfg.get('contact_height_threshold_m',.012))
         self.previous_actions.copy_(self.actions);self.actions.copy_(actions.clamp(-2,2))
         if self.cfg.get('continuous_commands'):
             difference=self.commands-self.continuous_ref_commands
@@ -301,7 +322,14 @@ class AnonImitationEnv(AnonLocomotionEnv):
                 distal=[i for i,n in enumerate(self.names) if any(k in n for k in ['forearm','wrist'])]
                 velocity_target[:,distal]=ref['qd'][:,self.q_order][:,distal]
             self.robot.set_dof_velocity_targets(velocity_target.clamp(-10,10),self.ids)
-        for _ in range(self.cfg['decimation']):self._simulate()
+        measure_forces=self.evaluation and self.cfg.get('unified_substep_support_forces',False)
+        if measure_forces and not hasattr(self,'ground_contact_view'):raise ValueError('Substep force audit requires contact sensors')
+        substep_forces=[]
+        for _ in range(self.cfg['decimation']):
+            self._simulate()
+            if measure_forces:
+                substep_forces.append(self.ground_contact_view.get_contact_force_matrix(1/self.cfg['physics_hz'])[:,0,:].clone())
+        if measure_forces:self.last_substep_support_forces=torch.stack(substep_forces)
         self.refresh();self.steps+=1;self.episode_length_buf+=1
         if self.evaluation and self.cfg.get('runtime_inference_only',False):
             # The controller above is identical. Rewards and AMP diagnostics do
@@ -337,6 +365,24 @@ class AnonImitationEnv(AnonLocomotionEnv):
         bottom=(feet[:,:,None,2]+offset[:,:,:,2]).amin(-1)
         contact=(bottom<self.cfg.get('contact_height_threshold_m',.012)).float()
         contact_error=(contact-ref['contacts']).abs().mean(-1)
+        if geometric_slip_enabled:
+            from stance_motion import displacement_slip_square
+            sole=feet[:,:,None,:3]+offset
+            near_geometry=(sole[:,:,:,2]<bottom[:,:,None]+.003)&(contact[:,:,None]>.5)
+            geometric_slip_square=displacement_slip_square(sole,old_sole,near_geometry,old_near,self.dt)
+            if self.cfg.get('stance_displacement_speed_weight',0.):
+                from stance_motion import displacement_slip_speed
+                geometric_slip_speed=displacement_slip_speed(sole,old_sole,near_geometry,old_near,self.dt)
+        if self.cfg.get('stance_slip_weight',0.):
+            from stance_motion import point_velocity
+            local_com=self.foot_com_local[None,:,None,:].expand(self.num_envs,-1,8,-1)
+            world_com=quat_rotate_inverse(conjugate,local_com)[:,:,0,:]
+            foot_velocity=self.link_vel[:,self.foot_ids]
+            velocity=point_velocity(foot_velocity[:,:,:3],foot_velocity[:,:,3:],offset,world_com)
+            heights=feet[:,:,None,2]+offset[:,:,:,2]
+            near=(heights<bottom[:,:,None]+.003)&(contact[:,:,None]>.5)
+            weight=near.float()*ref['contacts'][:,:,None].clamp(0,1)
+            slip_square=(velocity[...,:2].square().sum(-1).clamp(max=1.)*weight).sum((1,2))/weight.sum((1,2)).clamp_min(1)
         reward=(3.*torch.exp(-pose_error/.065)+.7*torch.exp(-velocity_error/12.)
                 +self.cfg.get('imitation_keypoint_weight',2.)*torch.exp(-key_error/.008)+self.cfg.get('imitation_height_weight',1.)*torch.exp(-height_error/self.cfg.get('imitation_height_error_scale',.0025))
                 +.7*torch.exp(-orientation_error/self.cfg.get('imitation_orientation_error_scale',.12))+self.cfg.get('imitation_velocity_weight',1.)*torch.exp(-base_velocity_error/self.cfg.get('imitation_velocity_error_scale',.12))
@@ -345,6 +391,61 @@ class AnonImitationEnv(AnonLocomotionEnv):
         if self.cfg.get('imitation_angular_velocity_weight',0.):
             angular_error=(self.root_vel[:,3:]-ref['velocities'][:,self.base_reference_id,3:]).square().sum(-1)
             reward+=self.cfg['imitation_angular_velocity_weight']*torch.exp(-angular_error/.25)
+        if self.cfg.get('stance_slip_weight',0.):
+            speed=self.continuous_ref_commands[:,:2].norm(dim=-1)
+            reward+=self.cfg['stance_slip_weight']*torch.exp(-slip_square/.04)*(speed>.2)
+        if self.cfg.get('foot_orientation_weight',0.):
+            alignment=(feet[:,:,3:]*ref['rotations'][:,self.foot_reference_ids]).sum(-1).square().clamp(0,1)
+            reward+=self.cfg['foot_orientation_weight']*torch.exp(-(1-alignment).mean(-1)/.015)
+        if self.cfg.get('swing_clearance_weight',0.):
+            ref_rotation=ref['rotations'][:,self.foot_reference_ids,None,:].expand(-1,-1,8,-1)
+            ref_inverse=torch.cat([-ref_rotation[...,:3],ref_rotation[...,3:]],-1)
+            ref_offset=quat_rotate_inverse(ref_inverse,self.foot_corners[None].expand(self.num_envs,-1,-1,-1))
+            ref_bottom=(ref['positions'][:,self.foot_reference_ids,None,2]+ref_offset[:,:,:,2]).amin(-1)
+            desired=(ref_bottom+self.cfg.get('swing_clearance_extra_m',.012)).clamp(.012,.05)
+            swing=(1-ref['contacts']).clamp(0,1).square()
+            swing_deficit=(desired-bottom).clamp_min(0)
+            cmd=self.continuous_ref_commands
+            difficult=((-cmd[:,0]).clamp_min(0)+cmd[:,1].abs())/cmd[:,:2].abs().sum(-1).clamp_min(.001)
+            running=((cmd[:,:2].norm(dim=-1)-.55)/.35).clamp(0,1)
+            turning=(cmd[:,2].abs()/self.cfg.get('max_yaw',.6)).clamp(0,1)
+            turn_weight=1-(1-self.cfg.get('stance_displacement_turn_scale',1.))*turning
+            reward-=self.cfg['swing_clearance_weight']*(swing*(swing_deficit/.025).square()).mean(-1)*difficult*running*turn_weight
+        if geometric_slip_enabled:
+            moving=self.continuous_ref_commands[:,:2].norm(dim=-1)>.2
+            turn=(self.continuous_ref_commands[:,2].abs()/self.cfg.get('max_yaw',.6)).clamp(0,1)
+            turn_weight=1-(1-self.cfg.get('stance_displacement_turn_scale',1.))*turn
+            reward-=self.cfg.get('stance_displacement_weight',0.)*geometric_slip_square*moving*turn_weight
+            if self.cfg.get('stance_displacement_speed_weight',0.):
+                cmd=self.continuous_ref_commands[:,:2]
+                difficult=((-cmd[:,0]).clamp_min(0)+cmd[:,1].abs())/cmd.abs().sum(-1).clamp_min(.001)
+                reward-=self.cfg['stance_displacement_speed_weight']*geometric_slip_speed*moving*turn_weight*difficult
+        if leg_smooth_enabled:
+            if self.cfg.get('leg_acceleration_from_positions',False):
+                leg_velocity=(self.q[:,self.leg_ids]-previous_leg_q)/self.dt
+                leg_acceleration=(leg_velocity-self.leg_difference_velocity)/self.dt
+                leg_acceleration*= (self.episode_length_buf>1)[:,None]
+                self.leg_difference_velocity.copy_(leg_velocity)
+            else:
+                leg_acceleration=(self.qd[:,self.leg_ids]-previous_leg_qd)/self.dt
+            if self.cfg.get('leg_acceleration_cost')=='pseudo_huber':
+                smooth_cost=(torch.sqrt(1+(leg_acceleration/30.).square())-1).mean(-1)
+            else:
+                smooth_cost=(leg_acceleration/30.).square().clamp(max=9.).mean(-1)
+            reward-=self.cfg['leg_acceleration_weight']*smooth_cost
+        if self.cfg.get('unified_backward_height_weight',0.):
+            speed=self.continuous_ref_commands[:,:2].norm(dim=-1)
+            backward=(-self.continuous_ref_commands[:,0]/speed.clamp_min(.001)).clamp(0,1)
+            run=((speed-.7)/.3).clamp(0,1);run=run*run*(3-2*run)
+            height_quality=torch.exp(-height_error/self.cfg.get('unified_backward_height_error_scale',.0003))
+            reward+=self.cfg['unified_backward_height_weight']*backward*run*height_quality
+        if self.cfg.get('unified_heading_weight',0.):
+            target_rotation=ref['rotations'][:,self.pelvis_reference_id]
+            inverse=torch.cat([-target_rotation[:,:3],target_rotation[:,3:]],-1)
+            relative_rotation=quat_multiply(inverse,pelvis[:,3:])
+            x,y,z,w=relative_rotation.unbind(-1)
+            heading_error=torch.atan2(2*(w*z+x*y),1-2*(y*y+z*z))
+            reward+=self.cfg['unified_heading_weight']*torch.exp(-heading_error.square()/self.cfg.get('unified_heading_error_scale',.0225))
         if self.cfg.get('continuous_tracking_weight',0.):
             speed=self.continuous_ref_commands[:,:2].norm(dim=-1)
             scale=self.cfg.get('continuous_tracking_error_base',.003)+self.cfg.get('continuous_tracking_error_speed_scale',.05)*speed.square()
@@ -352,6 +453,12 @@ class AnonImitationEnv(AnonLocomotionEnv):
             if self.cfg.get('continuous_low_speed_pose_weight',0.):
                 low=(speed>.02)&(speed<.16)
                 reward+=self.cfg['continuous_low_speed_pose_weight']*(torch.exp(-key_error/.004)+torch.exp(-orientation_error/.03))*low
+        pivot_terms=None
+        if self.cfg.get('unified_pivot_training',False):
+            from pivot_stability import pivot_stability_terms
+            pivot_terms=pivot_stability_terms(self.commands,self.continuous_ref_commands,bottom,
+                                              ref['contacts'],self.root_vel,self.cfg)
+            reward+=pivot_terms['reward_rate']
         if self.cfg.get('learn_arm_clearance',False):
             # Reward only: never alter PD targets, references or policy outputs.
             deficits=[];arm_errors=[];gates=[]
@@ -417,14 +524,48 @@ class AnonImitationEnv(AnonLocomotionEnv):
             'Imitation/joint_rmse_rad':pose_error.sqrt().mean(),
             'Imitation/keypoint_rmse_m':key_error.sqrt().mean(),
             'Imitation/pelvis_height_rmse_m':height_error.sqrt().mean(),
+            'Imitation/pelvis_orientation_rmse_rad':orientation_error.sqrt().mean(),
             'Imitation/contact_accuracy':(1-contact_error).mean(),
             'Imitation/base_velocity_rmse':base_velocity_error.sqrt().mean(),
             'Stability/fall_rate':fallen.float().mean()}}
+        if pivot_terms is not None:
+            active=pivot_terms['active'];count=active.sum().clamp_min(1)
+            extras['log']['Pivot/occupancy']=active.float().mean()
+            for key in ('support','landing','drift','reward_rate'):
+                extras['log']['Pivot/'+key]=(pivot_terms[key].sum()/count)
         if self.cfg.get('unified_high_speed_focus'):
             fast=self.commands[:,:2].norm(dim=-1)>.8
             extras['log']['Unified/high_speed_occupancy']=fast.float().mean()
             extras['log']['Unified/high_speed_fall_rate']=fallen[fast].float().mean() if fast.any() else torch.zeros((),device=self.device)
             extras['log']['Unified/high_speed_velocity_error']=base_velocity_error[fast].sqrt().mean() if fast.any() else torch.zeros((),device=self.device)
+        if self.cfg.get('unified_heading_weight',0.):
+            extras['log']['Unified/pelvis_heading_error_abs_rad']=heading_error.abs().mean()
+        if self.cfg.get('stance_slip_weight',0.):
+            extras['log']['Natural/stance_point_velocity_rms']=slip_square.mean().sqrt()
+        if geometric_slip_enabled:
+            extras['log']['Natural/stance_displacement_velocity_rms']=geometric_slip_square.mean().sqrt()
+            if self.cfg.get('stance_displacement_speed_weight',0.):
+                extras['log']['Natural/stance_displacement_velocity_mean']=geometric_slip_speed.mean()
+        if leg_smooth_enabled:
+            extras['log']['Natural/leg_acceleration_rms_rad_s2']=leg_acceleration.square().mean().sqrt()
+        if self.cfg.get('swing_clearance_weight',0.):
+            extras['log']['Natural/swing_clearance_deficit_m']=(swing_deficit*swing).sum()/swing.sum().clamp_min(1)
+        if self.cfg.get('unified_backward_env_fraction',0.):
+            assigned=self.ids.remainder(100)<round(100*self.cfg['unified_backward_env_fraction'])
+            moving=assigned&(self.commands[:,:2].norm(dim=-1)>.1)
+            extras['log']['Unified/backward_rollout_fraction']=moving.float().mean()
+            extras['log']['Unified/backward_reference_velocity_error']=base_velocity_error[moving].sqrt().mean() if moving.any() else torch.zeros((),device=self.device)
+            extras['log']['Unified/backward_termination_rate']=fallen[moving].float().mean() if moving.any() else torch.zeros((),device=self.device)
+            height_delta=pelvis[:,2]-ref['positions'][:,self.pelvis_reference_id,2]
+            extras['log']['Unified/backward_height_bias_m']=height_delta[moving].mean() if moving.any() else torch.zeros((),device=self.device)
+            extras['log']['Unified/backward_height_rmse_m']=height_error[moving].mean().sqrt() if moving.any() else torch.zeros((),device=self.device)
+        if self.cfg.get('unified_right_env_fraction',0.):
+            first=round(100*self.cfg.get('unified_backward_env_fraction',0.));last=first+round(100*self.cfg['unified_right_env_fraction'])
+            assigned=(self.ids.remainder(100)>=first)&(self.ids.remainder(100)<last)
+            moving=assigned&(self.commands[:,:2].norm(dim=-1)>.1)
+            extras['log']['Unified/right_rollout_fraction']=moving.float().mean()
+            extras['log']['Unified/right_reference_velocity_error']=base_velocity_error[moving].sqrt().mean() if moving.any() else torch.zeros((),device=self.device)
+            extras['log']['Unified/right_termination_rate']=fallen[moving].float().mean() if moving.any() else torch.zeros((),device=self.device)
         if self.evaluation:self.recorded_state=(self.poses.clone(),self.q.clone(),self.logical_vel.clone(),self.phase.clone())
         ids=done.nonzero(as_tuple=False).flatten()
         if hasattr(self,'amp'):

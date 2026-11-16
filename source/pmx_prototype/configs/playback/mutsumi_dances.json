@@ -1,0 +1,50 @@
+{
+  "IRIS_OUT": {
+    "motion": "IRIS OUT",
+    "usd": "output/mutsumi_validation_references/IRIS_OUT/character.usdc",
+    "rig_data": "output/mutsumi_validation_references/IRIS_OUT/rig.json",
+    "music": "media/dance/IRIS_OUT/IRIS_OUT.wav",
+    "aliases": [
+      "irisout"
+    ]
+  },
+  "ni_zui_zhong_yao": {
+    "motion": "你最重要",
+    "usd": "output/mutsumi_validation_120hz_bright/ni_zui_zhong_yao/character.usdc",
+    "rig_data": "output/mutsumi_validation_120hz_bright/ni_zui_zhong_yao/rig.json",
+    "music": "media/dance/ni_zui_zhong_yao/ni_zui_zhong_yao.wav",
+    "aliases": []
+  },
+  "hal_ia_yeah_oh_ahhh_oh": {
+    "motion": "HAL IA YEAH OH AHHH OH",
+    "usd": "output/mutsumi_validation_120hz_bright/hal_ia_yeah_oh_ahhh_oh/character.usdc",
+    "rig_data": "output/mutsumi_validation_120hz_bright/hal_ia_yeah_oh_ahhh_oh/rig.json",
+    "music": "media/dance/hal_ia_yeah_oh_ahhh_oh/hal_ia_yeah_oh_ahhh_oh.wav",
+    "aliases": []
+  },
+  "ji_le_jing_tu": {
+    "motion": "极乐净土",
+    "usd": "output/mutsumi_validation_120hz_bright/ji_le_jing_tu/character.usdc",
+    "rig_data": "output/mutsumi_validation_120hz_bright/ji_le_jing_tu/rig.json",
+    "music": "media/dance/ji_le_jing_tu/ji_le_jing_tu.wav",
+    "aliases": [
+      "jilejingtu"
+    ]
+  },
+  "girls": {
+    "motion": "Girls",
+    "usd": "output/mutsumi_validation_120hz_bright/girls/character.usdc",
+    "rig_data": "output/mutsumi_validation_120hz_bright/girls/rig.json",
+    "music": "media/dance/girls/girls.wav",
+    "aliases": []
+  },
+  "deepbluetown": {
+    "motion": "Deep Blue Town",
+    "usd": "output/mutsumi_validation_120hz_bright/deepbluetown/character.usdc",
+    "rig_data": "output/mutsumi_validation_120hz_bright/deepbluetown/rig.json",
+    "music": "media/dance/deepbluetown/deepbluetown.wav",
+    "aliases": [
+      "deep_blue_town"
+    ]
+  }
+}

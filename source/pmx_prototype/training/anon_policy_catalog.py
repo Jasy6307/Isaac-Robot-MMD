@@ -11,13 +11,16 @@ from pathlib import Path
 
 ROOT=PROJECT_ROOT
 PRESETS={
-    'walk':ROOT/'output/anon_locomotion/release_v6_scratch_31dof/policy.pt',
-    'run':ROOT/'logs/rsl_rl/anon_locomotion/v6_run_wrists_refine/policy_final.pt',
+    'walk':ROOT/'output/anon_locomotion/release_v7_unified_walk_run_slip_refine/policy.pt',
 }
 LABELS={
-    'walk':'NEW WALK | From scratch (default)',
-    'run':'RUN | Forward 1.2 m/s + stop',
+    'walk':'WALK + RUN | Unified 31 DOF (default)',
 }
+
+def label_for(key,config,checkpoint):
+    if key in LABELS:return LABELS[key]
+    if config.get('unified_walk_run'):return 'WALK + RUN | Unified 31 DOF'
+    return 'CUSTOM | '+Path(checkpoint).parent.name
 
 def identify(checkpoint):
     path=Path(checkpoint).resolve()

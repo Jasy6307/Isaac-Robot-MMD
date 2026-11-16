@@ -108,9 +108,18 @@
       "bend_multiplier": 1.5
     }
   },
-  "description": "Approved120Hz cloth default: V6 long-skirt waist transition for native16-row grids; retain V5 waist curve for9-row and other grids. Preserve V5 side-hair support and all collision/material settings.",
-  "profile_id": "fabric_transition_sidehair_v6",
+  "description": "Finalized V1 baseline (formerly V10): approved 120Hz cloth hair and skirt physics.",
+  "profile_id": "hair_contact_drape_v1",
   "quality_profile": "cloth",
   "physics_hz": 120,
-  "skirt_max_stretch": 1.02
+  "skirt_max_stretch": 1.02,
+  "hair_max_stretch": 1.015,
+  "hair_constraint_solver": {
+    "iterations": 48,
+    "bend_relaxation": 0.06,
+    "velocity_mode": "native_tangent",
+    "contact_velocity": true,
+    "projection_velocity_blend": 0.15,
+    "contact_refine_iterations": 24
+  }
 }

@@ -17,10 +17,9 @@ def source_files(names, source_dir=SOURCE_DIR):
     archived = {}
     catalog = source_dir / 'archive/catalog.json'
     if catalog.exists():
-        archived = {
-            item['legacy_path']: item['archive_path']
-            for item in json.loads(catalog.read_text(encoding='utf-8'))['configs']
-        }
+        for item in json.loads(catalog.read_text(encoding='utf-8'))['configs']:
+            for key in (item['legacy_path'], item['source_path']):
+                archived[key] = item['archive_path']
     pending = [*names, 'source_bundle.py', 'source_layout.py', 'module_locations.json', '__init__.py']
     resolved = set()
     while pending:
@@ -40,6 +39,12 @@ def source_files(names, source_dir=SOURCE_DIR):
             continue
         tree = ast.parse(path.read_text(encoding='utf-8-sig'), filename=str(path))
         for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == 'resolve_source' and node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)
+                    and node.args[0].value.endswith(('.json','.py','.mdl'))):
+                pending.append(node.args[0].value)
             if isinstance(node, ast.Import):
                 modules = [alias.name for alias in node.names]
             elif isinstance(node, ast.ImportFrom):

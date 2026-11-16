@@ -10,7 +10,7 @@ from pathlib import Path as _Path
 _source_dir = _Path(__file__).resolve().parents[1]
 if str(_source_dir) not in _sys.path:
     _sys.path.insert(0, str(_source_dir))
-from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
+from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source, config_path
 
 from pathlib import Path
 from time import perf_counter
@@ -128,7 +128,7 @@ class BodyMotion:
             self.model['rigid_bodies'].extend(data['bodies'])
         if secondary_profile:
             import json
-            self.rig_settings.update(json.loads(Path(secondary_profile).read_text(encoding='utf-8')))
+            self.rig_settings.update(json.loads(config_path(secondary_profile).read_text(encoding='utf-8')))
         self.skeleton = UsdSkel.Skeleton.Get(self.source, '/Character/Skeleton')
         self.animation = UsdSkel.Animation.Get(self.source, '/Character/Animation')
         self.joints = list(self.skeleton.GetJointsAttr().Get())
@@ -214,6 +214,7 @@ class PhysxSecondary:
         self.stage, self.motion = stage, motion
         self.runtime_costs = np.zeros(6)
         self.runtime_calls = 0
+        self.projection_ms = 0.
         self.quality = quality
         self.hair_quality = quality in ('hair', 'cloth')
         self.track_obstacles = obstacles
@@ -523,6 +524,8 @@ class PhysxSecondary:
                 if not (na.startswith('qun_') and nb.startswith('qun_')):continue
                 _,ra,ca=na.split('_');_,rb,cb=nb.split('_')
                 if ca!=cb or abs(int(ra)-int(rb))!=1 or s['invmass'][a]+s['invmass'][b]==0:continue
+                # Optional preview-only collision-proxy decimation.
+                if int(ca)%int(motion.rig_settings.get('preview_skirt_edge_stride',1)):continue
                 e=len(self.edge_nodes);self.edge_nodes.append((a,b))
                 pa,pb=self.initial_nodes[[a,b]];length=float(np.linalg.norm(pb-pa))
                 path=f'/World/SecondaryEdges/Dynamic/e{e:04d}';self.edge_paths.append(path)
@@ -827,6 +830,10 @@ class PhysxSecondary:
                 for b in self.constraint_hair[offset+1:]:
                     if (int(a),int(b)) not in connected and np.linalg.norm(self.initial_nodes[a]-self.initial_nodes[b])>=.029:pairs.append((a,b))
             self.constraint_pairs=np.array(pairs,dtype=np.int64).reshape(-1,2)
+            self.constraint_links=np.asarray(self.hair_length_links)
+            self.constraint_triplets=self.curvature_triplets[self.curvature_groups==14]
+            self.constraint_edges=np.asarray(self.edge_nodes,dtype=np.int64).reshape(-1,2) if self.hair_cloth_contacts else np.empty((0,2),dtype=np.int64)
+            self.constraint_body_radii=self.motion.system['radii']*self.motion.rig_settings.get('appearance',{}).get('body_radius_scale',1.)
         if self.quality != 'legacy':
             # Compile/load CPU force and skin-frame kernels before the viewer
             # starts its clock or audio; do not advance or alter PhysX state.
@@ -868,7 +875,7 @@ class PhysxSecondary:
         self.steps = 0
         self.time = 0.
 
-    def step(self, motion_frame, produce_pose=True, diagnostics=True):
+    def step(self, motion_frame, produce_pose=True, diagnostics=True, compiled_hair=False, optimized_contacts=False):
         tick=perf_counter()
         lp, lq, wp, wq = self.motion.pose(motion_frame)
         target = wp[self.motion.nodes]
@@ -946,19 +953,27 @@ class PhysxSecondary:
             changed=np.zeros(len(particles),dtype=bool)
             if self.hair_constraint_solver:
                 from hair_constraints import project_hair
+                if optimized_contacts:
+                    from hair_constraints import project_hair_fast as project_hair
                 config=self.hair_constraint_solver
-                arguments=(target,self.motion.system['invmass'],np.asarray(self.hair_length_links),self.curvature_triplets[self.curvature_groups==14],self.constraint_hair,self.constraint_cloth,np.asarray(self.edge_nodes,dtype=np.int64).reshape(-1,2) if self.hair_cloth_contacts else np.empty((0,2),dtype=np.int64),self.node_radii,ca,cb,self.motion.system['radii']*self.motion.rig_settings.get('appearance',{}).get('body_radius_scale',1.),self.constraint_allowed,self.constraint_pairs,float(self.motion.rig_settings['hair_max_stretch']),)
+                projection_started=perf_counter()
+                arguments=(target,self.motion.system['invmass'],self.constraint_links,self.constraint_triplets,self.constraint_hair,self.constraint_cloth,self.constraint_edges,self.node_radii,ca,cb,self.constraint_body_radii,self.constraint_allowed,self.constraint_pairs,float(self.motion.rig_settings['hair_max_stretch']),)
                 particles=project_hair(particles,*arguments,int(config.get('iterations',24)),float(config.get('bend_relaxation',.12)))
                 refinement=int(config.get('contact_refine_iterations',0))
                 if refinement:particles=project_hair(particles,*arguments,refinement,0.)
+                self.projection_ms+=(perf_counter()-projection_started)*1000
                 changed[self.constraint_hair]=True
             # Parent-before-child traversal bounds every material segment, so
             # cumulative strand length cannot grow. Feed it back into PhysX.
-            for parent,child,length in self.hair_length_links:
-                delta=particles[child]-particles[parent];distance=np.linalg.norm(delta)
-                if distance>length:
-                    particles[child]=particles[parent]+delta*(length/distance)
-                    changed[child]=True
+            if optimized_contacts:
+                from hair_constraints import bound_hair_lengths
+                particles,changed=bound_hair_lengths(particles,changed,self.constraint_links if self.hair_constraint_solver else np.asarray(self.hair_length_links))
+            else:
+                for parent,child,length in self.hair_length_links:
+                    delta=particles[child]-particles[parent];distance=np.linalg.norm(delta)
+                    if distance>length:
+                        particles[child]=particles[parent]+delta*(length/distance)
+                        changed[child]=True
             selected=changed[self.dynamic_order]
             if selected.any():
                 state=self.dynamic_view.get_transforms().copy()
@@ -972,22 +987,26 @@ class PhysxSecondary:
                     node_velocity[self.dynamic_order]=velocity[:,:3]
                     node_velocity[self.pin_order]=self.pin_view.get_velocities()[:,:3]
                     weights=self.motion.system['invmass']
-                    for _ in range(3):
-                        for parent,child,length in self.hair_length_links:
-                            delta=particles[child]-particles[parent];distance=np.linalg.norm(delta)
-                            total=weights[parent]+weights[child]
-                            if distance<length*.98 or distance<1e-10 or total==0:continue
-                            normal=delta/distance
-                            separation=np.dot(node_velocity[child]-node_velocity[parent],normal)
-                            if separation>0:
-                                impulse=normal*(separation/total)
-                                node_velocity[parent]+=weights[parent]*impulse
-                                node_velocity[child]-=weights[child]*impulse
+                    if compiled_hair:
+                        from hair_contact_velocity import limit_chain_velocity
+                        node_velocity=limit_chain_velocity(node_velocity,particles,weights,self.constraint_links if self.hair_constraint_solver else np.asarray(self.hair_length_links))
+                    else:
+                        for _ in range(3):
+                            for parent,child,length in self.hair_length_links:
+                                delta=particles[child]-particles[parent];distance=np.linalg.norm(delta)
+                                total=weights[parent]+weights[child]
+                                if distance<length*.98 or distance<1e-10 or total==0:continue
+                                normal=delta/distance
+                                separation=np.dot(node_velocity[child]-node_velocity[parent],normal)
+                                if separation>0:
+                                    impulse=normal*(separation/total)
+                                    node_velocity[parent]+=weights[parent]*impulse
+                                    node_velocity[child]-=weights[child]*impulse
                     if self.hair_constraint_solver.get('contact_velocity'):
                         from hair_contact_velocity import correct_velocity
                         body_velocity=np.empty_like(self.body_view.get_velocities())
                         body_velocity[self.body_order]=self.body_view.get_velocities()
-                        node_velocity=correct_velocity(node_velocity,particles,self.constraint_hair,self.node_radii,ca,cb,self.motion.system['radii']*self.motion.rig_settings.get('appearance',{}).get('body_radius_scale',1.),self.constraint_allowed,body_velocity,self.dt)
+                        node_velocity=correct_velocity(node_velocity,particles,self.constraint_hair,self.node_radii,ca,cb,self.constraint_body_radii,self.constraint_allowed,body_velocity,self.dt)
                     velocity[selected,:3]=node_velocity[self.dynamic_order[selected]]
                     blend=float(self.hair_constraint_solver.get('projection_velocity_blend',0.))
                     if blend>0:

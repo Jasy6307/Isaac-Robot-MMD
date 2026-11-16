@@ -1,6 +1,6 @@
 """Record live native PhysX hair and skirt while playing an existing PMX dance."""
 
-from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
+from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source, config_path
 from pathlib import Path
 import argparse
 import json
@@ -25,7 +25,7 @@ parser.add_argument('--load-poses',type=Path,help='Render exact joint poses from
 parser.add_argument('--verify-bangs-shadow',action='store_true')
 parser.add_argument('--export-reference-frame',type=int,default=-1,
                     help='Export evaluated mesh and exact camera beside video at this frame for renderer comparisons.')
-parser.add_argument('--secondary-profile',type=Path,default=DEFAULT_SECONDARY_PROFILE)
+parser.add_argument('--secondary-profile',type=config_path,default=DEFAULT_SECONDARY_PROFILE)
 parser.add_argument('--legacy-secondary-physics',action='store_true')
 parser.add_argument('--quality',choices=['hair','cloth'],default=None)
 parser.add_argument('--video-width',type=int,default=900)

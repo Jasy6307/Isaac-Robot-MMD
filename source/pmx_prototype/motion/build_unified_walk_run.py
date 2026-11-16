@@ -7,7 +7,7 @@ if str(_source_dir) not in _sys.path:
     _sys.path.insert(0, str(_source_dir))
 from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 
-import argparse,json
+import argparse,hashlib,json
 from pathlib import Path
 import numpy as np
 from scipy.optimize import least_squares
@@ -20,6 +20,7 @@ FIELDS=['q','qd','positions','rotations','velocities','contacts']
 
 def extend(path,clip,output):
     data=dict(np.load(path));old_names=list(data['joint_names']);old_links=list(data['link_names'])
+    data['retarget_source_sha256']=np.array(hashlib.sha256(Path(path).read_bytes()).hexdigest())
     model=Retarget(ROOT/'output/anon_physical_v4/manifest.json');count=len(data['q'])
     q=np.zeros((count,len(model.names)));q[:,[model.names.index(n) for n in old_names]]=data['q']
     frames=data['source_frames'];nodes,_,rot,_=read_bvh(ROOT/'media/mocap/100style'/clip);ids={v['name']:i for i,v in enumerate(nodes)}
@@ -88,11 +89,23 @@ def resample(data,count):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--output',type=Path,default=ROOT/'output/anon_locomotion/unified_walk_run');args=parser.parse_args();out=args.output.resolve();out.mkdir(parents=True,exist_ok=True)
+    backward_metadata=json.loads((out/'backward_raw.json').read_text(encoding='utf-8'))
+    if backward_metadata.get('phase_source')!='ankle-direction':
+        raise ValueError('Backward reference needs validated ankle-direction cycle anchors; regenerate raw/balanced/31dof files')
+    left_metadata=json.loads((out/'left_raw.json').read_text(encoding='utf-8'))
+    running_cycles=[4,int(backward_metadata['consecutive_gait_cycles']),int(left_metadata['consecutive_gait_cycles']),int(left_metadata['consecutive_gait_cycles'])]
+    if any(c!=4 for c in running_cycles):raise ValueError('This bank requires four verified cycles per directional running passage')
     runs=[]
     for name,clip in [('backward','Neutral_BR.bvh'),('left','Neutral_SR.bvh')]:
         destination=out/(name+'_31dof.npz')
-        if not destination.exists():extend(out/(name+'_balanced.npz'),clip,destination)
-        runs.append(dict(np.load(destination)))
+        source=out/(name+'_balanced.npz');source_hash=hashlib.sha256(source.read_bytes()).hexdigest()
+        cached=dict(np.load(destination)) if destination.exists() else {}
+        if str(cached.get('retarget_source_sha256',''))!=source_hash:extend(source,clip,destination)
+        data=dict(np.load(destination));metadata=backward_metadata if name=='backward' else left_metadata
+        frames=data['source_frames'];end=frames[0]+(frames[-1]-frames[0])*len(frames)/(len(frames)-1)
+        if abs(frames[0]-metadata['source_first'])>1e-4 or abs(end-metadata['source_last'])>1e-3:
+            raise ValueError(f'{name} cached retarget does not match the validated cycle passage')
+        runs.append(data)
     runs.insert(0,dict(np.load(ROOT/'output/anon_locomotion/running_wrists/running_reference.npz')))
     runs.append(mirror(runs[2],out/'right_31dof.npz'))
     old=dict(np.load(ROOT/'output/anon_locomotion/release_v6_scratch_31dof/full_motion.npz'))
@@ -108,7 +121,7 @@ def main():
     result={k:np.asarray(v,dtype='float32') for k,v in tables.items()}
     result.update(joint_names=old['joint_names'],link_names=old['link_names'],idle=old['idle'],
                   periods=np.r_[old['periods'],[float(r['period']) for r in runs]],speeds=np.r_[old['speeds'],[float(r['speed']) for r in runs]],
-                  commands=np.concatenate([old['commands'],[r['command'] for r in runs]]),clip_names=np.r_[old['clip_names'],['run_forward','run_backward','run_left','run_right']],gait_cycles=np.array([1.]*11+[4.]*4))
+                  commands=np.concatenate([old['commands'],[r['command'] for r in runs]]),clip_names=np.r_[old['clip_names'],['run_forward','run_backward','run_left','run_right']],gait_cycles=np.array([1.]*11+running_cycles))
     np.savez_compressed(out/'full_motion.npz',**result)
     experts=[]
     for c in [2,3,4,5,6,9,10,11,12,13,14]:

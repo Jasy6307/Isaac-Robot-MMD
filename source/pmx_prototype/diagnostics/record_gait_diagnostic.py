@@ -9,7 +9,7 @@ from pathlib import Path as _Path
 _source_dir = _Path(__file__).resolve().parents[1]
 if str(_source_dir) not in _sys.path:
     _sys.path.insert(0, str(_source_dir))
-from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
+from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source, config_path
 
 import argparse
 import json
@@ -29,7 +29,7 @@ p.add_argument('--title',required=True)
 p.add_argument('--headless',action='store_true')
 p.add_argument('--seconds',type=float,default=10)
 p.add_argument('--manifest',type=Path,default=ROOT/'output/anon_physical_v3/manifest.json')
-p.add_argument('--secondary-profile',type=Path,default=DEFAULT_SECONDARY_PROFILE)
+p.add_argument('--secondary-profile',type=config_path,default=DEFAULT_SECONDARY_PROFILE)
 args=p.parse_args()
 from isaacsim import SimulationApp
 app=SimulationApp({'headless':args.headless,'width':640,'height':1080,'renderer':'RaytracedLighting','anti_aliasing':1,'extra_args':['--/app/asyncRendering=false']})

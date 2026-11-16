@@ -17,7 +17,7 @@ from anon_imitation_env import AnonImitationEnv
 root=PROJECT_ROOT
 env=None
 try:
-    config=json.loads((root/'source/pmx_prototype/anon_v6_config.json').read_text())
+    config=json.loads((root/'source/pmx_prototype/configs/training/v6/anon_v6_config.json').read_text())
     env=AnonImitationEnv(1,42,app,True,config)
     for phase in [0.,.25,.5,.75]:
         env.phase[:]=phase

@@ -32,13 +32,16 @@ p.add_argument('--speed',type=float,default=.4)
 p.add_argument('--clip',default='Neutral_FW.bvh')
 p.add_argument('--running',action='store_true')
 p.add_argument('--direction',choices=['forward','backward','left'],default='forward')
+p.add_argument('--trajectory-cutoff',type=float,default=.35,help='Planar path removal cutoff; independent of heading smoothing')
+p.add_argument('--phase-source',choices=['toe-height','ankle-direction'],default='toe-height')
 a=p.parse_args();a.output.parent.mkdir(parents=True,exist_ok=True)
 model=Retarget();nodes,sp,sr,source_dt=read_bvh(ROOT/'media/mocap/100style'/a.clip);ids={n['name']:i for i,n in enumerate(nodes)}
 assert 0<a.first<a.last<len(sp)
 low=lambda x:sosfiltfilt(butter(2,.35,fs=1/source_dt,output='sos'),x,axis=0)
 yaw=np.unwrap(R.from_matrix(sr[:,0]).as_euler('ZYX')[:,0]);heading=low(yaw)
 canonical=R.from_euler('Z',-heading[:,None]).as_matrix();aligned=canonical@sr[:,0]
-local_velocity=np.einsum('nij,nj->ni',canonical,np.gradient(low(sp[:,0]),source_dt,axis=0))
+trajectory=sosfiltfilt(butter(2,a.trajectory_cutoff,fs=1/source_dt,output='sos'),sp[:,0],axis=0)
+local_velocity=np.einsum('nij,nj->ni',canonical,np.gradient(trajectory,source_dt,axis=0))
 axis=0 if a.direction=='left' else 1
 sign=-1. if a.direction=='forward' else 1.
 native_speed=float(np.median(np.maximum(sign*local_velocity[a.first:a.last,axis],.2))*.9132680182298859)
@@ -62,7 +65,7 @@ q=savgol_filter(q,5,2,axis=0)
 scale=.9132680182298859
 floor=float(np.percentile(sp[a.first:a.last,[ids['LeftToe'],ids['RightToe']],2],15))*scale
 hip_offset=model.origins['pelvis'][2]-(model.origins['left_hip_yaw'][2]+model.origins['right_hip_yaw'][2])/2
-root=np.zeros((count,3));sway=sp[:,0]-low(sp[:,0]);root[:,:2]=interp(np.einsum('nij,nj->ni',canonical,sway))[:,:2]*scale
+root=np.zeros((count,3));sway=sp[:,0]-trajectory;root[:,:2]=interp(np.einsum('nij,nj->ni',canonical,sway))[:,:2]*scale
 root[:,axis]*=stride;root[:,2]=interp(sp[:,0])[:,2]*scale+hip_offset-floor
 root[:,:2]-=root[:,:2].mean(0)
 euler=R.from_matrix(aligned).as_euler('ZYX');euler[:,0]=np.unwrap(euler[:,0]);root_angles=interp(euler)
@@ -141,7 +144,11 @@ deriv=lambda x:(np.roll(x,-1,axis=0)-np.roll(x,1,axis=0))/(2*dt)
 quat=R.from_matrix(rr.reshape(-1,3,3)).as_quat().reshape(count,len(model.links),4)
 for k in range(1,count):quat[k][(quat[k-1]*quat[k]).sum(-1)<0]*=-1
 omega=R.from_matrix((np.roll(rr,-1,axis=0)@np.roll(rr,1,axis=0).transpose(0,1,3,2)).reshape(-1,3,3)).as_rotvec().reshape(count,len(model.links),3)/(2*dt)
-peaks,_=find_peaks(sp[:,ids['LeftToe'],2],distance=25 if a.running else 55,prominence=.035);peaks=peaks[(peaks>=a.first)&(peaks<=a.last)]
+if a.phase_source=='ankle-direction':
+    ankle_local=np.einsum('nji,nj->ni',sr[:,0],sp[:,ids['LeftAnkle']]-sp[:,0])
+    peaks,_=find_peaks(savgol_filter(ankle_local[:,axis],7,2),distance=30 if a.running else 55,prominence=.1)
+else:peaks,_=find_peaks(sp[:,ids['LeftToe'],2],distance=25 if a.running else 55,prominence=.035)
+peaks=peaks[(peaks>=a.first)&(peaks<=a.last)]
 assert len(peaks)>=4
 gait=np.interp(frames,peaks,np.arange(len(peaks)))
 phase=.9921875+gait
@@ -149,5 +156,5 @@ sole=np.einsum('nfij,fkj->nfki',rr[:,feet],corners)+pp[:,feet,None,:];bottom=sol
 slip=(np.linalg.norm(sv[:,:,:,:2],axis=-1)*near).sum(-1)/near.sum(-1)
 np.savez_compressed(a.output,q=q.astype('float32'),qd=deriv(q).astype('float32'),positions=pp.astype('float32'),rotations=quat.astype('float32'),velocities=np.concatenate([deriv(pp)+mean_velocity,omega],-1).astype('float32'),contacts=contact.astype('float32'),joint_names=model.names,link_names=model.links,idle=baseline['idle'],period=duration,speed=a.speed,command=[-mean_velocity[1],mean_velocity[0],0],foot_corners=corners,gait_sin=np.sin(2*np.pi*phase).astype('float32'),gait_cos=np.cos(2*np.pi*phase).astype('float32'),expert_valid_range=[.3/duration,1-.3/duration],source_frames=frames)
 report=dict(source='100STYLE Neutral_FW.bvh, Ian Mason et al., CC BY 4.0',source_first=a.first,source_last=a.last,source_duration_seconds=native_duration,retimed_duration_seconds=duration,frames=count,source_left_swing_peaks=peaks.tolist(),consecutive_gait_cycles=len(peaks)-1,cycle_averaging=False,loop_bridge_seconds=.25,source_trajectory_heading_removed_deg=float(np.degrees(np.ptp(heading[a.first:a.last]))),kinematic_stance_slip_m_s=float(slip[contact].mean()),max_joint_velocity_rad_s=float(np.abs(deriv(q)).max()),max_joint_acceleration_rad_s2=float(np.abs(deriv(deriv(q))).max()),processing=['Chronological anatomical retargeting','Remove low-frequency path heading, retain pelvis gait rotation','Uniform speed retiming; unequal step intervals preserved','Straight-line contact-consistent leg IK','Local 5-sample cleanup','Only final 0.25 seconds bridged for playback loop'])
-report.update(source=f'100STYLE {a.clip}, Ian Mason et al., CC BY 4.0',running=a.running,source_contact_fraction=contact.mean(0).tolist(),source_flight_fraction=float((~contact.any(-1)).mean()))
+report.update(source=f'100STYLE {a.clip}, Ian Mason et al., CC BY 4.0',running=a.running,source_contact_fraction=contact.mean(0).tolist(),source_flight_fraction=float((~contact.any(-1)).mean()),trajectory_cutoff_hz=a.trajectory_cutoff,phase_source=a.phase_source,source_cycle_peaks=peaks.tolist())
 a.output.with_suffix('.json').write_text(json.dumps(report,indent=2),encoding='utf-8');print(json.dumps(report,indent=2),flush=True)

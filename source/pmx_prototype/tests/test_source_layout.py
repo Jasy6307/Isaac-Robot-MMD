@@ -20,10 +20,21 @@ import unittest
 import numpy as np
 
 from source_bundle import copy_sources
-from source_layout import SOURCE_DIR
+from source_layout import SOURCE_DIR, config_path
 
 
 class SourceLayoutTests(unittest.TestCase):
+    def test_training_snapshot_finds_project_assets_from_logs(self):
+        with tempfile.TemporaryDirectory() as folder:
+            project=Path(folder)/'project'
+            (project/'source/pmx_prototype').mkdir(parents=True)
+            (project/'run_isaac61.bat').touch()
+            snapshot=project/'logs/model'
+            copy_sources(snapshot,['build_anon_v4.py'])
+            probe=snapshot/'probe.py'
+            probe.write_text("from pathlib import Path\nimport source_layout\nassert source_layout.PROJECT_ROOT == Path(__file__).resolve().parents[2]\n",encoding='utf-8')
+            self.run_command(probe,[],snapshot)
+
     def run_command(self, script, arguments, cwd):
         environment = dict(os.environ)
         environment.pop('PYTHONPATH', None)
@@ -65,10 +76,13 @@ class SourceLayoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
             files = copy_sources(folder, ['train_anon_locomotion.py',
-                                         'measure_gait_slip.py', 'anon_v5_config.json'])
+                                         'measure_gait_slip.py', 'anon_v5_config.json',
+                                         'secondary_profiles.py'])
             for required in ('training/reference_asset_builder.py', 'runtime/physical_character.py',
                              'training/build_anon_v4.py', 'diagnostics/measure_gait_slip.py',
-                             'archive/configs/anon_v5_config.json'):
+                             'archive/configs/anon_v5_config.json',
+                             'configs/training/v5/anon_v5_config.json',
+                             'configs/physics/secondary_default.json'):
                 self.assertIn(required, files)
             probe = folder / 'probe.py'
             probe.write_text(
@@ -82,11 +96,23 @@ class SourceLayoutTests(unittest.TestCase):
             self.run_command(folder / 'train_anon_locomotion.py', ['--help'], folder)
             self.run_command(folder / 'diagnostics/measure_gait_slip.py', ['--help'], folder)
 
+    def test_config_paths_preserve_custom_files_and_old_project_aliases(self):
+        expected = resolve_source('secondary_default.json')
+        self.assertTrue(expected.is_file())
+        self.assertEqual(config_path(SOURCE_DIR / 'secondary_default.json'), expected)
+        self.assertEqual(config_path('source/pmx_prototype/secondary_default.json'), expected)
+        with tempfile.TemporaryDirectory() as folder:
+            custom = Path(folder) / 'secondary_default.json'
+            custom.write_text('{"custom": true}', encoding='utf-8')
+            self.assertEqual(config_path(custom), custom)
+            missing = Path(folder) / 'missing' / 'secondary_default.json'
+            self.assertEqual(config_path(missing), missing)
+
     def test_archived_and_compatibility_config_bytes_match(self):
         catalog = json.loads((SOURCE_DIR / 'archive/catalog.json').read_text(encoding='utf-8'))
         for item in catalog['configs']:
             with self.subTest(config=item['legacy_path']):
-                original = (SOURCE_DIR / item['legacy_path']).read_bytes()
+                original = (SOURCE_DIR / item['source_path']).read_bytes()
                 archived = (SOURCE_DIR / item['archive_path']).read_bytes()
                 self.assertEqual(original, archived)
                 self.assertEqual(hashlib.sha256(archived).hexdigest(), item['sha256'])

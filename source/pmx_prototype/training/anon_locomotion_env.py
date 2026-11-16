@@ -307,6 +307,10 @@ class AnonLocomotionEnv:
         gravity = torch.zeros((self.num_envs, 3), device=self.device); gravity[:, 2] = -1.
         self.gravity = quat_rotate_inverse(quat, gravity)
         self.logical_vel = torch.stack([-self.vel_b[:, 1], self.vel_b[:, 0], self.root_vel[:, 5]], dim=-1)
+        if self.cfg.get('unified_walk_run') and self.cfg.get('unified_command_frame_metrics'):
+            from unified_walk_run_reference import heading_velocity
+            # Telemetry only: actor observations still use vel_b/omega_b above.
+            self.logical_vel[:,:2]=heading_velocity(self.root_vel[:,:3],self.reference_heading)
 
     def get_observations(self):
         self.refresh()
