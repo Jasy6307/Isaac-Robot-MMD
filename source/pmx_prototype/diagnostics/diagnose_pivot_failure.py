@@ -26,6 +26,8 @@ def diagnose(env, runner, output, checkpoint):
         'left_to_right': [(2, 0), (6, .6), (6, -.6)],
         'right_to_left': [(2, 0), (6, -.6), (6, .6)],
     }
+    if args.schedule:
+        cases=json.loads(args.schedule.read_text(encoding='utf-8'))
     if args.cases:
         cases = {name: cases[name] for name in args.cases}
     models = json.loads(args.models.read_text(encoding='utf-8'))
@@ -48,7 +50,7 @@ def diagnose(env, runner, output, checkpoint):
                 elapsed = 0.
                 for seconds, yaw in segments:
                     for _ in range(round(seconds/env.dt)):
-                        env.set_command([0, 0, yaw])
+                        env.set_command(yaw if isinstance(yaw,list) else [0,0,yaw])
                         observation = env.get_observations()
                         action = infer(observation)
                         ref = env.sample_reference(env.phase)
@@ -86,10 +88,13 @@ if __name__ == '__main__':
     parser.add_argument('--models', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--cases', nargs='+', choices=['stand_right', 'stand_left', 'left_to_right', 'right_to_left'])
+    parser.add_argument('--schedule',type=Path,help='Custom diagnostic-only command sequences')
+    parser.add_argument('--config-override',type=Path,help='Diagnostic environment configuration')
     args = parser.parse_args()
     models = json.loads(args.models.read_text(encoding='utf-8'))
     import evaluate_unified_walk_run
     evaluate_unified_walk_run.evaluate = diagnose
     sys.argv = [str(SOURCE/'train_anon_locomotion.py'), '--mode', 'eval', '--headless',
                 '--num-envs', '16', '--checkpoint', next(iter(models.values())), '--output', str(args.output)]
+    if args.config_override:sys.argv += ['--config-override',str(args.config_override)]
     runpy.run_path(str(SOURCE/'train_anon_locomotion.py'), run_name='__main__')

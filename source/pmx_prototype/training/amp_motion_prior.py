@@ -33,6 +33,10 @@ def features(q,qd,pelvis_p,pelvis_q,velocity,keypoints):
 class AMPMotionPrior:
     def __init__(self,env):
         self.env=env;self.device=env.device;self.pending=[];self.replay=None
+        self.mirror=None
+        if env.cfg.get('amp_mirror_augmentation',False):
+            from lateral_symmetry import AnatomicalMirror
+            self.mirror=AnatomicalMirror.from_env(env)
         self.window=4;windows=[]
         for path in env.cfg['amp_expert_paths']:
             motion=FullMotionReference(path,self.device)
@@ -49,6 +53,10 @@ class AMPMotionPrior:
                     env.reference_root_velocity(state) if env.cfg.get('reference_velocity_at_com') else state['velocities'][:,env.base_reference_id],state['positions'][:,env.key_ref_ids]))
             windows.append(torch.stack(sequence,1))
         expert=torch.cat(windows,0)
+        if self.mirror is not None:
+            # Mirror raw temporal features before normalization. Natural step
+            # variation and temporal order are retained in both copies.
+            expert=torch.cat([expert,self.mirror.amp(expert)],0)
         self.feature_size=expert.shape[-1]
         self.mean=expert.mean((0,1));self.scale=expert.std((0,1)).clamp_min(.05)
         self.feature_weights=torch.ones(self.feature_size,device=self.device)
@@ -69,13 +77,24 @@ class AMPMotionPrior:
     def normalize(self,x):
         return (((x.reshape(-1,4,self.feature_size)-self.mean)/self.scale)*self.feature_weights).clamp(-8,8).flatten(1)
 
+    def score(self,flat):
+        score=self.discriminator(self.normalize(flat)).squeeze(-1)
+        if self.mirror is not None:
+            mirrored=self.mirror.amp(flat.reshape(-1,4,self.feature_size)).flatten(1)
+            # PPO reuses advantages for mirrored transitions. Its style reward
+            # must therefore be invariant even while the discriminator still
+            # has a learned directional bias. Only the training reward is
+            # symmetrized; policy outputs and physical targets are untouched.
+            score=.5*(score+self.discriminator(self.normalize(mirrored)).squeeze(-1))
+        return score
+
     def observe(self):
         e=self.env
         x=features(e.q,e.qd,e.poses[:,e.pelvis_id,:3],e.poses[:,e.pelvis_id,3:],e.root_vel,e.poses[:,e.key_ids,:3])
         self.history=torch.cat([self.history[:,1:],x[:,None]],1)
         self.history[~self.valid]=x[~self.valid,None].expand(-1,4,-1);self.valid[:]=True
         flat=self.history.flatten(1)
-        score=self.discriminator(self.normalize(flat)).squeeze(-1)
+        score=self.score(flat)
         style=(1-.25*(score-1).square()).clamp(0,1)
         self.last_score=score.mean();self.last_reward=style.mean()
         if not e.evaluation:
@@ -90,6 +109,8 @@ class AMPMotionPrior:
     def update(self):
         if not self.pending:return {}
         fresh=torch.cat(self.pending,0).clone();self.pending=[]
+        if self.mirror is not None:
+            fresh=torch.cat([fresh,self.mirror.amp(fresh.reshape(-1,4,self.feature_size)).flatten(1)],0)
         self.replay=fresh if self.replay is None else torch.cat([self.replay,fresh],0)[-65536:]
         stats=[]
         for _ in range(8):

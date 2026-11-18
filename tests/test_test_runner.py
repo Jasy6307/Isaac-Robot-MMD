@@ -64,6 +64,17 @@ class RunnerTests(unittest.TestCase):
             report = next(root.glob("output/tests/*/summary.json"))
             self.assertEqual(json.loads(report.read_text())["results"][0]["status"], "failed")
 
+    def test_empty_discovery_is_not_success(self):
+        entry = dict(path='tests/test_empty.py', suite='cpu', area='infra')
+        def no_cases(*args, **kwargs):
+            kwargs['stdout'].write('Ran 0 tests in 0.000s\n\nOK\n')
+            return subprocess.CompletedProcess([], 0)
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(runner.subprocess, 'run', side_effect=no_cases):
+            result = runner.run_entry(entry, Path(directory), 1)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['case_count'], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

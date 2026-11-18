@@ -43,7 +43,7 @@ residual_alpha/use_reference_residual/pd_profile/self_collisions；UI 内也不�
 ## 检查
 
 ```powershell
-python source/train_workflow/scripts/test_deployment_bundle.py
+python source/train_workflow/tests/test_deployment_bundle.py
 ```
 
 CPU 回归覆盖：移除源 H5 和原检查点后的包恢复、关节/根节点/相位及下一帧参考的

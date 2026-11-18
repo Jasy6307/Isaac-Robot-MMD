@@ -1,5 +1,7 @@
 # 跳跃诊断
 
+保存后的离线分析现统一由 `scripts/g1_diagnostics.py jump decompose/phases/reference-change/compare/summary` 调用；实现位于 `utils/jump_reports.py`、`jump_comparison.py`。五个原脚本保留兼容入口，窗口、坐标时钟、地面接触统计与指标解释不变。分解和阶段复核新增 `--output-dir`；不指定时另存 `output/g1_diagnostics/`，不再覆盖输入目录内的历史图片/报告。采样与在线策略验证入口保持不变，详见 [工具导航](scripts/README.md)。
+
 在现有 `g1_vmd_2_eval.py` 验证命令末尾添加 `--jump_diagnostics`。
 普通 H5 验证和 `--deployment_bundle` 均支持，不需要重新训练。
 不开启此开关时，不添加传感器、不安装采样钩子、不输出诊断文件。
@@ -50,7 +52,7 @@
 
 ## 回归检查
 
-`python source/train_workflow/scripts/test_jump_diagnostics.py`
+`python source/train_workflow/tests/test_jump_diagnostics.py`
 
 CPU 测试覆盖每控制步多个物理样本、自动重置前状态保留、空闲/时间窗口排除、接触判断、
 CSV/NPZ/PNG 输出和采样钩子恢复。真实接触与执行器数值仍需在 Isaac 场景运行验证。

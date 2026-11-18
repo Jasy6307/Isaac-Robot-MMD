@@ -11,8 +11,9 @@ from scipy import sparse
 
 
 def difference_matrix(count, columns, order=1):
-    coefficients=(-1.,1.) if order==1 else (1.,-2.,1.)
-    if order not in (1,2):raise ValueError('Expected first or second difference')
+    coefficients_by_order = {1: (-1., 1.), 2: (1., -2., 1.), 3: (-1., 3., -3., 1.)}
+    if order not in coefficients_by_order:raise ValueError('Expected first, second or third difference')
+    coefficients = coefficients_by_order[order]
     if count<=order:return sparse.csr_matrix((0,count*columns))
     return sparse.kron(sparse.diags(coefficients,range(order+1),shape=(max(0,count-order),count)),
                        sparse.eye(columns),format='csr')
@@ -52,22 +53,48 @@ def soc_rows(jacobian, vectors, caps):
 def refine_feasible_trajectory(seed, columns, lower, upper, joint_step, joint_acceleration_step,
                                fps, hand_speed_caps, hand_acceleration_caps, sample, feasible,
                                iterations=100, progress=None,fixed_endpoints=(0,0),
-                               collision_fractions=(.5,),restore_collisions=False):
+                               collision_fractions=(.5,),restore_collisions=False,
+                               temporal_weights=(0.,0.,0.), restoration_quadratic_weight=0.,
+                               hand_temporal_weights=(0.,0.,0.)):
     """Minimize weighted pose residuals inside unchanged nonlinear constraints.
 
     sample(q) returns per-frame weighted residuals, torso-relative hand points,
     and frame/interpolation distances in collision_fractions order. feasible(q) is an
     independent nonlinear gate. A failed QP or line search returns the last
     accepted trajectory; it cannot replace it with an unchecked candidate.
+    An optional sample.jacobian(q, columns, epsilon) may batch the same central
+    differences and return residual, point, and distance derivatives with the
+    selected-joint dimension last. All nonlinear acceptance checks still apply.
+    restoration_quadratic_weight=2e8 selects the accepted batch squared-slack
+    restoration matching the nonlinear squared violation merit. Zero preserves
+    the historical linear slack penalty for existing callers.
+    hand_temporal_weights track derivatives of the provided hand residual in
+    meters per frame. A sampler may supply active_jacobian to restrict finite
+    differences to nearby distance components.
     """
     import clarabel
+    if not np.isfinite(restoration_quadratic_weight) or restoration_quadratic_weight < 0:
+        raise ValueError('Restoration quadratic weight must be finite and nonnegative')
     current=np.asarray(seed,dtype=np.float32).copy();columns=np.asarray(columns,dtype=int)
     joint_step=np.asarray(joint_step,dtype=float)
     joint_acceleration_step=np.asarray(joint_acceleration_step,dtype=float)
     count=len(current);width=len(columns);size=count*width
     if count<2 or not width or not feasible(current):raise ValueError('Refinement requires a feasible seed')
     d1=difference_matrix(count,width);d2=difference_matrix(count,width,2)
+    velocity_weight,acceleration_weight,jerk_weight=map(float,temporal_weights)
+    if min(temporal_weights)<0:raise ValueError('Temporal weights must be nonnegative')
+    d3=difference_matrix(count,width,3)
+    temporal=(velocity_weight*fps**2*(d1.T@d1)+acceleration_weight*fps**4*(d2.T@d2)+jerk_weight*fps**6*(d3.T@d3)).tocsc()
+    def temporal_score(q):
+        x=q[:,columns].astype(float).ravel()
+        return float(x@(temporal@x))/count
     hd1=difference_matrix(count,6);hd2=difference_matrix(count,6,2)
+    if len(hand_temporal_weights) != 3 or not np.isfinite(hand_temporal_weights).all() or min(hand_temporal_weights) < 0:
+        raise ValueError('Hand temporal weights must be three finite nonnegative values')
+    hd3 = difference_matrix(count, 6, 3)
+    hand_operators = [np.sqrt(weight)*op for weight, op in zip(hand_temporal_weights, (hd1, hd2, hd3)) if weight]
+    def hand_cost(points):
+        return sum(float(np.sum((op @ points.ravel())**2)) for op in hand_operators)/count
     identity=sparse.eye(size,format='csr')
     left,right=fixed_endpoints
     free_frame=np.ones(count,dtype=bool)
@@ -77,26 +104,37 @@ def refine_feasible_trajectory(seed, columns, lower, upper, joint_step, joint_ac
     residual,hand,distances=sample(current)
     violation=max(0.,.0005-float(distances.min()))
     collision_merit=float(np.maximum(.0005-distances,0).ravel()@np.maximum(.0005-distances,0).ravel())
-    score=float(np.sum(residual**2)/count);initial_score=score
+    score=float(np.sum(residual**2)/count)+temporal_score(current)+hand_cost(hand);initial_score=score
     trust=.08;history=[];accepted=0
+    active_jacobian = getattr(sample, 'active_jacobian', None)
+    cached_jacobian = None
+    small_steps = 0
     for iteration in range(iterations):
         # Simultaneous perturbation of one joint column in every frame exposes
         # block-diagonal local derivatives; midpoint rows use the chain rule.
-        rjac=[];hjac=[];cjac=[];epsilon=.0005
-        for column in columns:
-            plus=current.copy();minus=current.copy()
-            plus[:,column]+=epsilon;minus[:,column]-=epsilon
-            a=sample(plus);b=sample(minus)
-            rjac.append((a[0]-b[0])/(2*epsilon))
-            hjac.append((a[1]-b[1])/(2*epsilon))
-            cjac.append((a[2]-b[2])/(2*epsilon))
-        rjac=np.stack(rjac,-1);hjac=np.stack(hjac,-1);cjac=np.stack(cjac,-1)
+        epsilon=.0005
+        if active_jacobian is not None:
+            if cached_jacobian is None:
+                cached_jacobian = active_jacobian(current, columns, epsilon, np.flatnonzero((distances < .05).any(0)))
+            rjac,hjac,cjac=cached_jacobian
+        elif hasattr(sample, 'jacobian'):
+            rjac,hjac,cjac=sample.jacobian(current,columns,epsilon)
+        else:
+            rjac=[];hjac=[];cjac=[]
+            for column in columns:
+                plus=current.copy();minus=current.copy()
+                plus[:,column]+=epsilon;minus[:,column]-=epsilon
+                a=sample(plus);b=sample(minus)
+                rjac.append((a[0]-b[0])/(2*epsilon))
+                hjac.append((a[1]-b[1])/(2*epsilon))
+                cjac.append((a[2]-b[2])/(2*epsilon))
+            rjac=np.stack(rjac,-1);hjac=np.stack(hjac,-1);cjac=np.stack(cjac,-1)
         jr=sparse.block_diag(list(rjac.reshape(count,-1,width)),format='csr')
         jh=sparse.block_diag(list(hjac.reshape(count,6,width)),format='csr')
         jv=hd1@jh*fps;ja=hd2@jh*fps**2
         velocity=np.diff(hand,axis=0)*fps
         acceleration=np.diff(hand,n=2,axis=0)*fps**2
-        selected=np.where(distances<.15)
+        selected=np.where(distances<(.05 if active_jacobian is not None else .15))
         ac=local_rows(cjac,*selected,count,width,collision_fractions)
         # The nonlinear acceptance clearance remains 0.5 mm; linear subproblems
         # retain an extra small reserve instead of relaxing that requirement.
@@ -121,8 +159,14 @@ def refine_feasible_trajectory(seed, columns, lower, upper, joint_step, joint_ac
         lo=np.concatenate([lower_delta,-limits1-d1@x,-limits2-d2@x,bc])
         hi=np.concatenate([upper_delta,limits1-d1@x,limits2-d2@x,
                            np.full(ac.shape[0],np.inf)])
-        p=sparse.triu(2*(jr.T@jr)/count+.1*identity,format='csc')
-        gradient=2*np.asarray(jr.T@residual.ravel()).ravel()/count
+        hessian = jr.T@jr + temporal
+        linear_objective = jr.T@residual.ravel() + temporal@x
+        for op in hand_operators:
+            derivative = op @ jh
+            hessian = hessian + derivative.T @ derivative
+            linear_objective = linear_objective + derivative.T @ (op @ hand.ravel())
+        p=sparse.triu(2*hessian/count+.1*identity,format='csc')
+        gradient=2*np.asarray(linear_objective).ravel()/count
         restoration=restore_collisions and violation>1e-8
         slack_count=ac.shape[0] if restoration else 0
         if slack_count:
@@ -133,8 +177,9 @@ def refine_feasible_trajectory(seed, columns, lower, upper, joint_step, joint_ac
             a=sparse.hstack([a,slack],format='csc')
             a=sparse.vstack([a,sparse.hstack([sparse.csr_matrix((slack_count,size)),sparse.eye(slack_count)])],format='csc')
             lo=np.r_[lo,np.zeros(slack_count)];hi=np.r_[hi,np.full(slack_count,np.inf)]
-            p=sparse.block_diag([p,sparse.csc_matrix((slack_count,slack_count))],format='csc')
-            gradient=np.r_[np.zeros(size),np.full(slack_count,1e4/count)]
+            p=sparse.block_diag([p,sparse.eye(slack_count,format='csc')*(restoration_quadratic_weight/count)],format='csc')
+            gradient=(np.zeros(size+slack_count) if restoration_quadratic_weight else
+                      np.r_[np.zeros(size),np.full(slack_count,1e4/count)])
         finite_hi=np.isfinite(hi);finite_lo=np.isfinite(lo)
         linear=sparse.vstack([a[finite_hi],-a[finite_lo]],format='csc')
         rhs=np.r_[hi[finite_hi],-lo[finite_lo]]
@@ -143,8 +188,10 @@ def refine_feasible_trajectory(seed, columns, lower, upper, joint_step, joint_ac
             movable=np.asarray(abs(jac@free_columns).sum(axis=1)).reshape(-1,3).sum(-1)>1e-7
             caps[~movable]=np.maximum(caps[~movable],np.linalg.norm(base.reshape(-1,3),axis=-1)[~movable]+1e-8)
             return caps
-        av,bv=soc_rows(jv,velocity,caps_with_fixed_reserve(jv,velocity,hand_speed_caps))
-        aa,ba=soc_rows(ja,acceleration,caps_with_fixed_reserve(ja,acceleration,hand_acceleration_caps))
+        av,bv=(soc_rows(jv,velocity,caps_with_fixed_reserve(jv,velocity,hand_speed_caps))
+               if hand_speed_caps is not None else (sparse.csc_matrix((0,size)),np.empty(0)))
+        aa,ba=(soc_rows(ja,acceleration,caps_with_fixed_reserve(ja,acceleration,hand_acceleration_caps))
+               if hand_acceleration_caps is not None else (sparse.csc_matrix((0,size)),np.empty(0)))
         if slack_count:
             av=sparse.hstack([av,sparse.csr_matrix((av.shape[0],slack_count))],format='csc')
             aa=sparse.hstack([aa,sparse.csr_matrix((aa.shape[0],slack_count))],format='csc')
@@ -161,7 +208,7 @@ def refine_feasible_trajectory(seed, columns, lower, upper, joint_step, joint_ac
                 if left:candidate[:left]=current[:left]
                 if right:candidate[-right:]=current[-right:]
                 values=sample(candidate)
-                new_score=float(np.sum(values[0]**2)/count)
+                new_score=float(np.sum(values[0]**2)/count)+temporal_score(candidate)+hand_cost(values[1])
                 new_violation=max(0.,.0005-float(values[2].min()))
                 excess=np.maximum(.0005-values[2],0).ravel();new_merit=float(excess@excess)
                 improving=(new_score<score-1e-6)
@@ -171,6 +218,7 @@ def refine_feasible_trajectory(seed, columns, lower, upper, joint_step, joint_ac
                 if improving and feasible(candidate):
                     current=candidate;residual,hand,distances=values
                     score=new_score;violation=new_violation;collision_merit=new_merit;accepted+=1;found=True
+                    cached_jacobian = None
                     break
                 alpha*=.5
         entry={'iteration':iteration,'objective':score,'accepted':found,'step_fraction':alpha if found else 0.,
@@ -179,6 +227,11 @@ def refine_feasible_trajectory(seed, columns, lower, upper, joint_step, joint_ac
         history.append(entry)
         print('GESTURE_SQP',entry,flush=True)
         if progress:progress((iteration+1)/iterations,entry)
+        if active_jacobian is not None and not violation:
+            small_steps = small_steps + 1 if not found or np.max(np.abs(alpha*direction)) < 2e-5 else 0
+            if small_steps >= 2:break
+        else:
+            small_steps = 0
         if found:
             trust=min(.12,trust*1.2) if alpha>=.5 else max(.002,trust*.7)
         else:
@@ -186,7 +239,8 @@ def refine_feasible_trajectory(seed, columns, lower, upper, joint_step, joint_ac
             if trust<.0002:break
     if not feasible(current):raise RuntimeError('Feasible refinement lost its validated trajectory')
     return current,{'method':'sparse-feasible-trajectory-socp-v1','initial_objective':initial_score,
-                    'final_objective':score,'accepted_steps':accepted,'iterations':len(history),'history':history}
+                    'final_objective':score,'accepted_steps':accepted,'iterations':len(history),'history':history,
+                    'temporal_weights':list(temporal_weights)}
 
 
 def refine_feasible_windows(seed,columns,lower,upper,joint_step,joint_acceleration_step,fps,

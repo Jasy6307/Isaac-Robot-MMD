@@ -5,7 +5,7 @@ import sys
 import unittest
 import torch
 
-spec = importlib.util.spec_from_file_location("jump_checkpoint", Path(__file__).with_name("prepare_jump_checkpoint.py"))
+spec = importlib.util.spec_from_file_location("jump_checkpoint", Path(__file__).parents[1] / "scripts/prepare_jump_checkpoint.py")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 

@@ -6,13 +6,14 @@ from datetime import datetime
 import fnmatch
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
 import time
 
 ROOT = Path(__file__).resolve().parent
-TEST_DIRS = ("tests", "source/train_workflow/scripts", "source/pmx_prototype/tests")
+TEST_DIRS = ("tests", "source/train_workflow/tests", "source/pmx_prototype/tests")
 SUITES = ("cpu", "usd", "assets", "isaac")
 
 
@@ -68,7 +69,15 @@ def run_entry(entry, folder, timeout):
         except OSError as error:
             output.write(str(error))
             status = "failed"
-    return dict(**entry, status=status, returncode=code,
+    case_count = None
+    if entry['suite'] != 'isaac':
+        match = re.search(r'^Ran (\d+) tests?', logfile.read_text(encoding='utf-8'), re.MULTILINE)
+        case_count = int(match[1]) if match else 0
+        if status == 'passed' and not case_count:
+            status = 'failed'
+            with logfile.open('a', encoding='utf-8') as output:
+                output.write('\nNo unittest cases executed; check test discovery.\n')
+    return dict(**entry, status=status, returncode=code, case_count=case_count,
                 seconds=round(time.monotonic() - started, 2), log=str(logfile), command=command)
 
 

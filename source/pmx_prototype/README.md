@@ -4,6 +4,14 @@
 
 ## 代码导航
 
+第三轮预览合并见 [tools 导航](tools/README.md)：`preview_dance.py`、`preview_mutsumi.py` 共用一个实现；睦的缓存/裙摆/参考动作检查统一为 `diagnostics/character_cache.py cloth/temporal/reference`。旧入口保留，默认外观和物理不变。源码快照集中在 [第三轮压缩归档](../archive/script_round3_20261117/README.md)。
+
+实验控制见 [experiments/README.md](experiments/README.md)：9 个历史控制入口迁入工作流，继续采样与 transition 共用实现；正在运行的 balanced 实验原样保留。低速/转向等 14 个历史诊断归入 [7 类诊断模块](diagnostics/README.md)。统一发现入口为 `pmx.py experiments list` 与 `pmx.py diagnostics locomotion --help`；旧文件名继续兼容，新诊断结果另存。整理前源码及校验清单见 [历史快照](archive/experiments/locomotion_20261116_17/README.md)。
+
+G1 / Anon 同屏比较统一由 `play_g1_anon_comparison.py` 调用 `runtime/comparison_player.py`，支持原两列、三列、四列及附加 `--smooth-h5` 的五列。`--start-seconds/--end-seconds` 选择同步片段，录像音轨按源帧时间截取；`--dry-run` 只检查路径并输出布局，不启动 Kit。
+
+旧 `compare_girls_full_smooth.py`、`compare_girls_smooth_segment.py` 保留为薄入口，分别等同 `--preset girls-full` 与 `--preset girls-segment`；后者继续默认 16–21 秒五列比较。旧入口的列标签和原参数保持，角色外观、地面及音画时间轴共用同一实现。
+
 本目录同时保留当前运行链路与历史实验。先按下表定位入口；历史章节中的能力描述只对应当时阶段，当前外观和物理默认以本文开头的说明为准。
 
 | 功能 | 入口与公共实现 |

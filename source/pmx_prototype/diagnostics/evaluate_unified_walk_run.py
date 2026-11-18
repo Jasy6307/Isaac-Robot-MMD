@@ -12,7 +12,7 @@ import numpy as np
 import torch
 
 
-def suite(short=False,lite=False):
+def suite(short=False,lite=False,protocol='legacy_v1'):
     if short:return [('stand',5,[0,0,0]),('ramp_up',12,None),('run_forward',6,[1.2,0,0]),('ramp_down',12,None),('stand_end',6,[0,0,0])]
     if lite:
         result=[('stand',4,[0,0,0]),('walk',4,[.3,0,0]),('ramp_up_from_walk',8,None),
@@ -36,6 +36,8 @@ def suite(short=False,lite=False):
     for name,cmd in [('run_turn_left',[1.1,0,.6]),('run_turn_right',[1.1,0,-.6]),('reverse_turn',[-.9,0,.6]),('side_turn',[0,.9,-.6])]:
         result += [(name,8,cmd),('stop',5,[0,0,0])]
     result += [('stop',5,[0,0,0]),('pivot_left',6,[0,0,.6]),('pivot_right',6,[0,0,-.6]),('stand_end',40,[0,0,0])]
+    if protocol=='response_steady_v2':
+        result=[(label,7 if label=='stop' else seconds,cmd) for label,seconds,cmd in result]
     return result
 
 
@@ -73,19 +75,25 @@ def evaluate(env,runner,output,checkpoint):
     env.max_episode_length=round(2000/env.dt);env.reset(env.ids)
     infer=runner.get_inference_policy();short=env.cfg.get('unified_eval_short',False)
     lite=bool(env.cfg.get('unified_eval_lite',False))
+    protocol=env.cfg.get('unified_acceptance_protocol','legacy_v1')
+    if protocol not in ['legacy_v1','response_steady_v2']:raise ValueError('Unknown acceptance protocol: '+protocol)
+    response_steady=protocol=='response_steady_v2'
     foot_com=env.robot.get_coms()[0,env.foot_ids,:3].to(env.device)
     diagnostic=bool(env.cfg.get('unified_eval_cases'))
     if env.cfg.get('unified_eval_initial_command') is not None:
         if not diagnostic:raise ValueError('Reference-state start is only allowed for diagnostic subsets')
         env.reset(env.ids,command=env.cfg['unified_eval_initial_command'],phase=env.cfg.get('unified_eval_initial_phase',0.))
         env.refresh()
-    cases=env.cfg['unified_eval_cases'] if diagnostic else suite(short,lite)
+    cases=env.cfg['unified_eval_cases'] if diagnostic else suite(short,lite,protocol)
     traces={k:[] for k in ['poses','joints','commands','velocities','phases','dones']};labels=[];items=[]
     if heading_frame:traces['headings']=[]
     record_controller=bool(env.cfg.get('unified_record_controller'))
     if record_controller:traces.update(observations=[],actions=[],root=[],root_velocities=[])
+    if response_steady:traces.update(planned_commands=[],requested_commands=[],geometric_velocities=[])
     with torch.inference_mode():
         for label,seconds,fixed in cases:
+            trace_start=len(traces['velocities'])
+            initial_plan=env.continuous_ref_commands.mean(0).cpu().numpy().copy() if response_steady else None
             errors=[];body_errors=[];geometric_errors=[];yaw_errors=[];yaw_targets=[];speeds=[];metrics={};falls=0;flight=[];force_flight=[];force_peak=[];slip=[];geometric_slip=[];pelvis_yaws=[]
             position=env.root[:,:2].clone()
             previous_position=env.root[:,:3].clone()
@@ -110,6 +118,10 @@ def evaluate(env,runner,output,checkpoint):
                 pelvis_yaws.append(float(torch.atan2(2*(w*z+x*y),1-2*(y*y+z*z))))
                 for k,value in [('poses',p),('joints',q),('commands',env.commands),('velocities',v),('phases',phase),('dones',done)]:traces[k].append(value.cpu().numpy().copy())
                 labels.append(label);falls+=int((done&~extras['time_outs']).sum())
+                if response_steady:
+                    traces['planned_commands'].append(env.continuous_ref_commands.cpu().numpy().copy())
+                    traces['requested_commands'].append(np.asarray(cmd,dtype=np.float32))
+                    traces['geometric_velocities'].append(geometric.cpu().numpy().copy())
                 if step<60:continue
                 target=torch.tensor(cmd,device=env.device)
                 errors.append((v[:,:2]-target[:2]).mean(0).cpu().numpy());yaw_errors.append(float((v[:,2]-target[2]).mean()));speeds.append(float(v[:,:2].norm(dim=-1).mean()))
@@ -166,11 +178,20 @@ def evaluate(env,runner,output,checkpoint):
                 if max(force_peak)<50:raise RuntimeError('Ground-contact sensor returned no credible support load')
                 item.update(force_flight_fraction=float(np.mean(force_flight)),peak_total_support_force_n=max(force_peak),flight_force_threshold_n=1.,
                             force_sample_hz=env.cfg['physics_hz'] if env.cfg.get('unified_substep_support_forces') else 1/env.dt)
+            if response_steady:
+                from locomotion_acceptance import score_segment
+                item['legacy_passed']=item['passed']
+                item['response_steady']=score_segment(item,
+                    np.asarray(traces['velocities'][trace_start:]).mean(1),np.asarray(traces['planned_commands'][trace_start:]).mean(1),
+                    np.asarray(traces['requested_commands'][trace_start:]),np.asarray(traces['geometric_velocities'][trace_start:]).mean(1),
+                    initial_plan,env.cfg,env.dt)
+                item['passed']=item['response_steady']['passed']
             items.append(item);print('UNIFIED_SEGMENT '+json.dumps(item),flush=True)
     output.mkdir(parents=True,exist_ok=True)
     np.savez_compressed(output/'rollout.npz',**{k:np.asarray(v) for k,v in traces.items()},labels=labels,dt=env.dt,link_names=env.links,dof_names=env.names)
     all_segments_passed=all(i['passed'] for i in items)
     report=dict(checkpoint=str(checkpoint),env_config=env.cfg,total_seconds=sum(s for _,s,_ in cases),total_falls=sum(i['falls'] for i in items),
+                acceptance_protocol=protocol,
                 evaluator_sha256=hashlib.sha256(_Path(__file__).read_bytes()).hexdigest(),
                 segments=items,passed_unified_gate=all_segments_passed and not short and not lite and not diagnostic,
                 passed_lite_gate=all_segments_passed and lite and not diagnostic,passed_short_gate=all_segments_passed,
@@ -179,6 +200,14 @@ def evaluate(env,runner,output,checkpoint):
                 flight_acceptance_method='Both physical foot support loads below 1 N' if force_gate else 'Both sole boxes above 12 mm',
                 velocity_command_frame='Controller reference heading' if heading_frame else 'Instantaneous articulation root/chest frame',
                 method='One actor and normalizer; continuous speed-conditioned whole-body walk/run reference; physical residual PPO + AMP; no root assistance')
+    if response_steady:
+        from locomotion_acceptance import summarize,specification
+        assessment=summarize(items)
+        report.update(protocol_specification=specification(),response_steady_summary=assessment,
+            acceptance_protocol_sha256=hashlib.sha256(resolve_source('locomotion_acceptance.py').read_bytes()).hexdigest(),
+            legacy_metric_gate_on_same_trajectory=all(i['legacy_passed'] for i in items) and not short and not lite and not diagnostic,
+            legacy_comparison_scope='Original two-second metrics on this trajectory; v2 stop durations differ from the historical325-second suite.',
+            promising_lite_gate=assessment['promising'] and lite and not diagnostic)
     (output/'report.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
     print('UNIFIED_REPORT '+json.dumps(dict(mode=report['acceptance_mode'],passed=report['passed_unified_gate'],
         lite_passed=report['passed_lite_gate'],short_passed=report['passed_short_gate'],falls=report['total_falls'])),flush=True)

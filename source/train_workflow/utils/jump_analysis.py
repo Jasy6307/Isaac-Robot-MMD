@@ -6,6 +6,47 @@ from pathlib import Path
 import numpy as np
 
 
+def load_telemetry(path):
+    """Load one saved episode without keeping an NPZ file descriptor open."""
+    path = Path(path)
+    if path.is_dir():
+        path = path / 'samples.npz'
+    with np.load(path) as archive:
+        return dict(zip(archive['columns'].tolist(), archive['values'].T))
+
+
+def require_new_files(*paths):
+    """Reject existing report/image paths before producing either result."""
+    for path in map(Path, paths):
+        if path.exists():
+            raise FileExistsError(f'Result already exists; choose a new output: {path}')
+    for path in map(Path, paths):
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def new_diagnostic_output(profile, output=None):
+    from datetime import datetime
+    import os
+    from source.paths import REPO_ROOT
+    path = Path(output) if output else (Path(REPO_ROOT)/'output/g1_diagnostics'/profile/
+        (datetime.now().strftime('%Y%m%d_%H%M%S_%f')+f'_{os.getpid()}'))
+    path.mkdir(parents=True, exist_ok=output is not None)
+    return path
+
+
+def contact_window_metrics(data, start, end):
+    """Historical [start,end) reference-time window and ground-force telemetry."""
+    keep = (data['ref_time_s'] >= start) & (data['ref_time_s'] < end)
+    if keep.sum() < 10:
+        raise ValueError('Missing intended flight interval')
+    air = (data['both_feet_no_contact'] > 0) & keep
+    dt = float(np.median(np.diff(data['time_s'])))
+    return dict(no_contact_fraction=float(data['both_feet_no_contact'][keep].mean()),
+        longest_air_s=longest_run(air, dt),
+        height_rmse_m=float(np.sqrt(np.mean((data['root_z_m'][keep]-data['ref_root_z_m'][keep])**2))),
+        max_root_z_m=float(data['root_z_m'][keep].max()))
+
+
 def longest_run(mask, dt):
     edges = np.diff(np.r_[False, mask, False].astype(int))
     durations = (np.flatnonzero(edges == -1) - np.flatnonzero(edges == 1)) * dt

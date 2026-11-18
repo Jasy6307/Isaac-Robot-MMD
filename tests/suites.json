@@ -5,152 +5,152 @@
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_articulated_hand_collision.py",
+    "path": "source/train_workflow/tests/test_articulated_hand_collision.py",
     "area": "g1",
     "suite": "usd"
   },
   {
-    "path": "source/train_workflow/scripts/test_auto_jump.py",
+    "path": "source/train_workflow/tests/test_auto_jump.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_bounded_ppo.py",
+    "path": "source/train_workflow/tests/test_bounded_ppo.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_collision_reference.py",
+    "path": "source/train_workflow/tests/test_collision_reference.py",
     "area": "g1",
     "suite": "usd"
   },
   {
-    "path": "source/train_workflow/scripts/test_constrained_trajectory.py",
+    "path": "source/train_workflow/tests/test_constrained_trajectory.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_dance_asset_paths.py",
+    "path": "source/train_workflow/tests/test_dance_asset_paths.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_default_retarget.py",
+    "path": "source/train_workflow/tests/test_default_retarget.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_deployment_bundle.py",
+    "path": "source/train_workflow/tests/test_deployment_bundle.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_direct_upper_export.py",
+    "path": "source/train_workflow/tests/test_direct_upper_export.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_exact_phase_policy.py",
+    "path": "source/train_workflow/tests/test_exact_phase_policy.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_gesture_collision.py",
+    "path": "source/train_workflow/tests/test_gesture_collision.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_joint_constraints.py",
+    "path": "source/train_workflow/tests/test_joint_constraints.py",
     "area": "g1",
     "suite": "usd"
   },
   {
-    "path": "source/train_workflow/scripts/test_jump_checkpoint.py",
+    "path": "source/train_workflow/tests/test_jump_checkpoint.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_jump_diagnostics.py",
+    "path": "source/train_workflow/tests/test_jump_diagnostics.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_jump_reference.py",
+    "path": "source/train_workflow/tests/test_jump_reference.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_jump_terms.py",
+    "path": "source/train_workflow/tests/test_jump_terms.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_lower_body_ik.py",
+    "path": "source/train_workflow/tests/test_lower_body_ik.py",
     "area": "g1",
     "suite": "usd"
   },
   {
-    "path": "source/train_workflow/scripts/test_motion_audio.py",
+    "path": "source/train_workflow/tests/test_motion_audio.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_motion_feedback.py",
+    "path": "source/train_workflow/tests/test_motion_feedback.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_motion_quality.py",
+    "path": "source/train_workflow/tests/test_motion_quality.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_parallel_validation.py",
+    "path": "source/train_workflow/tests/test_parallel_validation.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_quality_selection.py",
+    "path": "source/train_workflow/tests/test_quality_selection.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_reference_objectives.py",
+    "path": "source/train_workflow/tests/test_reference_objectives.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_training_progress.py",
+    "path": "source/train_workflow/tests/test_training_progress.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_turn_smoothing.py",
+    "path": "source/train_workflow/tests/test_turn_smoothing.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_upper_body_ik.py",
+    "path": "source/train_workflow/tests/test_upper_body_ik.py",
     "area": "g1",
     "suite": "usd"
   },
   {
-    "path": "source/train_workflow/scripts/test_validation_camera.py",
+    "path": "source/train_workflow/tests/test_validation_camera.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_validation_recording.py",
+    "path": "source/train_workflow/tests/test_validation_recording.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_validation_reference.py",
+    "path": "source/train_workflow/tests/test_validation_reference.py",
     "area": "g1",
     "suite": "cpu"
   },
   {
-    "path": "source/train_workflow/scripts/test_vmd_pipeline.py",
+    "path": "source/train_workflow/tests/test_vmd_pipeline.py",
     "area": "g1",
     "suite": "cpu"
   },
@@ -251,5 +251,65 @@
       "--num_envs",
       "1"
     ]
+  },
+  {
+    "path": "source/pmx_prototype/tests/test_command_plan.py",
+    "area": "pmx",
+    "suite": "cpu"
+  },
+  {
+    "path": "source/pmx_prototype/tests/test_low_speed_acceptance.py",
+    "area": "pmx",
+    "suite": "cpu"
+  },
+  {
+    "path": "source/pmx_prototype/tests/test_transition_retention.py",
+    "area": "pmx",
+    "suite": "cpu"
+  },
+  {
+    "path": "source/pmx_prototype/tests/test_lateral_symmetry.py",
+    "area": "pmx",
+    "suite": "cpu"
+  },
+  {
+    "path": "source/pmx_prototype/tests/test_mirror_scratch_preparation.py",
+    "area": "pmx",
+    "suite": "cpu"
+  },
+  {
+    "path": "source/train_workflow/tests/test_temporal_smoothing.py",
+    "area": "g1",
+    "suite": "cpu"
+  },
+  {
+    "path": "source/train_workflow/tests/test_grounding_core.py",
+    "area": "g1",
+    "suite": "cpu"
+  },
+  {
+    "path": "source/train_workflow/tests/test_accepted_grounding.py",
+    "area": "g1",
+    "suite": "assets"
+  },
+  {
+    "path": "tests/test_script_consolidation.py",
+    "area": "infra",
+    "suite": "cpu"
+  },
+  {
+    "path": "tests/test_locomotion_script_consolidation.py",
+    "area": "infra",
+    "suite": "cpu"
+  },
+  {
+    "path": "tests/test_round3_consolidation.py",
+    "area": "infra",
+    "suite": "cpu"
+  },
+  {
+    "path": "tests/test_round3_asset_regression.py",
+    "area": "infra",
+    "suite": "assets"
   }
 ]

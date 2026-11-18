@@ -1,6 +1,6 @@
 """CPU regression checks for H5-free reference restoration.
 
-Run: python source/train_workflow/scripts/test_deployment_bundle.py
+Run: python source/train_workflow/tests/test_deployment_bundle.py
 """
 from __future__ import annotations
 

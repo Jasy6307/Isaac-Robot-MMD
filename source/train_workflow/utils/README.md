@@ -4,6 +4,10 @@ MMD → G1 流水线的**共享库**（非入口脚本）。被 `g1_vmd_0_replay
 
 G1 **机器人资产与执行器 PD** 配置在 `my_task/robots/`（`g1_29dof_o6_cfg.py`、`actuator_pd.py`），不在本目录。
 
+源鞋底高度与骨盆修复、固定根避碰平滑已整理为 [grounding/](grounding/README.md)，入口为 `scripts/g1_ground_motion.py`。它显式运行并另存输出；原有转换入口默认不变。
+
+保存遥测的离线分析由 `jump_reports.py`、`jump_comparison.py`、`turn_analysis.py` 实现，公用读取及接触窗口统计位于 `jump_analysis.py`，分类入口为 `scripts/g1_diagnostics.py`。三种历史腿部优化在 `motion/legacy_leg_full.py`、`legacy_leg_local.py`，共用数据读写与指标；优化器和拒绝导出条件分别保留，不能作为新版 grounding 的替代验收。
+
 ---
 
 ## 目录结构

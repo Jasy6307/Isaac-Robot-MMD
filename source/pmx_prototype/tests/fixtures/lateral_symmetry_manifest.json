@@ -1,0 +1,309 @@
+{
+  "joints": [
+    {
+      "name": "waist_yaw_joint",
+      "axis": "Z",
+      "limits_deg": [
+        -45,
+        45
+      ]
+    },
+    {
+      "name": "waist_roll_joint",
+      "axis": "Y",
+      "limits_deg": [
+        -25,
+        25
+      ]
+    },
+    {
+      "name": "waist_pitch_joint",
+      "axis": "X",
+      "limits_deg": [
+        -30,
+        35
+      ]
+    },
+    {
+      "name": "neck_yaw_joint",
+      "axis": "Z",
+      "limits_deg": [
+        -45,
+        45
+      ]
+    },
+    {
+      "name": "neck_pitch_joint",
+      "axis": "X",
+      "limits_deg": [
+        -25,
+        25
+      ]
+    },
+    {
+      "name": "left_hip_yaw_joint",
+      "axis": "Z",
+      "limits_deg": [
+        -45,
+        45
+      ]
+    },
+    {
+      "name": "left_hip_roll_joint",
+      "axis": "Y",
+      "limits_deg": [
+        -40,
+        40
+      ]
+    },
+    {
+      "name": "left_hip_pitch_joint",
+      "axis": "X",
+      "limits_deg": [
+        -100,
+        45
+      ]
+    },
+    {
+      "name": "left_knee_pitch_joint",
+      "axis": "X",
+      "limits_deg": [
+        -5,
+        145
+      ]
+    },
+    {
+      "name": "left_ankle_pitch_joint",
+      "axis": "X",
+      "limits_deg": [
+        -45,
+        45
+      ]
+    },
+    {
+      "name": "left_ankle_roll_joint",
+      "axis": "Y",
+      "limits_deg": [
+        -25,
+        25
+      ]
+    },
+    {
+      "name": "left_shoulder_pitch_joint",
+      "axis": "X",
+      "limits_deg": [
+        -100,
+        100
+      ]
+    },
+    {
+      "name": "left_shoulder_roll_joint",
+      "axis": "Y",
+      "limits_deg": [
+        -100,
+        100
+      ]
+    },
+    {
+      "name": "left_shoulder_yaw_joint",
+      "axis": "Z",
+      "limits_deg": [
+        -90,
+        90
+      ]
+    },
+    {
+      "name": "left_elbow_flex_joint",
+      "axis": "Z",
+      "limits_deg": [
+        -145,
+        145
+      ]
+    },
+    {
+      "name": "left_forearm_twist_joint",
+      "axis": "X",
+      "limits_deg": [
+        -90,
+        90
+      ],
+      "axis_vector": [
+        0.8149251374559451,
+        -0.036316798408605765,
+        -0.5784272732986903
+      ]
+    },
+    {
+      "name": "left_wrist_pitch_joint",
+      "axis": "X",
+      "limits_deg": [
+        -45,
+        45
+      ],
+      "axis_vector": [
+        -0.044520395494592406,
+        -0.9990084756322166,
+        0.0
+      ]
+    },
+    {
+      "name": "left_wrist_deviation_joint",
+      "axis": "X",
+      "limits_deg": [
+        -45,
+        45
+      ],
+      "axis_vector": [
+        -0.5778537485622242,
+        0.02575181097211638,
+        -0.8157339575524868
+      ]
+    },
+    {
+      "name": "right_hip_yaw_joint",
+      "axis": "Z",
+      "limits_deg": [
+        -45,
+        45
+      ]
+    },
+    {
+      "name": "right_hip_roll_joint",
+      "axis": "Y",
+      "limits_deg": [
+        -40,
+        40
+      ]
+    },
+    {
+      "name": "right_hip_pitch_joint",
+      "axis": "X",
+      "limits_deg": [
+        -100,
+        45
+      ]
+    },
+    {
+      "name": "right_knee_pitch_joint",
+      "axis": "X",
+      "limits_deg": [
+        -5,
+        145
+      ]
+    },
+    {
+      "name": "right_ankle_pitch_joint",
+      "axis": "X",
+      "limits_deg": [
+        -45,
+        45
+      ]
+    },
+    {
+      "name": "right_ankle_roll_joint",
+      "axis": "Y",
+      "limits_deg": [
+        -25,
+        25
+      ]
+    },
+    {
+      "name": "right_shoulder_pitch_joint",
+      "axis": "X",
+      "limits_deg": [
+        -100,
+        100
+      ]
+    },
+    {
+      "name": "right_shoulder_roll_joint",
+      "axis": "Y",
+      "limits_deg": [
+        -100,
+        100
+      ]
+    },
+    {
+      "name": "right_shoulder_yaw_joint",
+      "axis": "Z",
+      "limits_deg": [
+        -90,
+        90
+      ]
+    },
+    {
+      "name": "right_elbow_flex_joint",
+      "axis": "Z",
+      "limits_deg": [
+        -145,
+        145
+      ]
+    },
+    {
+      "name": "right_forearm_twist_joint",
+      "axis": "X",
+      "limits_deg": [
+        -90,
+        90
+      ],
+      "axis_vector": [
+        -0.8149292858067542,
+        -0.03631683390690145,
+        -0.5784214265649849
+      ]
+    },
+    {
+      "name": "right_wrist_pitch_joint",
+      "axis": "X",
+      "limits_deg": [
+        -45,
+        45
+      ],
+      "axis_vector": [
+        -0.044520212745788545,
+        0.999008483776324,
+        0.0
+      ]
+    },
+    {
+      "name": "right_wrist_deviation_joint",
+      "axis": "X",
+      "limits_deg": [
+        -45,
+        45
+      ],
+      "axis_vector": [
+        0.5778479123364237,
+        0.025751444967395627,
+        -0.8157381033705168
+      ]
+    }
+  ],
+  "key_names": [
+    "waist_pitch",
+    "head",
+    "left_knee_pitch",
+    "right_knee_pitch",
+    "left_ankle_roll",
+    "right_ankle_roll",
+    "left_hand",
+    "right_hand"
+  ],
+  "offsets": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.125,
+    0.6875
+  ]
+}

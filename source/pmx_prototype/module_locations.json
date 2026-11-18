@@ -140,5 +140,11 @@
   "secondary_profiles_catalog.json": "configs/physics/secondary_profiles_catalog.json",
   "preview_dance.py": "tools/preview_dance.py",
   "dance_pose_interpolation.py": "runtime/dance_pose_interpolation.py",
-  "pivot_stability.py": "training/pivot_stability.py"
+  "pivot_stability.py": "training/pivot_stability.py",
+  "continuation_normalization.py": "training/continuation_normalization.py",
+  "retention_anchor.py": "training/retention_anchor.py",
+  "command_plan.py": "training/command_plan.py",
+  "low_speed_commands.py": "training/low_speed_commands.py",
+  "locomotion_acceptance.py": "training/locomotion_acceptance.py",
+  "lateral_symmetry.py": "training/lateral_symmetry.py"
 }

@@ -9,12 +9,25 @@ import os
 import shutil
 import json
 import tempfile
+import time
 from pathlib import Path
 
 import torch
 
 FORMAT = "g1-dance-deployment"
 VERSION = 1
+
+
+def _atomic_replace(source, target):
+    """Keep atomic publication when Windows briefly holds a recently read file."""
+    for attempt in range(6):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError as error:
+            if getattr(error, 'winerror', None) not in (5, 32, 33) or attempt == 5:
+                raise
+            time.sleep(min(.01 * 2**attempt, .1))
 
 
 def atomic_copy_file(source, target):
@@ -24,7 +37,7 @@ def atomic_copy_file(source, target):
     os.close(fd)
     try:
         shutil.copyfile(source,temporary)
-        os.replace(temporary,target)
+        _atomic_replace(temporary,target)
     finally:
         if os.path.exists(temporary):os.unlink(temporary)
 
@@ -35,7 +48,7 @@ def atomic_write_json(target, value):
     try:
         with os.fdopen(fd,"w",encoding="utf-8") as stream:
             json.dump(value,stream,ensure_ascii=False,indent=2)
-        os.replace(temporary,target)
+        _atomic_replace(temporary,target)
     finally:
         if os.path.exists(temporary):os.unlink(temporary)
 
@@ -55,7 +68,7 @@ def save_bundle(path, *, checkpoint_path, reference, env_cfg, agent_cfg, task, d
     os.close(fd)
     try:
         torch.save(payload, temporary)
-        os.replace(temporary, target)
+        _atomic_replace(temporary, target)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)

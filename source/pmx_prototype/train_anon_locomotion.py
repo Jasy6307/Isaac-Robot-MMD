@@ -40,6 +40,7 @@ parser.add_argument('--acceptance-interval',type=int,default=500,help='Scratch e
 parser.add_argument('--scratch-acceptance-mode',choices=['staged','full-every-checkpoint'],default='staged',help='Staged mode screens often and reserves the complete suite for periodic, promising and final checkpoints')
 parser.add_argument('--scratch-full-interval',type=int,default=2500,help='Staged mode: run full acceptance at least every N completed iterations')
 parser.add_argument('--scratch-continue-after-pass',action='store_true',help='Keep collecting the agreed sample budget after a passing scratch checkpoint')
+parser.add_argument('--resume-audit-only',action='store_true',help='Verify compatible checkpoint setup and exit before learning')
 parser.add_argument('--experiment-output',type=Path,help='Scratch experiment acceptance and timing records')
 parser.add_argument('--scratch-target',choices=['continuous_wrists','latest_unified'],default='continuous_wrists',help='Acceptance target for a fresh random initialization')
 args = parser.parse_args()
@@ -385,6 +386,8 @@ def main():
     if args.curriculum_iterations is not None: config['curriculum_iterations'] = args.curriculum_iterations
     if args.config_override:
         config.update(json.loads(args.config_override.read_text(encoding='utf-8')))
+    if config.get('unified_walk_run'):
+        config.setdefault('unified_acceptance_protocol','response_steady_v2')
     if args.mode=='eval' and config.get('unified_walk_run'):
         for key in ['measure_ground_contact','unified_eval_force_flight','unified_substep_support_forces','unified_command_frame_metrics']:
             config.setdefault(key,True)
@@ -431,6 +434,9 @@ def main():
             cfg['algorithm']['entropy_coef']=.003
         if 'train_entropy_coef' in env.cfg:
             cfg['algorithm']['entropy_coef']=env.cfg['train_entropy_coef']
+        if env.cfg.get('train_lateral_mirror',False):
+            from lateral_symmetry import configure
+            configure(cfg,env)
         (run/'agent_config.json').write_text(json.dumps(cfg, indent=2), encoding='utf-8')
         copy_sources(run, (
             'anon_locomotion_env.py', 'train_anon_locomotion.py',
@@ -441,11 +447,16 @@ def main():
         ))
         copy_sources(run, ['anon_config_compat.py'])
         if env.cfg.get('amp_enabled'):copy_sources(run, ['amp_motion_prior.py'])
+        if env.cfg.get('train_lateral_mirror',False) or env.cfg.get('amp_mirror_augmentation',False):
+            copy_sources(run, ['lateral_symmetry.py'])
         if env.cfg.get('unified_walk_run'):
             copy_sources(run, ['unified_walk_run_reference.py','evaluate_unified_walk_run.py'])
         if env.cfg.get('articulated_wrists'):
             copy_sources(run, ['build_anon_v4.py','physical_character.py','migrate_articulated_policy.py'])
         runner = OnPolicyRunner(env, copy.deepcopy(cfg), log_dir=str(run), device='cuda:0')
+        if env.cfg.get('train_lateral_mirror',False):
+            from lateral_symmetry import install_normalization
+            install_normalization(runner,env)
         if args.from_scratch and env.cfg.get('train_learning_rate'):
             runner.alg.learning_rate=float(env.cfg['train_learning_rate'])
             for group in runner.alg.optimizer.param_groups:group['lr']=runner.alg.learning_rate
@@ -457,10 +468,16 @@ def main():
             from anon_scratch_validation import ScratchValidation
             copy_sources(run, ['anon_scratch_validation.py'])
             scratch=ScratchValidation(run,args.experiment_output,args.acceptance_interval,ROOT,continuation=args.scratch_continuation,target=args.scratch_target,
-                                      acceptance_mode=args.scratch_acceptance_mode,full_interval=args.scratch_full_interval)
+                                      acceptance_mode=args.scratch_acceptance_mode,full_interval=args.scratch_full_interval,
+                                      protocol=env.cfg.get('unified_acceptance_protocol','legacy_v1'))
             if args.from_scratch:scratch.audit_initialization(runner,env)
         if args.checkpoint:
             migration = load_policy(runner, env, args.checkpoint)
+            resume_identity=None
+            if env.cfg.get('train_audit_resume_identity'):
+                if migration:raise ValueError('Identity audit requires a compatible checkpoint')
+                from continuation_normalization import capture,audit
+                resume_identity=capture({'actor':runner.alg.actor,'critic':runner.alg.critic},env.get_observations())
             if migration: (run/'migration.json').write_text(json.dumps(migration, indent=2), encoding='utf-8')
             runner.current_learning_iteration += 1
             env.iteration = runner.current_learning_iteration
@@ -505,6 +522,9 @@ def main():
             copy_sources(run,['training/unified_teacher_anchor.py'])
             install(runner,env)
         floor=0. if env.cfg.get('train_freeze_obs_normalization') else env.cfg.get('imitation_normalizer_std_floor',0.)
+        # A compatible checkpoint already owns its normalization mapping.
+        # Re-flooring or resetting count here changes the loaded policy.
+        if args.checkpoint and not migration:floor=0.
         if floor:
             for model in [runner.alg.actor,runner.alg.critic]:
                 state=model.state_dict()
@@ -514,6 +534,18 @@ def main():
                         elif name.endswith('_std'):value.clamp_(min=floor)
                         elif name.endswith('count'):value.fill_(10000.)
                 model.load_state_dict(state)
+        if args.checkpoint and resume_identity is not None:
+            identity=audit({'actor':runner.alg.actor,'critic':runner.alg.critic},resume_identity)
+            (run/'resume_identity_audit.json').write_text(json.dumps(identity,indent=2),encoding='utf-8')
+            runner.save(str(run/'initial_preserved.pt'))
+        if args.resume_audit_only:
+            if not args.checkpoint or resume_identity is None:raise ValueError('Audit-only requires checkpoint and train_audit_resume_identity')
+            env.close()
+            return
+        if env.cfg.get('train_retention_weight',0.):
+            if not args.checkpoint:raise ValueError('Retention requires a loaded teacher checkpoint')
+            from retention_anchor import install
+            install(runner,env)
         original_log = runner.logger.log
         if env.cfg.get('train_normalization_rebase'):runner.save(str(run/'initial_rebased.pt'))
         if args.from_scratch and scratch.evaluate(runner,0,0.):

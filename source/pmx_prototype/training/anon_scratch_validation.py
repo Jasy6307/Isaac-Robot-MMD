@@ -43,7 +43,7 @@ def averages(reports):
 
 class ScratchValidation:
     def __init__(self, run, output, interval, root, continuation=False,target='continuous_wrists',
-                 acceptance_mode='staged',full_interval=2500):
+                 acceptance_mode='staged',full_interval=2500,protocol='legacy_v1'):
         self.run,self.output,self.root=Path(run).resolve(),Path(output).resolve(),Path(root)
         self.output.mkdir(parents=True,exist_ok=True);self.target=target
         self.interval=interval;self.validation_seconds=0.;self.history=[];self.training_offset=0.
@@ -57,25 +57,29 @@ class ScratchValidation:
                     if previous.get('full_evaluated'):
                         self.last_full_iteration=previous['completed_iterations']
                     if previous.get('acceptance_kind')=='lite_screen':
-                        self.lite_pass_streak=self.lite_pass_streak+1 if previous.get('lite_passed') else 0
+                        self.lite_pass_streak=self.lite_pass_streak+1 if previous.get('lite_promising',previous.get('lite_passed')) else 0
                     elif previous.get('full_evaluated'):
                         self.lite_pass_streak=0
         if target=='latest_unified':
             baseline_path=self.root/'output/anon_locomotion/unified_walk_run/full8_final_cpu/report.json'
             self.unified_baseline={item['label']:item for item in json.loads(baseline_path.read_text(encoding='utf-8'))['segments']}
-            plan=dict(interval_iterations=interval,baseline_report=str(baseline_path),
+            from evaluate_unified_walk_run import suite
+            duration=sum(s[1] for s in suite(protocol=protocol))
+            plan=dict(interval_iterations=interval,baseline_report=str(baseline_path),acceptance_protocol=protocol,
                 required_slip_reduction_fraction=.20,minimum_baseline_speed_retention=.95,
-                official_suite='325-second complete latest unified walk/run acceptance',
+                official_suite=f'{duration}-second complete latest unified walk/run acceptance',
                 required_slip_segments=['run_backward','run_left','run_right'],
                 timing_rule='First passing sampled checkpoint is an upper bound; acceptance pauses excluded from active training time.')
             if continuation:
                 previous=json.loads((self.output/'acceptance_plan.json').read_text(encoding='utf-8'))
+                if previous.get('acceptance_protocol','legacy_v1')!=protocol:
+                    raise ValueError('A new acceptance protocol requires separate versioned acceptance records')
                 for key in ('acceptance_mode','full_interval_iterations'):
                     if previous.get(key)!=({'acceptance_mode':acceptance_mode,'full_interval_iterations':full_interval}[key]):
                         raise ValueError(f'Scratch continuation cannot change {key}')
             plan.update(acceptance_mode=acceptance_mode,full_interval_iterations=full_interval,
                 lightweight_suite='117-second screen across speed transition, all travel directions, turns, pivots and standing',
-                schedule='Screen every interval; full suite every full interval, after two consecutive passing screens, and at the final iteration. Screens never count as official acceptance.')
+                schedule='Screen every interval; full suite every full interval, after two consecutive promising screens, and at the final iteration. Inconclusive screens can trigger full measurement but never grant acceptance.')
             write_json(self.output/'acceptance_plan.json',plan)
             return
         base=self.root/'output/anon_locomotion/continuous_wrists'
@@ -218,7 +222,8 @@ class ScratchValidation:
         else:
             reports['lite']=run_suite('lite',True)
             lite_checks=measure_slip(reports['lite'])
-            lite_passed=bool(reports['lite'].get('passed_lite_gate') and reports['lite']['total_falls']==0 and all(v['passed'] for v in lite_checks.values()))
+            screen=reports['lite'].get('promising_lite_gate',reports['lite'].get('passed_lite_gate'))
+            lite_passed=bool(screen and reports['lite']['total_falls']==0 and all(v['passed'] for v in lite_checks.values()))
             self.lite_pass_streak=self.lite_pass_streak+1 if lite_passed else 0
             candidate_full=(self.acceptance_mode=='staged' and self.lite_pass_streak>=2 and
                             completed-self.last_full_iteration>=self.interval)
@@ -233,6 +238,8 @@ class ScratchValidation:
         if full_report:self.last_full_iteration=completed;self.lite_pass_streak=0
         selected_path=(base/'unified'/'report.json') if full_report else (base/'lite'/'report.json')
         item=dict(completed_iterations=completed,active_training_seconds=active_seconds,checkpoint=str(checkpoint),
+            acceptance_protocol=report.get('acceptance_protocol','legacy_v1'),
+            lite_promising=bool(reports.get('lite',{}).get('promising_lite_gate',lite_passed) and reports.get('lite',{}).get('total_falls',1)==0),
             acceptance_kind='full' if full_report else 'lite_screen',full_evaluated=bool(full_report),
             official_passed=official if full_report else False,lite_passed=lite_passed,
             lite_pass_streak=self.lite_pass_streak,slip_checks=slip_checks,slip_passed=slip_passed,

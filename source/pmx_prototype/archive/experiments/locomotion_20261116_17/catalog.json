@@ -1,0 +1,140 @@
+[
+  {
+    "original": "source/pmx_prototype/training/compare_anon_parallelism.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/training/compare_anon_parallelism.py",
+    "sha256": "3eb03fc84890acb879fac84632625691a5a08eba550f299664dff5a4f0f644e7",
+    "lines": 162
+  },
+  {
+    "original": "source/pmx_prototype/training/compare_retention_strength.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/training/compare_retention_strength.py",
+    "sha256": "d5264580309c75c98c38db5e9757f5357b3d1f6299b4c1463a5d28d1d6a47eb7",
+    "lines": 115
+  },
+  {
+    "original": "source/pmx_prototype/training/continue_sampling_pivot.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/training/continue_sampling_pivot.py",
+    "sha256": "191c1bde8e894b8e0886b6664d1d479e9f29fabe6e02c3b5124398e22d27a638",
+    "lines": 129
+  },
+  {
+    "original": "source/pmx_prototype/training/limit_split_scratch.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/training/limit_split_scratch.py",
+    "sha256": "4efa4b7c75178b7246d517ec554508dc3908964844dfbd4bfe00f7e616c6ffea",
+    "lines": 151
+  },
+  {
+    "original": "source/pmx_prototype/training/resume_split_scratch.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/training/resume_split_scratch.py",
+    "sha256": "58227fa9b58b3fc01938d83504ef7581f277aea1321fafa54c339cfac13d4a5a",
+    "lines": 88
+  },
+  {
+    "original": "source/pmx_prototype/training/run_pivot_ablation_preserved.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/training/run_pivot_ablation_preserved.py",
+    "sha256": "0e873fa8de694a8a192b465ddf6b8d1df51cc867c42c4b88fe6f7b26d6bc67ff",
+    "lines": 97
+  },
+  {
+    "original": "source/pmx_prototype/training/run_pivot_recovery_check.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/training/run_pivot_recovery_check.py",
+    "sha256": "9350dbd2a65980796f7674926f9c0640da282e1896295e75e45c84315602f719",
+    "lines": 115
+  },
+  {
+    "original": "source/pmx_prototype/training/run_split_scratch.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/training/run_split_scratch.py",
+    "sha256": "82de8816b91d4b572b13cfccff9988c75b02fde4e7afdf9f360d9f4ed36b8e7e",
+    "lines": 153
+  },
+  {
+    "original": "source/pmx_prototype/training/run_transition_retention.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/training/run_transition_retention.py",
+    "sha256": "ccf433704a1b339131024e3dfcd3ce6bf07921f0ce2d90f76aca705a334a25fd",
+    "lines": 15
+  },
+  {
+    "original": "source/pmx_prototype/diagnostics/audit_low_speed_rewards.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/diagnostics/audit_low_speed_rewards.py",
+    "sha256": "fd945465096fb4057f64de497a703d7a992f85f6e40f1036aa2d42956dd008ee",
+    "lines": 107
+  },
+  {
+    "original": "source/pmx_prototype/diagnostics/audit_low_speed_sampling.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/diagnostics/audit_low_speed_sampling.py",
+    "sha256": "16fb261d840e31be2a9dddbbd0804ed7abbf7bd50de2c22d18c4c64222d3f560",
+    "lines": 71
+  },
+  {
+    "original": "source/pmx_prototype/diagnostics/audit_reference_kinematics.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/diagnostics/audit_reference_kinematics.py",
+    "sha256": "2e0ab8a6a2d49c1a0866ef8d08c14bc3a8fdb514c8aaf422385273fa2de1996e",
+    "lines": 96
+  },
+  {
+    "original": "source/pmx_prototype/diagnostics/audit_response_windows.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/diagnostics/audit_response_windows.py",
+    "sha256": "c6a80ebd7b3f0cdacce76cb8042bc7ded5e8a61cc61cbeabaf3317bdaf8d29b6",
+    "lines": 86
+  },
+  {
+    "original": "source/pmx_prototype/diagnostics/audit_scratch_acceptance_limits.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/diagnostics/audit_scratch_acceptance_limits.py",
+    "sha256": "f67ec0a3dad1a705890455446578967a70f12785e7819a0b9f9c4c30b003b04d",
+    "lines": 96
+  },
+  {
+    "original": "source/pmx_prototype/diagnostics/audit_transition_chain.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/diagnostics/audit_transition_chain.py",
+    "sha256": "5fb8ffbaded575e34ef60db196ed43331129659745b51361721eddea3f19ce88",
+    "lines": 84
+  },
+  {
+    "original": "source/pmx_prototype/diagnostics/compare_command_plans.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/diagnostics/compare_command_plans.py",
+    "sha256": "8aff99133d566119806ca0827e01ac61d438f1636e149cf555dd6c0c44d3fc45",
+    "lines": 87
+  },
+  {
+    "original": "source/pmx_prototype/diagnostics/compare_split_command_plans.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/diagnostics/compare_split_command_plans.py",
+    "sha256": "1558dac3dce4ec85e7ed1fa065478646263e92d699aa6ca1ef77998c613d724d",
+    "lines": 132
+  },
+  {
+    "original": "source/pmx_prototype/diagnostics/diagnose_tracking_margin.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/diagnostics/diagnose_tracking_margin.py",
+    "sha256": "ca9f6b95e63afca6d599dfb07b8d9135e1f172f522c755e00928b900bc6ff6fe",
+    "lines": 52
+  },
+  {
+    "original": "source/pmx_prototype/diagnostics/repeat_reverse_turn.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/diagnostics/repeat_reverse_turn.py",
+    "sha256": "c5cb8cff49dc038834b5e854e61b98e213051fc257403d24345e9fcae1013a60",
+    "lines": 54
+  },
+  {
+    "original": "source/pmx_prototype/diagnostics/replay_acceptance_v2.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/diagnostics/replay_acceptance_v2.py",
+    "sha256": "b4dec7b40c9b337ed0f7346290169c682442eab4323569afc668d533057dbfed",
+    "lines": 53
+  },
+  {
+    "original": "source/pmx_prototype/diagnostics/smoke_acceptance_v2.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/diagnostics/smoke_acceptance_v2.py",
+    "sha256": "fe405f7481971bcd6c7a1fd2ba444f014dba1d55e7cfed55057693b0cb287665",
+    "lines": 45
+  },
+  {
+    "original": "source/pmx_prototype/diagnostics/summarize_low_speed_diagnosis.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/diagnostics/summarize_low_speed_diagnosis.py",
+    "sha256": "304637bef88a046fbbacef95b37422b1ecc424249f97bc89387d892cd554b9c9",
+    "lines": 92
+  },
+  {
+    "original": "source/pmx_prototype/diagnostics/verify_low_speed_fix.py",
+    "snapshot": "source/pmx_prototype/archive/experiments/locomotion_20261116_17/diagnostics/verify_low_speed_fix.py",
+    "sha256": "e92ac7af63955baaa7f5c4f96828b6ed7c4e09a92c7399454639f3b7480c5621",
+    "lines": 33
+  }
+]

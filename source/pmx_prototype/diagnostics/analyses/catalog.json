@@ -1,0 +1,114 @@
+{
+  "audit_low_speed_sampling": {
+    "family": "sampling",
+    "inference": false,
+    "entry": "diagnostics/audit_low_speed_sampling.py",
+    "builder": "build_audit_low_speed_sampling",
+    "action": "audit",
+    "default_input": "output/anon_locomotion/low_speed_diagnosis_20261117"
+  },
+  "verify_low_speed_fix": {
+    "family": "sampling",
+    "inference": false,
+    "entry": "diagnostics/verify_low_speed_fix.py",
+    "builder": "build_verify_low_speed_fix",
+    "action": "verify",
+    "default_input": "output/anon_locomotion/low_speed_fix_20261117"
+  },
+  "audit_response_windows": {
+    "family": "response",
+    "inference": false,
+    "entry": "diagnostics/audit_response_windows.py",
+    "builder": "build_audit_response_windows",
+    "action": "windows",
+    "default_input": "output/anon_locomotion/low_speed_diagnosis_20261117"
+  },
+  "replay_acceptance_v2": {
+    "family": "response",
+    "inference": false,
+    "entry": "diagnostics/replay_acceptance_v2.py",
+    "builder": "build_replay_acceptance_v2",
+    "action": "replay",
+    "default_input": "output/anon_locomotion/low_speed_diagnosis_20261117"
+  },
+  "audit_reference_kinematics": {
+    "family": "reference",
+    "inference": false,
+    "entry": "diagnostics/audit_reference_kinematics.py",
+    "builder": "build_audit_reference_kinematics",
+    "action": "kinematics",
+    "default_input": "output/anon_locomotion/low_speed_diagnosis_20261117"
+  },
+  "audit_transition_chain": {
+    "family": "reference",
+    "inference": false,
+    "entry": "diagnostics/audit_transition_chain.py",
+    "builder": "build_audit_transition_chain",
+    "action": "transition",
+    "default_input": "output/anon_locomotion/transition_chain_20261116"
+  },
+  "compare_command_plans": {
+    "family": "planner",
+    "inference": true,
+    "entry": "diagnostics/compare_command_plans.py",
+    "builder": "build_compare_command_plans",
+    "action": "compare",
+    "default_input": "output/anon_locomotion/command_plan_tests_20261116"
+  },
+  "compare_split_command_plans": {
+    "family": "planner",
+    "inference": true,
+    "entry": "diagnostics/compare_split_command_plans.py",
+    "builder": "build_compare_split_command_plans",
+    "action": "split",
+    "default_input": "output/anon_locomotion/split_command_tests_20261117"
+  },
+  "diagnose_tracking_margin": {
+    "family": "tracking",
+    "inference": true,
+    "entry": "diagnostics/diagnose_tracking_margin.py",
+    "builder": "build_diagnose_tracking_margin",
+    "action": "margin",
+    "default_input": "output/anon_locomotion/tracking_margin_diagnosis_20261116"
+  },
+  "repeat_reverse_turn": {
+    "family": "tracking",
+    "inference": true,
+    "entry": "diagnostics/repeat_reverse_turn.py",
+    "builder": "build_repeat_reverse_turn",
+    "action": "reverse",
+    "default_input": "output/anon_locomotion/reverse_turn_diagnosis_20261116"
+  },
+  "audit_scratch_acceptance_limits": {
+    "family": "acceptance",
+    "inference": false,
+    "entry": "diagnostics/audit_scratch_acceptance_limits.py",
+    "builder": "build_audit_scratch_acceptance_limits",
+    "action": "limits",
+    "default_input": "output/anon_locomotion/low_speed_diagnosis_20261117"
+  },
+  "smoke_acceptance_v2": {
+    "family": "acceptance",
+    "inference": true,
+    "entry": "diagnostics/smoke_acceptance_v2.py",
+    "builder": "build_smoke_acceptance_v2",
+    "action": "smoke",
+    "default_input": "output/anon_locomotion/low_speed_fix_20261117"
+  },
+  "audit_low_speed_rewards": {
+    "family": "reporting",
+    "inference": false,
+    "entry": "diagnostics/audit_low_speed_rewards.py",
+    "builder": "build_audit_low_speed_rewards",
+    "action": "rewards",
+    "default_input": "output/anon_locomotion/low_speed_diagnosis_20261117"
+  },
+  "summarize_low_speed_diagnosis": {
+    "family": "reporting",
+    "inference": false,
+    "entry": "diagnostics/summarize_low_speed_diagnosis.py",
+    "builder": "build_summarize_low_speed_diagnosis",
+    "action": "summary",
+    "default_input": "output/anon_locomotion/low_speed_diagnosis_20261117"
+  }
+}

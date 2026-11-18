@@ -208,7 +208,7 @@ def main(argv=None):
     if args.collision_correction:
         mesh_directory=h5.parent/(h5.stem+'.hand-mesh-audit')
         run_step('3b/5 Full-motion visible hand mesh validation',[sys.executable,
-            scripts/'audit_hand_meshes.py','--h5',h5,'--output',mesh_directory,'--fail-on-intersection'])
+            scripts/'audit_full_meshes.py','--pair-scope','hands','--h5',h5,'--output',mesh_directory,'--fail-on-intersection'])
         mesh_audit_path=mesh_directory/'mesh_scan.json'
         mesh_result=json.loads(mesh_audit_path.read_text(encoding='utf-8'))
         if (not mesh_result.get('passed') or mesh_result.get('h5_sha256')!=hashlib.sha256(h5.read_bytes()).hexdigest()

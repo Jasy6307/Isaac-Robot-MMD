@@ -11,11 +11,13 @@ def commands():
     result = {}
     paths = set(MODULE_LOCATIONS.values())
     paths.update(p.name for p in SOURCE_DIR.glob('*.py'))
+    for category in ('training', 'diagnostics', 'tools'):
+        paths.update(p.relative_to(SOURCE_DIR).as_posix() for p in (SOURCE_DIR/category).glob('*.py'))
     for relative in sorted(paths):
         if relative.startswith(('tests/', 'runtime/')):
             continue
         path = SOURCE_DIR / relative
-        if path.suffix != '.py' or path.name == 'pmx.py':
+        if path.suffix != '.py' or path.name in ('pmx.py', '__init__.py', 'workspace.py'):
             continue
         text = path.read_text(encoding='utf-8-sig')
         if ('ArgumentParser(' not in text and "__main__" not in text
@@ -28,11 +30,18 @@ def commands():
 
 
 def main():
-    available = commands()
     arguments = sys.argv[1:]
+    if arguments and arguments[0] == 'experiments':
+        from source.pmx_prototype.experiments.__main__ import main as experiments
+        return experiments(arguments[1:])
+    if arguments[:2] == ['diagnostics', 'locomotion']:
+        from source.pmx_prototype.diagnostics.locomotion_tools import main as diagnostics
+        return diagnostics(arguments[2:])
+    available = commands()
     if not arguments or arguments[0] in ('list', '--list', '--help', '-h'):
         print('Usage: python source/pmx_prototype/pmx.py <tool> [arguments...]')
         print('       python source/pmx_prototype/pmx.py <category> <tool> [arguments...]\n')
+        print('Grouped: experiments list | diagnostics locomotion --help\n')
         for name, (relative, description) in available.items():
             print(f'{name:36} {relative:58} {description}')
         return
@@ -55,4 +64,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

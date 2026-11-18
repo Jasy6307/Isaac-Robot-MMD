@@ -20,6 +20,7 @@
 
 - [架构与代码导航](source/OVERVIEW.md)：G1 与 PMX 两条链路、主要入口、模块职责、配置和数据边界。
 - [统一测试指南](TESTING.md)：`python run_tests.py` 默认运行 CPU 测试；USD、本地资产与 Isaac 冒烟分别显式选择。
+- [修复 IK 与固定根避碰平滑](source/train_workflow/utils/grounding/README.md)：显式处理入口、几何版本、硬验收及认可片段的只读回归。
 - [PMX 角色说明](source/pmx_prototype/README.md)与[已验收回放](source/pmx_prototype/PLAYBACK.md)：角色预览、外观、物理、录像及当前入口。
 
 ## 项目简介

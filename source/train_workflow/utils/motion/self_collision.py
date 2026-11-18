@@ -319,7 +319,7 @@ class G1CollisionModel:
             result[base]=((lo+hi)/2,(hi-lo)/2+.001)
         return result
 
-    def distances(self, rotations, positions):
+    def distances(self, rotations, positions, pair_indices=None):
         r = torch.stack([rotations[s.name] for s in self.shapes], dim=1)
         p = torch.stack([positions[s.name] for s in self.shapes], dim=1)
         local_a=self.local_a[None].expand(len(r),-1,-1).clone()
@@ -327,6 +327,9 @@ class G1CollisionModel:
         start = (r @ local_a[..., None]).squeeze(-1) + p
         end = (r @ local_b[..., None]).squeeze(-1) + p
         cp, bp, bb = self.capsule_pairs, self.box_pairs, self.box_box_pairs
+        if pair_indices is not None:
+            wanted = torch.as_tensor(pair_indices, device=self.device, dtype=torch.long)
+            cp, bp, bb = (pairs[torch.isin(pairs[:, 0], wanted)] for pairs in (cp, bp, bb))
         cap_dist = self._segment_distance(start[:, cp[:, 1]], end[:, cp[:, 1]], start[:, cp[:, 2]], end[:, cp[:, 2]]) - self.radii[cp[:, 1]] - self.radii[cp[:, 2]]
         a, b = start[:, bp[:, 1]], end[:, bp[:, 1]]
         points = a[:, :, None] + self.sample_t[None, None, :, None] * (b - a)[:, :, None]

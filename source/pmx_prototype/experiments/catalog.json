@@ -1,0 +1,52 @@
+{
+  "compare_anon_parallelism": {
+    "entry": "source/pmx_prototype/training/compare_anon_parallelism.py",
+    "implementation": "source/pmx_prototype/experiments/workflows/compare_anon_parallelism.py",
+    "status": "historical-inactive"
+  },
+  "compare_retention_strength": {
+    "entry": "source/pmx_prototype/training/compare_retention_strength.py",
+    "implementation": "source/pmx_prototype/experiments/workflows/compare_retention_strength.py",
+    "status": "historical-inactive"
+  },
+  "continue_sampling_pivot": {
+    "entry": "source/pmx_prototype/training/continue_sampling_pivot.py",
+    "implementation": "source/pmx_prototype/experiments/workflows/continue_sampling_pivot.py",
+    "status": "historical-inactive"
+  },
+  "limit_split_scratch": {
+    "entry": "source/pmx_prototype/training/limit_split_scratch.py",
+    "implementation": "source/pmx_prototype/experiments/workflows/limit_split_scratch.py",
+    "status": "historical-inactive"
+  },
+  "resume_split_scratch": {
+    "entry": "source/pmx_prototype/training/resume_split_scratch.py",
+    "implementation": "source/pmx_prototype/experiments/workflows/resume_split_scratch.py",
+    "status": "historical-inactive"
+  },
+  "run_pivot_ablation_preserved": {
+    "entry": "source/pmx_prototype/training/run_pivot_ablation_preserved.py",
+    "implementation": "source/pmx_prototype/experiments/workflows/run_pivot_ablation_preserved.py",
+    "status": "historical-inactive"
+  },
+  "run_pivot_recovery_check": {
+    "entry": "source/pmx_prototype/training/run_pivot_recovery_check.py",
+    "implementation": "source/pmx_prototype/experiments/workflows/run_pivot_recovery_check.py",
+    "status": "historical-inactive"
+  },
+  "run_split_scratch": {
+    "entry": "source/pmx_prototype/training/run_split_scratch.py",
+    "implementation": "source/pmx_prototype/experiments/workflows/run_split_scratch.py",
+    "status": "historical-inactive"
+  },
+  "run_transition_retention": {
+    "entry": "source/pmx_prototype/training/run_transition_retention.py",
+    "implementation": "source/pmx_prototype/experiments/workflows/continue_sampling_pivot.py",
+    "status": "historical-inactive"
+  },
+  "run_balanced_scratch": {
+    "entry": "source/pmx_prototype/training/run_balanced_scratch.py",
+    "implementation": "preserved in place",
+    "status": "active-preserved"
+  }
+}

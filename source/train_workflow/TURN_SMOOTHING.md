@@ -1,5 +1,7 @@
 # 有支撑转身阶段的残差平滑试验
 
+离线 `analyze_turn.py`、`compare_turn_smoothing.py` 已共用 `utils/turn_analysis.py`，统一入口为 `scripts/g1_diagnostics.py turn analyze/compare`；原命令与导入继续兼容。分析默认另存新目录，使用 `--output-dir` 指定输出；比较可通过 `--control-diagnostics`、`--treatment-diagnostics` 引用这些独立分析结果。`diagnose_turn.py` 的采集和 `train_turn_smoothing.py` 的训练实验不在本轮合并范围内。
+
 默认关闭，训练入口可用 `--turn_smoothing` 显式启用。旧策略、物理参数、参考表和部署包不修改。
 
 位置目标仍为原公式 `q_cmd=q_ref+residual`，没有推理滤波或限速。新增两项训练代价：

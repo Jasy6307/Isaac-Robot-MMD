@@ -8,10 +8,12 @@
 | --- | --- | --- |
 | `cpu`（默认） | 算法、数据读写、配置、工作流编排、IPC 与回归测试 | 项目 Python 依赖；部分测试使用 CPU PyTorch、RSL-RL、SciPy、Clarabel、Pillow 和 FFmpeg，无需启动 Kit |
 | `usd` | 机器人几何、关节限制、上下肢 IK、碰撞修正 | CPU 依赖、可导入的 `pxr`、仓库内 G1 USD；不启动 Kit |
-| `assets` | 当前角色预览预设、舞蹈清单和策略目录验证 | 本机 `media/`、`output/`、`policy/` 等实际资源；不启动 Kit |
+| `assets` | 当前角色预览预设、舞蹈清单、策略目录和认可动作回归 | 本机 `media/`、`output/`、`policy/` 等实际资源；动作几何回归另需 `pxr`；不启动 Kit |
 | `isaac` | 现有 `smoke_isaac61.py`：单环境、60 步、无窗口仿真 | 已配置的 Isaac Sim 6.1 / Lab 3、兼容驱动及运行环境 |
 
 分类以整个测试文件的最重依赖为准。`assets` 文件中的部分断言虽然是纯逻辑，整文件仍需本地资源。纯 CPU 表示不运行仿真/GPU，不表示仅依赖 Python 标准库。视频测试会调用 FFmpeg，IPC 测试会使用回环 socket。
+
+第三轮脚本整理回归：`tests/test_round3_consolidation.py` 用合成遥测和源码压缩快照对照原数值、完整离线报告、旧入口参数和 H5 通道保留；`tests/test_round3_asset_regression.py` 单独登记为 assets，对照本机认可预览参数、真实 USD 缓存和旧腿部策略的单步结果及拒绝导出行为。源码快照属于仓库内测试证据；本地实验/成品数据依赖仅放在 assets 层，两者均不启动 Kit 或训练。
 
 建议使用项目已有 Python 环境。补齐离线测试辅助依赖可安装 `python -m pip install -e ".[test]"`；此 extra 不安装或升级 Isaac、PyTorch、RSL-RL 和 USD，请按 [环境说明](CONDA_ISAAC61.md) 配置这些版本。缺依赖、缺资源或断言失败均原样报告失败，不会静默跳过。
 
@@ -36,12 +38,18 @@ python run_tests.py --suite isaac --list
 
 ## 增加或调整测试
 
-1. G1 测试继续放在 `source/train_workflow/scripts/test_*.py`，PMX 放在 `source/pmx_prototype/tests/test_*.py`；入口自身测试放在 `tests/test_*.py`。
+1. G1 测试继续放在 `source/train_workflow/tests/test_*.py`，PMX 放在 `source/pmx_prototype/tests/test_*.py`；入口自身测试放在 `tests/test_*.py`。
 2. 在 [tests/suites.json](tests/suites.json) 登记 `path`、`suite`、`area`。清单检查会拒绝漏登记、重复登记和不存在的文件，避免新测试悄悄漏跑。
 3. 每个测试文件按 unittest 标准组织。新增需要真实仿真的脚本时，显式登记到 `isaac` 并提供有限步数参数；不要自动收集所有 `validate_*` 或训练入口。
 4. 修改依赖、增加本地资产访问时同步调整分层。旧的直接执行和 unittest discover 命令仍可用，但它们不经过此分层筛选。
 
+G1 测试已从 `scripts/` 迁入 `source/train_workflow/tests/`，旧直接执行命令应更新文件路径，旧 discover 命令改为 `-s source/train_workflow/tests`。工具的历史入口兼容规则见 [工具导航](source/train_workflow/scripts/README.md)。
+
 推荐日常先运行 CPU 层；修改 USD 几何/IK 时加 USD 层；改角色资源配置时加 assets；改仿真适配、初始化或场景流程时再运行 Isaac 冒烟。60 步冒烟不代表 PPO 训练验收或画面质量验收。
+
+采样回归使用 `source/pmx_prototype/tests/fixtures/` 内冻结配置和历史期望数组，CPU 测试不再读取本地训练实验目录。`test_command_plan.py` 已按 unittest 组织，确保实际执行规划不变量检查；入口将零用例发现视为失败，并在汇总中记录 `case_count`。
+
+修复 IK 与避碰平滑的合成坐标/通道/恢复测试归入 CPU；六份已认可动作的只读回归 `test_accepted_grounding.py` 归入 assets。完整目标重建、组装回放及有限步求解验证见 [grounding 回归说明](source/train_workflow/utils/grounding/README.md)。
 
 ## IPC 超时与执行环境
 

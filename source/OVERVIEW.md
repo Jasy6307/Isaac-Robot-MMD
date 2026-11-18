@@ -2,6 +2,10 @@
 
 本文描述当前工作区的模块边界。使用说明见 [根 README](../README.md)，测试分层与依赖见 [TESTING.md](../TESTING.md)。
 
+第三轮脚本整理：G1 保存遥测的七个离线报告入口共用 `utils/jump_reports.py`、`jump_comparison.py`、`turn_analysis.py`，由 `scripts/g1_diagnostics.py` 分类调用；三种旧腿部处理由两个 legacy 模块实现。PMX 预览共用 `tools/dance_preview.py`，睦的 USD 缓存检查共用 `diagnostics/character_cache.py`。15 个旧入口保留为薄壳，整理前源码集中保存为 [压缩快照](archive/script_round3_20261117/README.md)。
+
+PMX 实验编排统一在 [experiments](pmx_prototype/experiments/README.md)，低速、转向与验收诊断统一在 [diagnostics](pmx_prototype/diagnostics/README.md)。前者保留历史预算/恢复检查，后者按七类组织并分离历史输入与新结果；训练环境、采样与验收核心不随编排迁移。运行中的 balanced 控制器及 tracking probe 暂留原位置。
+
 ## 两条主要链路
 
 - **G1 动作跟踪**：VMD → CSV → 重定向/约束处理 → H5 参考轨迹 → PPO 训练 → checkpoint → 策略验证与录像。
@@ -38,6 +42,9 @@ flowchart LR
 | 角色策略训练与播放 | [train_anon_locomotion.py](pmx_prototype/train_anon_locomotion.py)、[play_anon_policy.py](pmx_prototype/play_anon_policy.py)、[inspect_anon_policy.py](pmx_prototype/inspect_anon_policy.py) | [角色运动训练](pmx_prototype/ANON_LOCOMOTION.md) |
 | 分类工具发现 | [pmx.py](pmx_prototype/pmx.py) 的 `list` 子命令 | [分类配置](pmx_prototype/configs/README.md) |
 | 测试与冒烟验证 | [run_tests.py](../run_tests.py) | [测试指南](../TESTING.md) |
+| 修复脚底 IK、固定根避碰平滑 | [g1_ground_motion.py](train_workflow/scripts/g1_ground_motion.py) | [正式模块与回归范围](train_workflow/utils/grounding/README.md) |
+| G1 / Anon 多列比较与片段录像 | [play_g1_anon_comparison.py](pmx_prototype/play_g1_anon_comparison.py) | `--preset standard/girls-full/girls-segment`，共享运行时支持 2–5 列 |
+| 网格 FCL 复查 | [audit_full_meshes.py](train_workflow/scripts/audit_full_meshes.py) | `--pair-scope hands/all`；历史手部入口保留兼容 |
 
 ## 模块职责与现有依赖
 
@@ -48,9 +55,11 @@ flowchart LR
 | `train_workflow/utils/format/` | CSV/H5 读写；目前 CSV 插值、重定向和 H5 编译也在此处 |
 | `train_workflow/utils/retarget/`、`ik/` | 关节映射、上下肢重定向、足部 FK/IK |
 | `train_workflow/utils/motion/` | 动作解析、来源追踪、同步、关节约束和碰撞修正 |
+| `train_workflow/utils/grounding/` | 已认可的源鞋底/骨盆修复、固定根 SQP、几何版本与硬验收；显式入口运行 |
+| `train_workflow/tests/` | G1 单元、USD 与认可成品测试；[工具导航](train_workflow/scripts/README.md)独立维护 CLI |
 | `train_workflow/utils/playback/`、`media/` | 回放控制辅助、状态写入、录制、伴音与视频合成 |
 | `train_workflow/utils/` 顶层 | 训练控制、质量验收、进度、checkpoint、部署和验证录像 |
-| `train_workflow/ui/` | Isaac UI 面板与回调；`scripts/` 包含离线工具及历史位置的 G1 单元测试 |
+| `train_workflow/ui/` | Isaac UI 面板与回调；`scripts/` 包含离线工具；`tests/` 存放 G1 分层测试 |
 | `pmx_prototype/runtime/` | 外观、角色语义、头发/裙摆物理、音频、实时物理 worker 与场景辅助 |
 | `pmx_prototype/training/` | 角色环境、策略通信、检查器、AMP 和训练辅助 |
 | `pmx_prototype/motion/` | 动作参考、重定向、参考库构建与处理 |

@@ -71,6 +71,10 @@ class AnonImitationEnv(AnonLocomotionEnv):
             reference_q=self.motion.data['q'][2] if self.motion.bank else self.motion.data['q']
             if self.cfg.get('unified_walk_run'):reference_q=self.motion.data['q'].flatten(0,1)
             self.amp_reference_std=reference_q[:,self.q_order].std(0).clamp_min(self.cfg.get('amp_phase_std_floor',.04))
+            if self.cfg.get('amp_mirror_augmentation',False):
+                from lateral_symmetry import AnatomicalMirror,paired_reference_std
+                mirror=self.amp.mirror if hasattr(self,'amp') else AnatomicalMirror.from_env(self)
+                self.amp_reference_std=paired_reference_std(reference_q[:,self.q_order],mirror,self.cfg.get('amp_phase_std_floor',.04))
         self.imitation_ready=True
         self.reset(self.ids);self.refresh()
 
@@ -271,7 +275,13 @@ class AnonImitationEnv(AnonLocomotionEnv):
                 pelvis_q=ref['local_pelvis_rotation']
                 velocity_delta=quat_rotate_inverse(ref['heading_quaternion'],velocity_delta)
             obs=torch.cat([obs,actual,pelvis_q,velocity_delta],-1)
-        return TensorDict({'policy':obs.clamp(-20,20)},batch_size=[self.num_envs],device=self.device)
+        observations={'policy':obs.clamp(-20,20)}
+        if self.cfg.get('train_lateral_mirror',False) and not self.evaluation:
+            from lateral_symmetry import eligibility
+            # Rollout metadata only: the actor/critic still consume exactly248
+            # policy channels. Preserve planner eligibility through shuffling.
+            observations['mirror_eligible']=eligibility(self)
+        return TensorDict(observations,batch_size=[self.num_envs],device=self.device)
 
     def step(self,actions):
         reward_diagnostics=not (self.evaluation and self.cfg.get('runtime_inference_only',False))
@@ -292,11 +302,8 @@ class AnonImitationEnv(AnonLocomotionEnv):
             old_near=(old_heights<old_bottom[:,:,None]+.003)&(old_bottom[:,:,None]<self.cfg.get('contact_height_threshold_m',.012))
         self.previous_actions.copy_(self.actions);self.actions.copy_(actions.clamp(-2,2))
         if self.cfg.get('continuous_commands'):
-            difference=self.commands-self.continuous_ref_commands
-            delta=difference*(1-np.exp(-self.dt/.35))
-            length=delta[:,:2].norm(dim=-1).clamp_min(1e-6)
-            delta[:,:2]*=(.6*self.dt/length).clamp(max=1)[:,None]
-            delta[:,2]=delta[:,2].clamp(-1.2*self.dt,1.2*self.dt)
+            from command_plan import command_increment
+            delta=command_increment(self.commands,self.continuous_ref_commands,self.dt,self.cfg)
             self.continuous_ref_rate=delta/self.dt
             self.continuous_ref_commands+=delta
         self.blend_age+=self.dt/self.cfg.get('imitation_blend_seconds',.6)
@@ -454,7 +461,7 @@ class AnonImitationEnv(AnonLocomotionEnv):
                 low=(speed>.02)&(speed<.16)
                 reward+=self.cfg['continuous_low_speed_pose_weight']*(torch.exp(-key_error/.004)+torch.exp(-orientation_error/.03))*low
         pivot_terms=None
-        if self.cfg.get('unified_pivot_training',False):
+        if self.cfg.get('unified_pivot_rewards',self.cfg.get('unified_pivot_training',False)):
             from pivot_stability import pivot_stability_terms
             pivot_terms=pivot_stability_terms(self.commands,self.continuous_ref_commands,bottom,
                                               ref['contacts'],self.root_vel,self.cfg)

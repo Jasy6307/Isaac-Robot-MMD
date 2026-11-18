@@ -83,20 +83,23 @@ def sample_track(keys, count):
     pos[frames[-1]:] = keys[frames[-1]][0]
     quat[frames[-1]:] = keys[frames[-1]][1]
     for a, b in zip(frames, frames[1:]):
+        if a >= count:
+            break
+        end = min(b+1, count)
         pa, qa, _ = keys[a]
         pb, qb, curve = keys[b]
         if b == a+1:
             # Dense VMD tracks have no interior integer sample to interpolate.
-            pos[a], pos[b] = pa, pb
-            quat[a], quat[b] = qa, qb
+            pos[a:end] = [pa, pb][:end-a]
+            quat[a:end] = [qa, qb][:end-a]
             continue
-        progress = np.arange(b-a+1) / (b-a)
+        progress = np.arange(end-a) / (b-a)
         for axis in range(3):
             parameters = [curve[axis + k] for k in (0, 4, 8, 12)]
-            pos[a:b+1, axis] = pa[axis] + (pb[axis] - pa[axis]) * bezier(progress, parameters)
+            pos[a:end, axis] = pa[axis] + (pb[axis] - pa[axis]) * bezier(progress, parameters)
         parameters = [curve[3 + k] for k in (0, 4, 8, 12)]
         amount = bezier(progress, parameters)
-        quat[a:b+1] = Slerp([0, 1], Rotation.from_quat([qa, qb]))(amount).as_quat()
+        quat[a:end] = Slerp([0, 1], Rotation.from_quat([qa, qb]))(amount).as_quat()
     return pos, Rotation.from_quat(quat).as_quat()
 
 
@@ -114,7 +117,8 @@ def align_vectors(source, destination):
     return Rotation.from_quat(q)
 
 
-def bake(pmx, vmd, asset, output, leg_mode='ik', translation_scale=1.0, stance_reference=None, leg_clearance=False):
+def bake(pmx, vmd, asset, output, leg_mode='ik', translation_scale=1.0, stance_reference=None,
+         leg_clearance=False, *, max_frames=None):
     vmd = resolve_dance_asset(vmd)
     if leg_mode not in ('fk', 'ik'):
         raise ValueError('leg_mode must be fk or ik')
@@ -122,6 +126,10 @@ def bake(pmx, vmd, asset, output, leg_mode='ik', translation_scale=1.0, stance_r
     bones = model['bones']
     tracks, switches, metadata = read_motion(vmd)
     count = max(max(keys) for keys in tracks.values()) + 1
+    if max_frames is not None:
+        if max_frames < 1:
+            raise ValueError('A baked prefix must contain at least one frame')
+        count = min(count, max_frames)
     stage = Usd.Stage.Open(str(asset))
     skeleton = UsdSkel.Skeleton.Get(stage, '/Character/Skeleton')
     names = list(skeleton.GetJointNamesAttr().Get())
@@ -367,6 +375,7 @@ if __name__ == '__main__':
     parser.add_argument('--translation-scale', type=float, default=1.0,
                         help='Scale VMD translations into PMX model units before IK; rotations are unchanged')
     parser.add_argument('--leg-clearance', action='store_true', help='Fit bare-leg collision proxies and solve minimum smooth outward IK padding')
+    parser.add_argument('--max-frames', type=int, help='Bake only the first N frames at 30 fps')
     parser.add_argument('--stance-reference', type=Path,
                         help='Optional PMX reference for normalized left/right foot IK rest spacing')
     args = parser.parse_args()
@@ -375,4 +384,4 @@ if __name__ == '__main__':
     bake(args.pmx.resolve(), args.vmd.resolve(), args.asset.resolve(), args.output.resolve(), leg_mode=args.leg_mode,
          translation_scale=args.translation_scale,
          stance_reference=args.stance_reference.resolve() if args.stance_reference else None,
-         leg_clearance=args.leg_clearance)
+         leg_clearance=args.leg_clearance, max_frames=args.max_frames)

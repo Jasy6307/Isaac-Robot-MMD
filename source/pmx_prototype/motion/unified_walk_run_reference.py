@@ -236,7 +236,7 @@ def sample_commands(env,ids,on_reset=False):
             left=assigned&(torch.rand(n,device=device)<.5)
             cmd[left,:2]*=-1
     pivot_hold=None
-    if cfg.get('unified_pivot_training',False) and not env.evaluation:
+    if cfg.get('unified_pivot_sampling',cfg.get('unified_pivot_training',False)) and not env.evaluation:
         # Apply after directional pools and stop sampling: these commands must
         # never be overwritten by the running curriculum or zero-yaw branch.
         first=round(100*cfg.get('unified_backward_env_fraction',0.))+round(100*cfg.get('unified_right_env_fraction',0.))
@@ -263,6 +263,22 @@ def sample_commands(env,ids,on_reset=False):
         if not on_reset:magnitude=torch.where(reverse&(previous.abs()>1e-4),previous.abs().clamp(minimum_yaw,maximum_yaw),magnitude)
         cmd[reserved,:2]=0.;cmd[reserved,2]=(sign*magnitude)[reserved]
         pivot_hold=(reserved,float(cfg.get('unified_pivot_hold_seconds',6.))+torch.rand(n,device=device)*float(cfg.get('unified_pivot_hold_jitter_seconds',2.)))
+    transition_hold=None
+    if cfg.get('unified_transition_env_fraction',0.) and not env.evaluation:
+        first=(round(100*cfg.get('unified_backward_env_fraction',0.))+round(100*cfg.get('unified_right_env_fraction',0.))+
+               round(100*cfg.get('unified_pivot_env_fraction',0.))+round(100*cfg.get('unified_reversal_env_fraction',0.)))
+        count=round(100*cfg['unified_transition_env_fraction'])
+        if count<0 or first+count>100:raise ValueError('Transition pool overlaps reserved environments')
+        selected=(ids.remainder(100)>=first)&(ids.remainder(100)<first+count)
+        if not hasattr(env,'transition_stage'):
+            env.transition_stage=torch.zeros(env.num_envs,device=device,dtype=torch.long)
+        selected_ids=ids[selected]
+        if on_reset:
+            env.transition_stage[selected_ids]=torch.randint(3,(len(selected_ids),),device=device)
+        else:env.transition_stage[selected_ids]=(env.transition_stage[selected_ids]+1)%3
+        bank=torch.tensor([[1.1,0.,.6],[1.1,0.,-.6],[-.9,0.,.6]],device=device)
+        cmd[selected]=bank[env.transition_stage[selected_ids]]
+        transition_hold=selected
     if env.evaluation:cmd.zero_()
     env.commands[ids]=cmd;env.command_age[ids]=0.
     if not hasattr(env,'unified_command_hold'):env.unified_command_hold=torch.zeros(env.num_envs,device=device)
@@ -271,4 +287,9 @@ def sample_commands(env,ids,on_reset=False):
     if pivot_hold is not None:
         reserved,hold=pivot_hold
         env.unified_command_hold[ids[reserved]]=hold[reserved]
-    if on_reset:env.continuous_ref_commands[ids]=cmd
+    if transition_hold is not None:
+        env.unified_command_hold[ids[transition_hold]]=float(cfg.get('unified_transition_hold_seconds',5.))+torch.rand(int(transition_hold.sum()),device=device)*float(cfg.get('unified_transition_hold_jitter_seconds',1.))
+    if not env.evaluation:
+        from low_speed_commands import apply_low_speed_pools
+        apply_low_speed_pools(env,ids,on_reset)
+    if on_reset:env.continuous_ref_commands[ids]=env.commands[ids]
