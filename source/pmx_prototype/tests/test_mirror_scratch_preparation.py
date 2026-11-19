@@ -11,7 +11,10 @@ SOURCE=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(SOURCE))
 import source_layout
 import prepare_mirror_scratch as prepared
+import run_balanced_scratch as controller
+from evaluate_unified_walk_run import LOW_SPEED_SECONDS,suite
 from lateral_symmetry import configure
+from locomotion_acceptance import CURRENT_PROTOCOL
 
 
 class PreparationTests(unittest.TestCase):
@@ -33,7 +36,18 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(config['train_mirror_loss_coeff'],0.)
         self.assertEqual(config['train_leg_std'],.08)
         self.assertFalse(config.get('train_retention_weight'))
-        self.assertEqual(config['unified_acceptance_protocol'],'response_steady_v2')
+        self.assertEqual(config['unified_acceptance_protocol'],CURRENT_PROTOCOL)
+
+    def test_latest_suite_explicitly_covers_backward_walk(self):
+        config=dict(unified_acceptance_protocol=CURRENT_PROTOCOL,
+                    unified_idle_head_acceptance=True,unified_eval_backward_walk=True)
+        durations=controller.acceptance_durations(config)
+        for lite,duration in [(True,durations['lightweight_suite_seconds']),
+                              (False,durations['complete_suite_seconds'])]:
+            cases=suite(lite=lite,protocol=config['unified_acceptance_protocol'],idle_head=True,backward_walk=True)
+            self.assertIn(('walk_backward',8,[-.4,0,0]),cases)
+            self.assertIn('run_backward',[label for label,_,_ in cases])
+            self.assertEqual(sum(seconds for _,seconds,_ in cases)+(0 if lite else LOW_SPEED_SECONDS),duration)
 
     def test_zero_coefficient_explicitly_disables_loss(self):
         env=SimpleNamespace(cfg=dict(train_lateral_mirror=True,train_mirror_augmentation=True,train_mirror_loss_coeff=0.))

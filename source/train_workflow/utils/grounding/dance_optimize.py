@@ -66,7 +66,7 @@ def _collision_reference(run, folder, problem, desired, geometry, retries):
             return candidate, audit, mesh
         if attempt == retries:
             break
-        frames = audit['proxy_bad_frames'] + audit['foot_height_bound_bad_frames']
+        frames = list(audit['proxy_bad_frames']) + list(audit['foot_height_bound_bad_frames'])
         if mesh is not None:
             for hit in mesh['unexpected']:
                 geometry.add(hit['pair'])
@@ -159,6 +159,7 @@ def _arm_motion(run, folder, problem, baseline, source, desired, geometry, retri
                    final=quality, motion=audit, mesh=mesh, decisions=decisions, candidate=str(candidate.path)))
         if mesh is not None and not mesh['unexpected']:
             return candidate, audit, mesh, quality
+        mesh_frames.extend(audit.get('proxy_bad_frames', []))
         if not quality['flagged_frames'] and not mesh_frames:
             raise RuntimeError('Arm candidate failed encoded motion acceptance')
         current = candidate.q

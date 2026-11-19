@@ -18,6 +18,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--mode', choices=['train', 'eval', 'smoke', 'reference'], default='train')
 parser.add_argument('--num-envs', type=int, default=2048)
 parser.add_argument('--iterations', type=int, default=1800)
+parser.add_argument('--ppo-mini-batches', type=int, help='Set PPO mini-batches per epoch for this training run')
 parser.add_argument('--checkpoint', type=Path)
 parser.add_argument('--run-dir', type=Path)
 parser.add_argument('--output', type=Path, default=ROOT/'output/anon_locomotion/evaluation')
@@ -40,10 +41,17 @@ parser.add_argument('--acceptance-interval',type=int,default=500,help='Scratch e
 parser.add_argument('--scratch-acceptance-mode',choices=['staged','full-every-checkpoint'],default='staged',help='Staged mode screens often and reserves the complete suite for periodic, promising and final checkpoints')
 parser.add_argument('--scratch-full-interval',type=int,default=2500,help='Staged mode: run full acceptance at least every N completed iterations')
 parser.add_argument('--scratch-continue-after-pass',action='store_true',help='Keep collecting the agreed sample budget after a passing scratch checkpoint')
+parser.add_argument('--scratch-low-speed-after-full-pass',action='store_true',
+                    help='Enable the separate low-speed probe when reproducing the v2 acceptance flow')
 parser.add_argument('--resume-audit-only',action='store_true',help='Verify compatible checkpoint setup and exit before learning')
 parser.add_argument('--experiment-output',type=Path,help='Scratch experiment acceptance and timing records')
 parser.add_argument('--scratch-target',choices=['continuous_wrists','latest_unified'],default='continuous_wrists',help='Acceptance target for a fresh random initialization')
+parser.add_argument('--acceptance-video', action=argparse.BooleanOptionalAction, default=True,
+                    help='Record measured unified policy acceptance after the simulation exits')
+parser.add_argument('--scratch-record-full', action='store_true', help=argparse.SUPPRESS)
 args = parser.parse_args()
+if args.ppo_mini_batches is not None and (args.mode != 'train' or args.ppo_mini_batches < 1):
+    parser.error('--ppo-mini-batches requires train mode and a positive count')
 if args.from_scratch and (args.checkpoint or args.mode!='train' or not args.run_dir or not args.experiment_output):
     parser.error('--from-scratch requires train, a new --run-dir and --experiment-output, and forbids --checkpoint')
 if args.from_scratch and (args.run_dir/'policy_final.pt').exists():parser.error('Scratch output directory already contains a trained policy')
@@ -53,6 +61,12 @@ if args.acceptance_interval<1:parser.error('--acceptance-interval must be positi
 if args.scratch_full_interval<1:parser.error('--scratch-full-interval must be positive')
 if args.scratch_target=='latest_unified' and args.scratch_acceptance_mode=='staged' and args.scratch_full_interval%args.acceptance_interval:
     parser.error('--scratch-full-interval must be divisible by --acceptance-interval in staged mode')
+# Programmatic diagnostic replays use runpy and install their own evaluator.
+if __name__ == '__main__' and args.acceptance_video and (__package__ is None or __spec__ is not None):
+    from diagnostics.anon_acceptance_video import supervise_acceptance_video
+    result = supervise_acceptance_video(args, Path(__file__).resolve(), sys.argv[1:])
+    if result is not None:
+        sys.exit(result)
 from isaacsim import SimulationApp
 app = SimulationApp({'headless': args.headless, 'renderer': 'RaytracedLighting', 'fast_shutdown': True,
                      'disable_viewport_updates':args.headless,
@@ -384,10 +398,14 @@ def main():
         config.update(full_body_reference=True, mocap_library=str(library_path),
                       reference_kind='100STYLE_Neutral_mocap_style', natural_gait_version=4)
     if args.curriculum_iterations is not None: config['curriculum_iterations'] = args.curriculum_iterations
-    if args.config_override:
-        config.update(json.loads(args.config_override.read_text(encoding='utf-8')))
+    override=json.loads(args.config_override.read_text(encoding='utf-8')) if args.config_override else {}
+    config.update(override)
     if config.get('unified_walk_run'):
-        config.setdefault('unified_acceptance_protocol','response_steady_v2')
+        from locomotion_acceptance import CURRENT_PROTOCOL,PROTOCOL
+        if args.scratch_continuation:
+            config.setdefault('unified_acceptance_protocol',PROTOCOL)
+        else:
+            config['unified_acceptance_protocol']=override.get('unified_acceptance_protocol',CURRENT_PROTOCOL)
     if args.mode=='eval' and config.get('unified_walk_run'):
         for key in ['measure_ground_contact','unified_eval_force_flight','unified_substep_support_forces','unified_command_frame_metrics']:
             config.setdefault(key,True)
@@ -429,6 +447,11 @@ def main():
         run.mkdir(parents=True, exist_ok=True)
         (run/'env_config.json').write_text(json.dumps(env.cfg, indent=2), encoding='utf-8')
         cfg = agent_config()
+        if args.ppo_mini_batches is not None:
+            samples = env.num_envs * cfg['num_steps_per_env']
+            if samples % args.ppo_mini_batches:
+                raise ValueError('PPO mini-batch count must divide the rollout size')
+            cfg['algorithm']['num_mini_batches'] = args.ppo_mini_batches
         if env.cfg.get('full_motion_path'):
             cfg['actor']['distribution_cfg']['init_std']=.2
             cfg['algorithm']['entropy_coef']=.003
@@ -443,7 +466,7 @@ def main():
             'natural_walk_reference.py', 'build_anon_v3.py', 'mocap_walk_reference.py',
             'anon_imitation_env.py', 'full_motion_reference.py', 'build_full_motion.py',
             'continuous_motion_reference.py', 'evaluate_continuous.py',
-            'continuous_command_suite.py',
+            'continuous_command_suite.py', 'command_plan.py', 'training/idle_head_alignment.py',
         ))
         copy_sources(run, ['anon_config_compat.py'])
         if env.cfg.get('amp_enabled'):copy_sources(run, ['amp_motion_prior.py'])
@@ -469,7 +492,12 @@ def main():
             copy_sources(run, ['anon_scratch_validation.py'])
             scratch=ScratchValidation(run,args.experiment_output,args.acceptance_interval,ROOT,continuation=args.scratch_continuation,target=args.scratch_target,
                                       acceptance_mode=args.scratch_acceptance_mode,full_interval=args.scratch_full_interval,
-                                      protocol=env.cfg.get('unified_acceptance_protocol','legacy_v1'))
+                                      protocol=env.cfg.get('unified_acceptance_protocol','legacy_v1'),
+                                      speed_dependent_yaw=env.cfg.get('command_yaw_limit_by_speed',False),
+                                      idle_head=env.cfg.get('unified_idle_head_acceptance',False),
+                                      backward_walk=env.cfg.get('unified_eval_backward_walk',False),
+                                      low_speed_after_full=args.scratch_low_speed_after_full_pass,
+                                      record_full_video=args.scratch_record_full)
             if args.from_scratch:scratch.audit_initialization(runner,env)
         if args.checkpoint:
             migration = load_policy(runner, env, args.checkpoint)
@@ -557,6 +585,7 @@ def main():
             return
         started = time.perf_counter()
         initial_validation_seconds=scratch.validation_seconds if scratch else 0.
+        initial_pause_seconds=scratch.pause_seconds if scratch else 0.
         target_iteration = runner.current_learning_iteration+args.iterations
         if scratch:scratch.final_iteration=target_iteration
         class StopTraining(Exception):
@@ -564,7 +593,7 @@ def main():
         def log(**kwargs):
             env.iteration = kwargs['it']
             original_log(**kwargs)
-            active_elapsed=time.perf_counter()-started-(scratch.validation_seconds-initial_validation_seconds if scratch else 0.)
+            active_elapsed=time.perf_counter()-started-(scratch.pause_seconds-initial_pause_seconds if scratch else 0.)
             status = dict(iteration=kwargs['it'], total=target_iteration, elapsed_seconds=active_elapsed,
                           num_envs=env.num_envs,gpu_peak_allocated_mb=torch.cuda.max_memory_allocated()/1024**2,
                           tracking_error=float(torch.linalg.vector_norm(env.logical_vel[:, :2]-env.commands[:, :2], dim=-1).mean()),
@@ -594,15 +623,17 @@ def main():
             runner.logger.stop_logging_writer()
         runner.save(str(run/'policy_final.pt'))
         runner.export_policy_to_jit(str(run), 'policy_jit.pt')
-        timing=dict(training_seconds=time.perf_counter()-started-(scratch.validation_seconds-initial_validation_seconds if scratch else 0.),
+        timing=dict(training_seconds=time.perf_counter()-started-(scratch.pause_seconds-initial_pause_seconds if scratch else 0.),
                     completed_iteration=int(env.iteration),
                     definition='Training loop plus final checkpoint/JIT export; excludes scene setup, evaluation and video recording')
         (run/'training_time.json').write_text(json.dumps(timing,indent=2),encoding='utf-8')
         if scratch:
             timing.update(acceptance_seconds=scratch.validation_seconds,initial_acceptance_seconds=initial_validation_seconds,
+                          recording_pause_seconds=scratch.recording_seconds,
                           loop_wall_seconds_including_acceptance=time.perf_counter()-started,started_from_random_weights=args.from_scratch,
                           same_scratch_lineage=True,experiment_training_seconds=scratch.training_offset+timing['training_seconds'],
-                          completed_iterations=int(env.iteration)+1,quantitative_gate_passed=bool(scratch.history[-1]['passed']))
+                          completed_iterations=int(env.iteration)+1,
+                          quantitative_gate_passed=bool(scratch.history[-1].get('combined_passed',scratch.history[-1]['passed'])))
             (run/'training_time.json').write_text(json.dumps(timing,indent=2),encoding='utf-8')
         print('ANON_TRAIN_TIME '+json.dumps(timing),flush=True)
     env.close()

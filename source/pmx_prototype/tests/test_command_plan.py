@@ -6,7 +6,7 @@ import torch
 import unittest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'training'))
-from command_plan import command_increment
+from command_plan import command_increment,yaw_speed_limit
 
 
 def legacy(commands,reference,dt):
@@ -46,6 +46,24 @@ def test_split_invariants():
 class CommandPlanTests(unittest.TestCase):
     def test_split_planner_invariants(self):
         test_split_invariants()
+
+    def test_yaw_limit_uses_planar_speed_in_every_direction(self):
+        speeds=torch.tensor([0.,.55,.725,.90,1.2])
+        expected=torch.tensor([.6,.6,.5,.4,.4])
+        torch.testing.assert_close(yaw_speed_limit(speeds,{'command_yaw_limit_by_speed':True}),expected)
+        for mode in ('legacy','split'):
+            cfg=dict(command_plan_mode=mode,command_yaw_limit_by_speed=True)
+            state=torch.tensor([[0.,0.,.6],[0.,0.,-.6],[0.,0.,.35]])
+            for target_speed,expected_yaw in [(1.2,[.4,-.4,.35]),(.3,[.6,-.6,.35]),(0.,[.6,-.6,.35])]:
+                target=torch.tensor([[target_speed,0.,.6],[0.,-target_speed,-.6],
+                                      [target_speed*.6,target_speed*.8,.35]])
+                for _ in range(210):
+                    delta=command_increment(target,state,1/30,cfg)
+                    state+=delta
+                    limit=yaw_speed_limit(state[:,:2].norm(dim=-1),cfg)
+                    self.assertTrue((state[:,2].abs()<=limit+1e-7).all())
+                    self.assertTrue((delta[:,2].abs()<=1.2/30+1e-7).all())
+                torch.testing.assert_close(state[:,2],torch.tensor(expected_yaw),atol=1e-5,rtol=0)
 
 
 if __name__=='__main__':

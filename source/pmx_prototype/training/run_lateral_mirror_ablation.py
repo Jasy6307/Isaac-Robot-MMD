@@ -157,7 +157,7 @@ def main():
         assert all(digest(SOURCE/f)==v for f,v in hashes.items()),'Source changed before '+name
         run=ROOT/f'logs/rsl_rl/anon_locomotion/lateral_mirror_ablation_20261117_8192_{name}'
         if run.exists():raise RuntimeError('Existing run: '+str(run))
-        durations[name+'_train']=execute(name+'_train',[SOURCE/'train_anon_locomotion.py','--mode','train','--headless',
+        durations[name+'_train']=execute(name+'_train',[SOURCE/'train_anon_locomotion.py','--mode','train','--headless','--no-acceptance-video',
             '--num-envs','8192','--iterations',str(ITERATIONS),'--seed','42','--checkpoint',BASE,
             '--run-dir',run,'--config-override',OUT/(name+'_config.json')],run)
         timing=read(run/'training_time.json');training+=timing['training_seconds']

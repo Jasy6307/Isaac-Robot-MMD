@@ -1,0 +1,5 @@
+{
+  "unified_pivot_stop_env_fraction": 0.06,
+  "unified_pivot_stop_hold_seconds": 8.0,
+  "unified_pivot_stop_hold_jitter_seconds": 2.0
+}

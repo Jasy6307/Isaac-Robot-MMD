@@ -11,6 +11,7 @@ parser.add_argument('--profile',type=config_path)
 parser.add_argument('--quality',required=True)
 parser.add_argument('--physics-threads',type=int,default=16)
 parser.add_argument('--task-threads',type=int,default=16)
+parser.add_argument('--skirt-edge-stride',type=int,choices=[1,2,3],default=1)
 parser.add_argument('--address',required=True)
 parser.add_argument('--authkey',required=True)
 parser.add_argument('--output',type=Path,required=True)
@@ -18,9 +19,12 @@ parser.add_argument('--reference-hair-compute',action='store_true')
 parser.add_argument('--legacy-compute',action='store_true')
 args=parser.parse_args()
 from isaacsim import SimulationApp
-app=SimulationApp({'headless':True,'fast_shutdown':True,'disable_viewport_updates':True,
+app=SimulationApp({'headless':True,'fast_shutdown':True,'create_new_stage':False,
     'renderer':'MinimalRendering','limit_cpu_threads':args.task_threads,
-    'extra_args':[f'--/persistent/physics/numThreads={args.physics_threads}',f'--/log/file={args.output.resolve()/"kit_worker.log"}']})
+    # This worker creates its own stage after connecting and never renders a viewport.
+    'extra_args':['--/exts/omni.kit.viewport.window/startup/disableWindowOnLoad=true',
+                  f'--/persistent/physics/numThreads={args.physics_threads}',
+                  f'--/log/file={args.output.resolve()/"kit_worker.log"}']})
 import numpy as np
 from scipy.spatial.transform import Rotation
 import omni.usd
@@ -40,6 +44,7 @@ try:
     manifest=init['manifest'];links=init['links']
     motion=LiveBodyMotion(PROJECT_ROOT/'output/pmx_prototype/character.usdc',args.pmx,secondary_profile=args.profile)
     motion.rig_settings['max_node_distance_from_target_m']=2.
+    motion.rig_settings['preview_skirt_edge_stride']=args.skirt_edge_stride
     if list(manifest['bone_paths'])!=motion.joints:raise ValueError('Skeleton order mismatch')
     owners=np.array([links.index(n) for n in manifest['bone_owners']])
     rest=np.array(manifest['rest_positions']);origins=np.array([manifest['links'][n]['origin'] for n in manifest['bone_owners']])

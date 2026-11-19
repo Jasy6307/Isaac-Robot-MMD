@@ -1,0 +1,5 @@
+{
+  "idle_neck_pitch_target_weight": 1.0,
+  "idle_neck_pitch_stop_multiplier": 3.0,
+  "head_sway_weight": 0.4
+}

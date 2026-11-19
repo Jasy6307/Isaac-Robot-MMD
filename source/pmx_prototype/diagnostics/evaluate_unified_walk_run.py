@@ -7,12 +7,22 @@ if str(_source_dir) not in _sys.path:
     _sys.path.insert(0, str(_source_dir))
 from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 
-import hashlib,json
+import hashlib,json,time
 import numpy as np
 import torch
+from command_plan import limit_yaw_command
+from locomotion_acceptance import CURRENT_PROTOCOL,RESPONSE_STEADY_PROTOCOLS,STATIONARY_SEGMENTS
 
 
-def suite(short=False,lite=False,protocol='legacy_v1'):
+LOW_SPEED_ENDPOINTS=(.15,.40)
+LOW_SPEED_STATES=((0.,0.),(.25,np.pi/2),(.5,-np.pi),(.75,-np.pi/2))
+# The middle walking speed is covered by walk_before_stop and stop_after_walk.
+LOW_SPEED_PHASES=(('stand',2,0),('walk',8,3),('stop',5,2))
+LOW_SPEED_CASE_COUNT=len(LOW_SPEED_ENDPOINTS)*len(LOW_SPEED_STATES)
+LOW_SPEED_SECONDS=LOW_SPEED_CASE_COUNT*sum(seconds for _,seconds,_ in LOW_SPEED_PHASES)
+
+
+def suite(short=False,lite=False,protocol='legacy_v1',idle_head=False,backward_walk=False):
     if short:return [('stand',5,[0,0,0]),('ramp_up',12,None),('run_forward',6,[1.2,0,0]),('ramp_down',12,None),('stand_end',6,[0,0,0])]
     if lite:
         result=[('stand',4,[0,0,0]),('walk',4,[.3,0,0]),('ramp_up_from_walk',8,None),
@@ -25,7 +35,9 @@ def suite(short=False,lite=False,protocol='legacy_v1'):
         for name,cmd in [('run_turn_left',[1.1,0,.6]),('run_turn_right',[1.1,0,-.6]),
                          ('reverse_turn',[-.9,0,.6]),('side_turn',[0,.9,-.6])]:
             result.append((name,5,cmd))
-        result += [('stop',4,[0,0,0]),('pivot_left',5,[0,0,.6]),('pivot_right',5,[0,0,-.6]),('stand_end',4,[0,0,0])]
+        if idle_head:result += [('walk_before_stop',5,[.3,0,0]),('stop_after_walk',7,[0,0,0])]
+        if backward_walk:result.append(('walk_backward',8,[-.4,0,0]))
+        result += [('stop',4,[0,0,0]),('pivot_left',5,[0,0,.6]),('pivot_right',5,[0,0,-.6]),('stand_end',7 if idle_head else 4,[0,0,0])]
         return result
     result=[('stand',40,[0,0,0]),('walk',6,[.3,0,0]),('ramp_up_from_walk',14,None),('run_forward',8,[1.2,0,0]),('ramp_down',14,None),('stop',5,[0,0,0]),('run_forward',8,[1.2,0,0]),('stop',5,[0,0,0])]
     for name,cmd in [('run_backward',[-1.2,0,0]),('run_left',[0,1.2,0]),('run_right',[0,-1.2,0])]:
@@ -35,8 +47,12 @@ def suite(short=False,lite=False,protocol='legacy_v1'):
     result += [('direction_sweep',24,None),('stop',5,[0,0,0])]
     for name,cmd in [('run_turn_left',[1.1,0,.6]),('run_turn_right',[1.1,0,-.6]),('reverse_turn',[-.9,0,.6]),('side_turn',[0,.9,-.6])]:
         result += [(name,8,cmd),('stop',5,[0,0,0])]
-    result += [('stop',5,[0,0,0]),('pivot_left',6,[0,0,.6]),('pivot_right',6,[0,0,-.6]),('stand_end',40,[0,0,0])]
-    if protocol=='response_steady_v2':
+    if idle_head:result += [('walk_before_stop',6,[.3,0,0]),('stop_after_walk',7,[0,0,0])]
+    if backward_walk:result.append(('walk_backward',8,[-.4,0,0]))
+    result += [('stop',5,[0,0,0]),('pivot_left',6,[0,0,.6])]
+    if idle_head:result += [('stop_after_pivot_left',7,[0,0,0])]
+    result += [('pivot_right',6,[0,0,-.6]),('stand_end',40,[0,0,0])]
+    if protocol in RESPONSE_STEADY_PROTOCOLS:
         result=[(label,7 if label=='stop' else seconds,cmd) for label,seconds,cmd in result]
     return result
 
@@ -68,6 +84,51 @@ def linear_tracking_error(errors,variable,dt):
     return float(np.linalg.norm(averaged,axis=-1).mean())
 
 
+@torch.inference_mode()
+def evaluate_low_speed(env,infer):
+    """Check the low-speed endpoints with the actor and scene already in use."""
+    started=time.perf_counter()
+    overrides=dict(runtime_inference_only=True,unified_substep_support_forces=False)
+    previous={key:env.cfg[key] for key in overrides if key in env.cfg}
+    env.cfg.update(overrides)
+    cases=[]
+    try:
+        for speed in LOW_SPEED_ENDPOINTS:
+            for phase,heading in LOW_SPEED_STATES:
+                env.reset(env.ids,heading=heading,phase=phase)
+                result=dict(speed=speed,initial_phase=phase,initial_heading_deg=float(np.rad2deg(heading)))
+                falls={}
+                for name,seconds,tail in LOW_SPEED_PHASES:
+                    command_speed=speed if name=='walk' else 0.
+                    step_count=round(seconds/env.dt)
+                    tail_start=step_count-round(tail/env.dt)
+                    samples=[];fall_steps=[]
+                    for step in range(step_count):
+                        env.set_command([command_speed,0.,0.])
+                        _,_,done,extras=env.step(infer(env.get_observations()))
+                        fall_steps.append(done&~extras['time_outs'])
+                        if step>=tail_start:
+                            samples.append(env.logical_vel[:,:2].clone())
+                    falls[name]=int(torch.stack(fall_steps).sum())
+                    if name=='walk':
+                        steady=torch.stack(samples).mean(0)
+                        target=steady.new_tensor([speed,0.])
+                        result.update(steady_forward_m_s=float(steady[:,0].mean()),
+                            steady_tracking_error_m_s=float((steady-target).norm(dim=-1).mean()))
+                    elif name=='stop':
+                        result['stop_speed_m_s']=float(torch.stack(samples).norm(dim=-1).mean())
+                result.update(falls=sum(falls.values()),falls_by_stage=falls)
+                cases.append(result)
+                print('UNIFIED_LOW_SPEED_CASE '+json.dumps(result),flush=True)
+    finally:
+        for key in overrides.keys()-previous.keys():
+            env.cfg.pop(key)
+        env.cfg.update(previous)
+    falls=sum(case['falls'] for case in cases)
+    return dict(passed=falls==0,falls=falls,case_count=len(cases),num_envs=env.num_envs,
+                simulated_seconds=LOW_SPEED_SECONDS,wall_seconds=time.perf_counter()-started,cases=cases)
+
+
 def evaluate(env,runner,output,checkpoint):
     force_gate=bool(env.cfg.get('unified_eval_force_flight'))
     heading_frame=bool(env.cfg.get('unified_command_frame_metrics'))
@@ -76,24 +137,30 @@ def evaluate(env,runner,output,checkpoint):
     infer=runner.get_inference_policy();short=env.cfg.get('unified_eval_short',False)
     lite=bool(env.cfg.get('unified_eval_lite',False))
     protocol=env.cfg.get('unified_acceptance_protocol','legacy_v1')
-    if protocol not in ['legacy_v1','response_steady_v2']:raise ValueError('Unknown acceptance protocol: '+protocol)
-    response_steady=protocol=='response_steady_v2'
+    if protocol not in ('legacy_v1',*RESPONSE_STEADY_PROTOCOLS):raise ValueError('Unknown acceptance protocol: '+protocol)
+    response_steady=protocol in RESPONSE_STEADY_PROTOCOLS
+    idle_head=response_steady and env.cfg.get('unified_idle_head_acceptance',False)
+    speed_dependent_yaw=env.cfg.get('command_yaw_limit_by_speed',False)
     foot_com=env.robot.get_coms()[0,env.foot_ids,:3].to(env.device)
     diagnostic=bool(env.cfg.get('unified_eval_cases'))
     if env.cfg.get('unified_eval_initial_command') is not None:
         if not diagnostic:raise ValueError('Reference-state start is only allowed for diagnostic subsets')
         env.reset(env.ids,command=env.cfg['unified_eval_initial_command'],phase=env.cfg.get('unified_eval_initial_phase',0.))
         env.refresh()
-    cases=env.cfg['unified_eval_cases'] if diagnostic else suite(short,lite,protocol)
+    cases=env.cfg['unified_eval_cases'] if diagnostic else suite(
+        short,lite,protocol,idle_head,env.cfg.get('unified_eval_backward_walk',False))
     traces={k:[] for k in ['poses','joints','commands','velocities','phases','dones']};labels=[];items=[]
     if heading_frame:traces['headings']=[]
     record_controller=bool(env.cfg.get('unified_record_controller'))
     if record_controller:traces.update(observations=[],actions=[],root=[],root_velocities=[])
     if response_steady:traces.update(planned_commands=[],requested_commands=[],geometric_velocities=[])
+    if idle_head:traces.update(head_errors=[],idle_head_active=[],idle_head_gain=[],idle_head_reward_rate=[])
     with torch.inference_mode():
         for label,seconds,fixed in cases:
             trace_start=len(traces['velocities'])
             initial_plan=env.continuous_ref_commands.mean(0).cpu().numpy().copy() if response_steady else None
+            fixed_target=None if fixed is None else limit_yaw_command(
+                torch.as_tensor(fixed,dtype=torch.float32,device=env.device),env.cfg)
             errors=[];body_errors=[];geometric_errors=[];yaw_errors=[];yaw_targets=[];speeds=[];metrics={};falls=0;flight=[];force_flight=[];force_peak=[];slip=[];geometric_slip=[];pelvis_yaws=[]
             position=env.root[:,:2].clone()
             previous_position=env.root[:,:3].clone()
@@ -101,6 +168,7 @@ def evaluate(env,runner,output,checkpoint):
             for step in range(round(seconds/env.dt)):
                 cmd=command(label,step*env.dt,seconds,fixed);env.set_command(cmd)
                 observation=env.get_observations();action=infer(observation)
+                planned=env.next_planned_command() if speed_dependent_yaw else None
                 if record_controller:
                     for k,value in [('observations',observation['policy']),('actions',action),('root',env.root),('root_velocities',env.root_vel)]:traces[k].append(value.cpu().numpy().copy())
                 _,_,done,extras=env.step(action)
@@ -119,13 +187,20 @@ def evaluate(env,runner,output,checkpoint):
                 for k,value in [('poses',p),('joints',q),('commands',env.commands),('velocities',v),('phases',phase),('dones',done)]:traces[k].append(value.cpu().numpy().copy())
                 labels.append(label);falls+=int((done&~extras['time_outs']).sum())
                 if response_steady:
-                    traces['planned_commands'].append(env.continuous_ref_commands.cpu().numpy().copy())
+                    traces['planned_commands'].append((planned if planned is not None else env.continuous_ref_commands).cpu().numpy().copy())
                     traces['requested_commands'].append(np.asarray(cmd,dtype=np.float32))
                     traces['geometric_velocities'].append(geometric.cpu().numpy().copy())
+                if idle_head:
+                    head=extras['idle_head']
+                    traces['head_errors'].append(head['error'].cpu().numpy())
+                    traces['idle_head_active'].append(head['active'].cpu().numpy())
+                    traces['idle_head_gain'].append(head['gain'].cpu().numpy())
+                    traces['idle_head_reward_rate'].append(head['reward_rate'].cpu().numpy())
                 if step<60:continue
-                target=torch.tensor(cmd,device=env.device)
-                errors.append((v[:,:2]-target[:2]).mean(0).cpu().numpy());yaw_errors.append(float((v[:,2]-target[2]).mean()));speeds.append(float(v[:,:2].norm(dim=-1).mean()))
-                yaw_targets.append(float(target[2]))
+                target=torch.tensor(cmd,device=env.device) if fixed_target is None else fixed_target
+                yaw_target=planned[:,2] if speed_dependent_yaw and fixed_target is None else target[2]
+                errors.append((v[:,:2]-target[:2]).mean(0).cpu().numpy());yaw_errors.append(float((v[:,2]-yaw_target).mean()));speeds.append(float(v[:,:2].norm(dim=-1).mean()))
+                yaw_targets.append(float(yaw_target.mean()))
                 body_errors.append((torch.stack([-env.vel_b[:,1],env.vel_b[:,0]],-1)-target[:2]).mean(0).cpu().numpy())
                 geometric_errors.append((geometric-target[:2]).mean(0).cpu().numpy())
                 for key,value in extras['log'].items():
@@ -159,7 +234,7 @@ def evaluate(env,runner,output,checkpoint):
             yaw=yaw_tracking_error(yaw_errors,yaw_targets)
             target_speed=0 if fixed is None else float(np.linalg.norm(fixed[:2]));linear_limit=.2 if variable else max(.06,target_speed*.22)
             average={k:float(np.mean(v)) for k,v in metrics.items()}
-            stationary=label in ['stand','stand_end','stop'];displacement=float((env.root[:,:2]-position).norm(dim=-1).max())
+            stationary=label in STATIONARY_SEGMENTS;displacement=float((env.root[:,:2]-position).norm(dim=-1).max())
             passed=falls==0 and bias<linear_limit and geometric_bias<linear_limit and yaw<(.1 if stationary else .2) and average['Imitation/keypoint_rmse_m']<.075
             if stationary:passed &= speed<.08
             pelvis_yaws=np.unwrap(pelvis_yaws);yaw_drift=float(np.max(np.abs(pelvis_yaws-pelvis_yaws[0])))
@@ -174,6 +249,8 @@ def evaluate(env,runner,output,checkpoint):
                       yaw_error=yaw,yaw_error_instantaneous_abs_mean=float(np.mean(np.abs(yaw_errors))),mean_speed=speed,
                       geometric_velocity_error=geometric_bias,pelvis_yaw_drift_rad=yaw_drift,
                       displacement_m=displacement,flight_fraction=float(np.mean(flight)),stance_slip_proxy_m_s=float(np.mean(slip)),stance_slip_geometry_m_s=float(np.mean(geometric_slip)),metrics=average,passed=bool(passed))
+            if speed_dependent_yaw and fixed_target is not None:
+                item.update(requested_command=fixed,command=fixed_target.cpu().tolist())
             if force_flight:
                 if max(force_peak)<50:raise RuntimeError('Ground-contact sensor returned no credible support load')
                 item.update(force_flight_fraction=float(np.mean(force_flight)),peak_total_support_force_n=max(force_peak),flight_force_threshold_n=1.,
@@ -184,26 +261,34 @@ def evaluate(env,runner,output,checkpoint):
                 item['response_steady']=score_segment(item,
                     np.asarray(traces['velocities'][trace_start:]).mean(1),np.asarray(traces['planned_commands'][trace_start:]).mean(1),
                     np.asarray(traces['requested_commands'][trace_start:]),np.asarray(traces['geometric_velocities'][trace_start:]).mean(1),
-                    initial_plan,env.cfg,env.dt)
+                    initial_plan,env.cfg,env.dt,head_errors=traces['head_errors'][trace_start:] if idle_head else None)
                 item['passed']=item['response_steady']['passed']
             items.append(item);print('UNIFIED_SEGMENT '+json.dumps(item),flush=True)
+    complete_scope=not short and not lite and not diagnostic
+    low_speed=evaluate_low_speed(env,infer) if complete_scope and protocol==CURRENT_PROTOCOL else None
     output.mkdir(parents=True,exist_ok=True)
     np.savez_compressed(output/'rollout.npz',**{k:np.asarray(v) for k,v in traces.items()},labels=labels,dt=env.dt,link_names=env.links,dof_names=env.names)
     all_segments_passed=all(i['passed'] for i in items)
-    report=dict(checkpoint=str(checkpoint),env_config=env.cfg,total_seconds=sum(s for _,s,_ in cases),total_falls=sum(i['falls'] for i in items),
+    locomotion_seconds=sum(s for _,s,_ in cases)
+    report=dict(checkpoint=str(checkpoint),env_config=env.cfg,total_seconds=locomotion_seconds,total_falls=sum(i['falls'] for i in items),
                 acceptance_protocol=protocol,
                 evaluator_sha256=hashlib.sha256(_Path(__file__).read_bytes()).hexdigest(),
-                segments=items,passed_unified_gate=all_segments_passed and not short and not lite and not diagnostic,
+                segments=items,passed_unified_gate=all_segments_passed and complete_scope,
                 passed_lite_gate=all_segments_passed and lite and not diagnostic,passed_short_gate=all_segments_passed,
-                complete_scope=not short and not lite and not diagnostic,acceptance_mode='lightweight_screen' if lite else 'full',
+                complete_scope=complete_scope,acceptance_mode='lightweight_screen' if lite else 'full',
                 diagnostic=diagnostic,runtime_compensation_removed=True,
                 flight_acceptance_method='Both physical foot support loads below 1 N' if force_gate else 'Both sole boxes above 12 mm',
                 velocity_command_frame='Controller reference heading' if heading_frame else 'Instantaneous articulation root/chest frame',
                 method='One actor and normalizer; continuous speed-conditioned whole-body walk/run reference; physical residual PPO + AMP; no root assistance')
+    if low_speed is not None:
+        report.update(low_speed=low_speed,locomotion_seconds=locomotion_seconds)
+        report['total_seconds']+=low_speed['simulated_seconds']
+        report['total_falls']+=low_speed['falls']
+        report['passed_unified_gate']&=low_speed['passed']
     if response_steady:
         from locomotion_acceptance import summarize,specification
         assessment=summarize(items)
-        report.update(protocol_specification=specification(),response_steady_summary=assessment,
+        report.update(protocol_specification=specification(idle_head,protocol),response_steady_summary=assessment,
             acceptance_protocol_sha256=hashlib.sha256(resolve_source('locomotion_acceptance.py').read_bytes()).hexdigest(),
             legacy_metric_gate_on_same_trajectory=all(i['legacy_passed'] for i in items) and not short and not lite and not diagnostic,
             legacy_comparison_scope='Original two-second metrics on this trajectory; v2 stop durations differ from the historical325-second suite.',

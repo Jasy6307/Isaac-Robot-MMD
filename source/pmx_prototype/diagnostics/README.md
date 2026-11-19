@@ -4,7 +4,7 @@
 
 | 类别 | 工具 |
 | --- | --- |
-| 发裙与动作保真 | `analyze_mutsumi_cloth_cache.py`、`analyze_mutsumi_skirt_jitter.py`、`audit_mutsumi_reference_motion.py` |
+| 发裙与动作保真 | `character_cache.py cloth`、`character_cache.py temporal`、`character_cache.py reference` |
 | 步态与参考动作 | `audit_anon_gait.py`、`audit_gait_controller.py`、`audit_running_arms.py`、`measure_contiguous_variation.py`、`measure_gait_slip.py`、`find_mocap_cycles.py` |
 | 物理与实时链路 | `check_physx_quality.py`、`check_realtime.py`、`check_live_music.py` |
 | 完整角色与模仿环境 | `validate_physical_character.py`、`validate_full_motion.py`、`validate_imitation_heading.py`、`validate_imitation_idle.py` |
@@ -15,7 +15,7 @@
 
 ## Locomotion 诊断
 
-睦的 USD 缓存检查现由 `character_cache.py cloth/temporal/reference` 统一管理（可通过 `pmx.py diagnostics character_cache` 调用）。`analyze_mutsumi_cloth_cache.py`、`analyze_mutsumi_skirt_jitter.py`、`audit_mutsumi_reference_motion.py` 保留原参数和完成标记；共享骨架查询，分别保留代理穿插、时间抖动和参考动作差异的指标，不混为一个评分。这三个模式仍按睦的骨架和材质部件适配，不能直接宣称支持其他角色。输出 JSON 拒绝覆盖，`--dry-run` 只显示参数，不打开 USD。原 `--frames 7011`、cloth `--stride 30` 默认值和 30Hz 时间指标保持。
+睦的 USD 缓存检查统一走 `sim_main.py --mode pmx-diagnostics character_cache` 或直接运行 `character_cache.py`，随后选择 `cloth`（裙摆卷折和代理穿插）、`temporal`（时间抖动）或 `reference`（逐帧参考动作差异）。三个子命令沿用原参数和完成标记，仍按睦的骨架和材质部件适配。输出 JSON 拒绝覆盖，`--dry-run` 只显示参数，不打开 USD。原 `--frames 7011`、`cloth --stride 30` 默认值和 30Hz 时间指标保持。
 
 14 个历史脚本归入 `analyses/` 下 7 个分类模块，原文件名保留为兼容入口。
 `locomotion_tools.py` 统一参数与发现，`workspace.py` 统一输入证据、结果写入和串行推理任务。

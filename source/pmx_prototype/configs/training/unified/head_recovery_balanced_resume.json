@@ -1,0 +1,8 @@
+{
+  "unified_pivot_stop_env_fraction": 0.06,
+  "unified_pivot_stop_hold_seconds": 8.0,
+  "unified_pivot_stop_hold_jitter_seconds": 2.0,
+  "train_mirror_pivot_stop": true,
+  "idle_head_large_error_penalty": 2.0,
+  "unified_stand_reset_env_fraction": 0.01
+}

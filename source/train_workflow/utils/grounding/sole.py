@@ -40,8 +40,9 @@ def measure_source_soles(source, frames, fps, selection, *, start_seconds=0.):
     if len(ids) != len(points) or len(values) != len(points):
         raise ValueError('Skinning data does not cover vertices')
     result, metadata = {}, {}
-    names = [unicodedata.normalize('NFKC', name) for name in
-             UsdSkel.Skeleton.Get(source.stage, '/Character/Skeleton').GetJointNamesAttr().Get()]
+    if selection.minimum_leg_skin_weight is not None:
+        names = [unicodedata.normalize('NFKC', name) for name in
+                 UsdSkel.Skeleton.Get(source.stage, '/Character/Skeleton').GetJointNamesAttr().Get()]
     for side, prefix, sign in (('left', '左', selection.left_sign), ('right', '右', -selection.left_sign)):
         ankle = source.names[prefix + '足首']
         mask = (points[:, 0] * sign > 0) & (points[:, 2] < source.rest[ankle, 2, 3] + selection.ankle_margin_m)

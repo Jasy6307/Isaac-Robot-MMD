@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from locomotion_acceptance import CURRENT_PROTOCOL
 
 
 def write_json(path, value):
@@ -43,15 +44,22 @@ def averages(reports):
 
 class ScratchValidation:
     def __init__(self, run, output, interval, root, continuation=False,target='continuous_wrists',
-                 acceptance_mode='staged',full_interval=2500,protocol='legacy_v1'):
+                 acceptance_mode='staged',full_interval=2500,protocol='legacy_v1',speed_dependent_yaw=False,
+                 idle_head=False,backward_walk=False,low_speed_after_full=False,record_full_video=False):
         self.run,self.output,self.root=Path(run).resolve(),Path(output).resolve(),Path(root)
         self.output.mkdir(parents=True,exist_ok=True);self.target=target
         self.interval=interval;self.validation_seconds=0.;self.history=[];self.training_offset=0.
         self.acceptance_mode=acceptance_mode;self.full_interval=full_interval;self.final_iteration=None
         self.lite_pass_streak=0;self.last_full_iteration=0
+        self.record_full_video=record_full_video
+        self.recording_seconds=0.
+        self.protocol=protocol
+        self.integrated_low_speed=protocol==CURRENT_PROTOCOL
+        self.low_speed_after_full=low_speed_after_full and not self.integrated_low_speed
         if continuation:
             self.history=json.loads((self.output/'history.json').read_text(encoding='utf-8'))
             self.validation_seconds=self.history[-1]['evaluation_seconds_cumulative']
+            self.recording_seconds=sum(row.get('full_video',{}).get('pause_seconds',0.) for row in self.history)
             if target=='latest_unified':
                 for previous in self.history:
                     if previous.get('full_evaluated'):
@@ -63,22 +71,36 @@ class ScratchValidation:
         if target=='latest_unified':
             baseline_path=self.root/'output/anon_locomotion/unified_walk_run/full8_final_cpu/report.json'
             self.unified_baseline={item['label']:item for item in json.loads(baseline_path.read_text(encoding='utf-8'))['segments']}
-            from evaluate_unified_walk_run import suite
-            duration=sum(s[1] for s in suite(protocol=protocol))
+            from evaluate_unified_walk_run import LOW_SPEED_CASE_COUNT,LOW_SPEED_SECONDS,suite
+            duration=sum(s[1] for s in suite(protocol=protocol,idle_head=idle_head,backward_walk=backward_walk))
+            lite_duration=sum(s[1] for s in suite(lite=True,protocol=protocol,idle_head=idle_head,backward_walk=backward_walk))
+            if self.integrated_low_speed:
+                duration+=LOW_SPEED_SECONDS
             plan=dict(interval_iterations=interval,baseline_report=str(baseline_path),acceptance_protocol=protocol,
+                command_yaw_limit_by_speed=speed_dependent_yaw,
+                unified_idle_head_acceptance=idle_head,
+                unified_eval_backward_walk=backward_walk,
+                low_speed_after_full=self.low_speed_after_full,
                 required_slip_reduction_fraction=.20,minimum_baseline_speed_retention=.95,
                 official_suite=f'{duration}-second complete latest unified walk/run acceptance',
                 required_slip_segments=['run_backward','run_left','run_right'],
                 timing_rule='First passing sampled checkpoint is an upper bound; acceptance pauses excluded from active training time.')
+            if self.integrated_low_speed:
+                plan['integrated_low_speed']=dict(case_count=LOW_SPEED_CASE_COUNT,simulated_seconds=LOW_SPEED_SECONDS)
             if continuation:
                 previous=json.loads((self.output/'acceptance_plan.json').read_text(encoding='utf-8'))
-                if previous.get('acceptance_protocol','legacy_v1')!=protocol:
+                if (previous.get('acceptance_protocol','legacy_v1')!=protocol or
+                    previous.get('command_yaw_limit_by_speed',False)!=speed_dependent_yaw or
+                    previous.get('unified_idle_head_acceptance',False)!=idle_head or
+                    previous.get('unified_eval_backward_walk',False)!=backward_walk):
                     raise ValueError('A new acceptance protocol requires separate versioned acceptance records')
                 for key in ('acceptance_mode','full_interval_iterations'):
                     if previous.get(key)!=({'acceptance_mode':acceptance_mode,'full_interval_iterations':full_interval}[key]):
                         raise ValueError(f'Scratch continuation cannot change {key}')
+                if previous.get('low_speed_after_full',False)!=self.low_speed_after_full:
+                    raise ValueError('Scratch continuation cannot change supplemental acceptance scheduling')
             plan.update(acceptance_mode=acceptance_mode,full_interval_iterations=full_interval,
-                lightweight_suite='117-second screen across speed transition, all travel directions, turns, pivots and standing',
+                lightweight_suite=f'{lite_duration}-second screen across speed transition, all travel directions, turns, pivots and standing',
                 schedule='Screen every interval; full suite every full interval, after two consecutive promising screens, and at the final iteration. Inconclusive screens can trigger full measurement but never grant acceptance.')
             write_json(self.output/'acceptance_plan.json',plan)
             return
@@ -99,6 +121,10 @@ class ScratchValidation:
                    official_suites=['152 s main with pivots','68 s boundary'],
                    quality_rule='Upper bounds except contact_accuracy lower bound; both official suites must pass with zero falls. AMP discriminator self-scores are not comparable across runs.',
                    timing_rule='Active training time excludes checkpoint acceptance pauses. First passing sampled checkpoint is an upper bound, not a proven minimum. Visual comparison still required.'))
+
+    @property
+    def pause_seconds(self):
+        return self.validation_seconds + self.recording_seconds
 
     def audit_continuation(self, runner, checkpoint):
         manifest=json.loads((self.output/'manifest.json').read_text(encoding='utf-8'))
@@ -191,6 +217,11 @@ class ScratchValidation:
         run_full=self.acceptance_mode=='full-every-checkpoint' or force_full or periodic
         reports={}
 
+        def notify_stage(name):
+            write_json(self.output/'experiment_status.json',dict(
+                phase='acceptance',suite=name,completed_iterations=completed,
+                active_training_seconds=active_seconds,checkpoint=str(checkpoint)))
+
         def measure_slip(report):
             current={item['label']:item for item in report['segments']};checks={}
             for label in ('run_backward','run_left','run_right'):
@@ -203,12 +234,14 @@ class ScratchValidation:
             return checks
 
         def run_suite(name,lite):
+            notify_stage(name)
             work=base/('lite' if lite else 'unified');work.mkdir(parents=True,exist_ok=True)
             command=[sys.executable,str(self.root/'source/pmx_prototype/train_anon_locomotion.py'),
-                     '--mode','eval','--checkpoint',str(checkpoint),'--num-envs','1','--headless','--output',str(work)]
-            if lite:
-                config=base/'lite_config.json';write_json(config,dict(unified_eval_lite=True))
-                command += ['--config-override',str(config)]
+                     '--mode','eval','--checkpoint',str(checkpoint),'--num-envs','1','--headless',
+                     '--output',str(work),'--no-acceptance-video']
+            config=base/f'{name}_config.json'
+            write_json(config,dict(unified_eval_lite=lite,unified_acceptance_protocol=self.protocol))
+            command += ['--config-override',str(config)]
             log_path=base/('lite.log' if lite else 'unified.log')
             with log_path.open('w',encoding='utf-8') as log:
                 result=subprocess.run(command,cwd=self.root,stdout=log,stderr=subprocess.STDOUT,
@@ -231,9 +264,15 @@ class ScratchValidation:
 
         report=reports.get('full') or reports['lite']
         slip_checks=measure_slip(report)
-        self.validation_seconds+=time.perf_counter()-paused
         full_report=reports.get('full');official=bool(full_report and full_report.get('passed_unified_gate') and full_report['total_falls']==0)
         slip_passed=all(v['passed'] for v in slip_checks.values())
+        low_speed=None
+        if self.integrated_low_speed and full_report:
+            low_speed=full_report['low_speed']
+        elif self.low_speed_after_full and ((official and slip_passed) or force_full):
+            notify_stage('low_speed')
+            low_speed=self.evaluate_low_speed(checkpoint,base)
+        self.validation_seconds+=time.perf_counter()-paused
         lite_passed=bool(reports.get('lite',{}).get('passed_lite_gate') and reports['lite']['total_falls']==0 and slip_passed)
         if full_report:self.last_full_iteration=completed;self.lite_pass_streak=0
         selected_path=(base/'unified'/'report.json') if full_report else (base/'lite'/'report.json')
@@ -247,8 +286,45 @@ class ScratchValidation:
             evaluation_seconds_cumulative=self.validation_seconds,report=str(selected_path),
             full_report=str(base/'unified'/'report.json') if full_report else None,
             lite_report=str(base/'lite'/'report.json') if 'lite' in reports else None)
+        if self.integrated_low_speed or self.low_speed_after_full:
+            item.update(low_speed=low_speed,combined_passed=bool(item['passed'] and low_speed and low_speed['passed']))
         self.history.append(item);write_json(self.output/'history.json',self.history)
-        phase='matched_latest_gates' if item['passed'] else ('light_screen' if not full_report else 'full_acceptance')
+        passed=item.get('combined_passed',item['passed'])
+        if full_report and self.record_full_video:
+            import torch
+            from diagnostics.anon_acceptance_video import record_acceptance_video
+            started = time.perf_counter()
+            write_json(self.output/'experiment_status.json',dict(phase='recording',**item))
+            torch.cuda.empty_cache()
+            print(f'ANON_ACCEPTANCE_VIDEO_START {completed}',flush=True)
+            video = record_acceptance_video(item['full_report'],title=f'Policy {completed} acceptance')
+            video['pause_seconds'] = time.perf_counter() - started
+            self.recording_seconds += video['pause_seconds']
+            item['full_video'] = video
+            write_json(self.output/'history.json',self.history)
+        phase='matched_latest_gates' if passed else ('light_screen' if not full_report else 'full_acceptance')
         write_json(self.output/'experiment_status.json',dict(phase=phase,**item))
         print('SCRATCH_LATEST_ACCEPTANCE '+json.dumps(item),flush=True)
-        return item['passed']
+        return passed
+
+    def evaluate_low_speed(self,checkpoint,base):
+        models=base/'low_speed_models.json'
+        config=base/'low_speed_config.json'
+        output=base/'low_speed'
+        write_json(models,dict(candidate=str(checkpoint)))
+        write_json(config,dict(diagnostic_controller_trace=True))
+        command=[sys.executable,str(resolve_source('diagnostics/probe_low_speed_tracking.py')),
+            '--models',str(models),'--output',str(output),'--config-override',str(config),'--no-nominal']
+        with (base/'low_speed.log').open('w',encoding='utf-8') as log:
+            result=subprocess.run(command,cwd=self.root,stdout=log,stderr=subprocess.STDOUT,
+                                  creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        path=output/'report.json'
+        if result.returncode or not path.exists():
+            raise RuntimeError(f'Scratch low-speed probe failed: {base}; see low_speed.log')
+        report=json.loads(path.read_text(encoding='utf-8'))
+        metadata=json.loads((output/'metadata.json').read_text(encoding='utf-8'))
+        speeds=[row['speed'] for row in report['cases']]
+        if not report.get('checkpoint_unchanged') or speeds!=[.15,.20,.25,.30,.35,.40] or metadata['num_envs']!=16:
+            raise RuntimeError(f'Incomplete scratch low-speed probe: {path}')
+        falls=sum(row['falls'] for row in report['cases'])
+        return dict(passed=falls==0,falls=falls,cases=len(speeds)*16,report=str(path))

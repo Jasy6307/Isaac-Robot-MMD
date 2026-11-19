@@ -229,7 +229,7 @@
   "unified_low_speed_hold_jitter_seconds": 4.0,
   "unified_low_stop_hold_seconds": 6.0,
   "unified_low_stop_hold_jitter_seconds": 2.0,
-  "unified_acceptance_protocol": "response_steady_v2",
+  "unified_acceptance_protocol": "response_steady_v3",
   "train_lateral_mirror": true,
   "train_mirror_augmentation": true,
   "train_mirror_loss_coeff": 0.0,

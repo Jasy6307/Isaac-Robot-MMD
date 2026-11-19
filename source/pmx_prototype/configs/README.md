@@ -38,8 +38,8 @@ python source/pmx_prototype/physx_dance.py --secondary-profile source/pmx_protot
 行走保持12–16秒，停步保持6–8秒。历史 `continuous_low_speed_fraction` 不作用于统一分支；
 新配方使用显式的 `unified_low_speed_env_fraction` 和 `unified_low_stop_env_fraction`。
 
-统一入口的新运行默认使用 `response_steady_v2`；显式设置 `unified_acceptance_protocol: legacy_v1`
-可保留旧计分。原始命令误差和固定两秒排除的旧指标仍保留，旧报告不重写。
+统一入口的新运行默认使用 `response_steady_v3`。复现历史结果时可显式使用
+`response_steady_v2` 或 `legacy_v1`。以下响应和稳态规则自第二版开始沿用。
 
 - 固定命令：先估算规划器达到目标附近的时间；再允许一个参考步态周期完成支撑交换及0.5秒确认，
   此余量至少1.5秒。总响应预算最少2秒、最多5秒，按参考而非被测策略表现预先确定。
@@ -52,8 +52,22 @@ python source/pmx_prototype/physx_dance.py --secondary-profile source/pmx_protot
 - 零跌倒、姿态、空间避让、腾空及既有滑步/速度保持要求继续保留。观察不足不会直接判合格；
   筛查只能触发完整测量，不能替代完整验收。不同协议的训练验收记录不能混写。
 
-判定实现见 `training/locomotion_acceptance.py`；采样实现见 `training/low_speed_commands.py`。
-第二版报告保存协议编号、参数说明及实现哈希，便于与历史结果区分。
+第三版把头部门槛集中在起始站立、前走停步、左转停、右转停。其余停步继续计算头部朝向数据，
+正式计分仍使用身体指标。完整验收在同一仿真场景中检查 0.15 和 0.40 m/s 两端，每档使用
+四组初始步态相位和朝向并测试走停，合计八个条件，要求零跌倒。中间速度由原有 0.30 m/s
+前走和走停段覆盖。低速结果写在完整报告的 `low_speed` 字段，轻量筛查沿用原场景。
+
+统一走跑验收默认在数值结果写入后回放 `rollout.npz`，生成单策略 1080p、30 FPS 片段。
+录像使用共享第 8 版外观和头发、裙摆物理。完整验收选取四个正式头部场景，轻量筛查使用已有片段。
+单独启动训练时，从最终 checkpoint 执行一次现有轻量筛查。从零训练及续跑按原节奏验收。
+完整验收出数值后暂停训练录制，失败的录像在训练进程退出后重试。轻量筛查只保存数值和轨迹。
+录像中保留通过和失败的实测动作。结果位于验收目录的 `video_preview/`，重复验收使用独立录像目录。
+`acceptance_timing.json` 分别记录数值验收与录像耗时，从零训练的每个训练目录另存 `acceptance_videos.json`。
+只测性能或已自带验收编排的训练进程可使用 `--no-acceptance-video`。可通过
+`diagnostics/record_gait_diagnostic.py --acceptance-report` 重录已有轨迹。
+
+判定实现见 `training/locomotion_acceptance.py`，完整验收见 `diagnostics/evaluate_unified_walk_run.py`，
+训练采样见 `training/low_speed_commands.py`。
 
 ## 左右侧跑镜像增强（尚未训练验收）
 
@@ -98,6 +112,5 @@ AMP 特征统计从镜像动捕专家重新计算，不继承旧 checkpoint。
 启动前核对源码、配置、动捕/物理输入哈希，拒绝覆盖旧训练；不恢复已停止的短训对照。
 
 计划使用8192并行、seed42、最多6000轮；每500轮轻量筛查、每1000轮完整验收。
-`response_steady_v2`、355秒完整序列、零跌倒及原滑步/速度保持门槛不变。
-完整通过后继续原六档低速、多相位停步检查。记录首次通过轮次、本轮/累计训练时间，
-验收及初始化另计；仅在验收轮结束时更新进度。准备阶段不会触发这些验收。
+`response_steady_v3` 将八组低速条件纳入完整验收，继续采用原身体、滑步和速度保持门槛。
+记录首次通过轮次和训练用时，验收与初始化分别计时。准备阶段只生成计划和配置。

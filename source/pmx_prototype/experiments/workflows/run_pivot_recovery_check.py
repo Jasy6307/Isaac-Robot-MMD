@@ -39,7 +39,7 @@ def main():
               failure_action='Stop and report; no automatic extra training')
     write(OUT/'plan.json',plan)
     durations={}
-    durations['training_job']=execute('train',[SOURCE/'train_anon_locomotion.py','--mode','train','--headless',
+    durations['training_job']=execute('train',[SOURCE/'train_anon_locomotion.py','--mode','train','--headless','--no-acceptance-video',
         '--checkpoint',BASE,'--num-envs','12288','--iterations','300','--seed','42','--run-dir',RUN,
         '--config-override',OUT/'config.json'])
     candidate=RUN/'policy_final.pt'

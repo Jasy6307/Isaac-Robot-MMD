@@ -25,7 +25,7 @@ OUT = ROOT / 'output/anon_locomotion/equal_samples_20261116'
 
 
 def launch(run, output, config, envs, iterations, checkpoint=None, keep_budget=False):
-    command = [str(PYTHON), '-u', str(ENTRY), '--mode', 'train', '--headless',
+    command = [str(PYTHON), '-u', str(ENTRY), '--mode', 'train', '--headless', '--no-acceptance-video',
                '--num-envs', str(envs), '--iterations', str(iterations), '--seed', '42',
                '--run-dir', str(run), '--experiment-output', str(output),
                '--scratch-target', 'latest_unified', '--acceptance-interval', str(750 if envs == 8192 else 500),

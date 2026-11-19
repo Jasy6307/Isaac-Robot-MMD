@@ -23,7 +23,10 @@ parser.add_argument('--authkey')
 parser.add_argument('--legacy-compute',action='store_true')
 parser.add_argument('--physics-threads',type=int)
 parser.add_argument('--preload-presets',action='store_true')
+parser.add_argument('--manual-reset-only',action='store_true')
 args=parser.parse_args()
+if args.manual_reset_only and args.preload_presets:
+    parser.error('--manual-reset-only requires a single checkpoint')
 from isaacsim import SimulationApp
 extra=[] if args.physics_threads is None else [f'--/persistent/physics/numThreads={args.physics_threads}']
 app=SimulationApp({'headless':True,'fast_shutdown':True,'disable_viewport_updates':True,'limit_cpu_threads':2,'extra_args':extra})
@@ -40,6 +43,7 @@ try:
     torch.set_num_threads(1)
     from anon_policy_catalog import PRESETS,LABELS,identify,label_for
     from anon_config_compat import clean_legacy_config
+    from command_plan import yaw_speed_limit
     profiles={};catalog={};initial_actions={};active=identify(args.checkpoint)
     paths={active:args.checkpoint}
     if args.preload_presets:paths.update({k:v for k,v in PRESETS.items() if k!=active})
@@ -50,6 +54,7 @@ try:
             config=clean_legacy_config(config)
             config['simulation_device']=args.body_device
             config['runtime_inference_only']=not args.legacy_compute
+            config['runtime_manual_reset_only']=args.manual_reset_only
             if config.get('amp_enabled'):config['amp_reward_diagnostics']=False
             agent=json.loads((path.parent/'agent_config.json').read_text(encoding='utf-8'))
             if owner is not None and (not config.get('full_motion_path') or not owner.cfg.get('full_motion_path')):
@@ -96,11 +101,22 @@ try:
     generation=0;pending='';settled=0;switch_age=0
     import omni.usd
     stage_id=int(omni.usd.get_context().get_stage_id())
-    def publish(seq,done=False,reset=False,error='',reason='',complete=''):
+    def publish(seq,done=False,reset=False,error='',reason='',complete='',turn_state=None,fallen=False):
         state=dict(seq=seq,poses=env.poses[0].cpu().numpy(),
                    velocity=env.logical_vel[0].cpu().numpy(),command=env.commands[0].cpu().numpy(),done=done,reset=reset,link_names=env.links,
                    policy_id=active,generation=generation,switch_pending=pending,switch_error=error,reset_reason=reason,
                    worker_pid=os.getpid(),physics_stage_id=stage_id,checkpoint=checkpoint,switch_complete=complete)
+        state['fallen']=fallen
+        state['restart']=reset or (done and not args.manual_reset_only)
+        if config.get('command_yaw_limit_by_speed'):
+            if turn_state is None:
+                initial=env.continuous_ref_commands[0]
+                limit=yaw_speed_limit(initial[:2].norm(),config)
+                turn_state=torch.cat((env.commands[0],initial[2:3],limit.reshape(1)))
+            request_x,request_y,request_yaw,applied_yaw,limit=turn_state.cpu().numpy()
+            state['requested_command']=np.array([request_x,request_y,request_yaw])
+            state['command']=np.array([request_x,request_y,applied_yaw])
+            state['yaw_limit']=float(limit)
         if seq==-1 or reason=='policy_switch':state['config_json']=json.dumps(config)
         if seq==-1:state['catalog_json']=json.dumps(catalog)
         if connection is not None:
@@ -110,7 +126,7 @@ try:
         np.savez(temporary,**state)
         os.replace(temporary,args.ipc/f'state_{seq}.npz')
     publish(-1)
-    last=-1; last_request=time.monotonic()
+    last=-1; last_request=time.monotonic(); previously_fallen=False
     with torch.inference_mode():
         while time.monotonic()-last_request<120:
             if connection is not None:
@@ -142,7 +158,13 @@ try:
             command[2]=command[2].clamp(-config.get('max_yaw',.6),config.get('max_yaw',.6))
             if hasattr(env,'set_command'):env.set_command(command.cpu().tolist())
             else:env.commands[:]=command
-            _,_,done,_=env.step(policy(env.get_observations()))
+            observation=env.get_observations()
+            turn_state=None
+            if config.get('command_yaw_limit_by_speed'):
+                planned=env.next_planned_command()[0]
+                limit=yaw_speed_limit(planned[:2].norm(),config)
+                turn_state=torch.cat((env.commands[0],planned[2:3],limit.reshape(1)))
+            _,_,done,_=env.step(policy(observation))
             env.refresh()
             if pending:
                 switch_age+=1
@@ -158,8 +180,13 @@ try:
                     env,runner,policy,checkpoint=profiles[active];config=env.cfg
                     env.physics_time=physics_time
                     env.reset(env.ids,heading=heading,root_xy=root_xy)
-                    env.refresh();reset=True;reason='policy_switch'
-            publish(seq,bool(done[0]),reset,error,reason,complete)
+                    env.refresh();reset=True;reason='policy_switch';turn_state=None
+            ended=bool(done[0])
+            fallen=args.manual_reset_only and ended
+            # A character lying on the floor counts as one fall until it recovers or is reset.
+            fall_event=fallen and (reset or not previously_fallen) if args.manual_reset_only else ended
+            previously_fallen=fallen
+            publish(seq,fall_event,reset,error,reason,complete,turn_state,fallen=fallen)
             last=seq
 except Exception:
     import traceback

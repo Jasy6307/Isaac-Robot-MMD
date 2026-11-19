@@ -123,3 +123,16 @@ def resolve_training_log_root(experiment_name: str, dance_name: str | None = Non
         if canonical:
             return os.path.join(root, canonical)
     return root
+
+
+def resolve_training_motion(dance_name: str | None, motion_h5: str | None) -> tuple[str | None, str | None]:
+    """Use the requested H5 verbatim, with an optional dance label for logs."""
+    if motion_h5 is None:
+        return resolve_dance_h5_by_name(dance_name) if dance_name else (None, None)
+    path = resolve_dance_asset(motion_h5)
+    if path.suffix.casefold() not in ('.h5', '.hdf5'):
+        raise ValueError(f'Expected a .h5 or .hdf5 motion file: {path}')
+    if not path.is_file():
+        raise FileNotFoundError(f'Training motion HDF5 not found: {path}')
+    label = normalize_dance_stem(dance_name) if dance_name else infer_dance_name_from_motion_path(str(path))
+    return str(path), label

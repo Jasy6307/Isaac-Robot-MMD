@@ -19,6 +19,7 @@ class AnonSecondaryStream:
         cmd=[sys.executable,str(resolve_source('runtime/anon_secondary_worker.py')),'--pmx',str(args.pmx.resolve()),
              '--quality',args.quality,'--physics-threads',str(args.physics_threads if args.physics_threads is not None else 16),
              '--task-threads',os.environ.get('ANON_SECONDARY_TASK_THREADS','8'),
+             '--skirt-edge-stride',str(args.skirt_edge_stride),
              '--output',str(self.output.resolve()),*self.channel.worker_args]
         if args.secondary_profile and not args.legacy_secondary_physics:cmd+=['--profile',str(args.secondary_profile.resolve())]
         if args.reference_hair_compute:cmd+=['--reference-hair-compute']
@@ -37,15 +38,16 @@ class AnonSecondaryStream:
             self.close();raise
 
     def send(self,seq,state,audit=False):
-        self.channel.send(dict(seq=seq,poses=state['poses'],reset=bool(state['done']) or bool(state.get('reset',False)),audit=audit))
+        self.channel.send(dict(seq=seq,poses=state['poses'],reset=bool(state['restart']),audit=audit))
 
-    def receive(self,seq,startup=False):
+    def receive(self,seq,startup=False,on_wait=None):
         deadline=time.perf_counter()+120;ui_tick=0.
         while time.perf_counter()<deadline:
             value=self.channel.receive(seq)
             if value is not None:return value
             if self.process.poll() is not None:raise RuntimeError('Secondary worker failed; see '+str(self.output/'worker.log'))
-            if startup and time.perf_counter()>=ui_tick:self.app.update();ui_tick=time.perf_counter()+.05
+            if on_wait is not None:on_wait()
+            elif startup and time.perf_counter()>=ui_tick:self.app.update();ui_tick=time.perf_counter()+.05
             time.sleep(.0005)
         raise TimeoutError('Secondary worker response timed out')
 

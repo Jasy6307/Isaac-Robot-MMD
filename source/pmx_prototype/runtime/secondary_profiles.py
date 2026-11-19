@@ -11,6 +11,7 @@ from pathlib import Path
 
 DEFAULT_SECONDARY_PROFILE = resolve_source('secondary_default.json')
 DEFAULT_SECONDARY_QUALITY = 'cloth'
+SKIRT_EDGE_STRIDES = {'full': 1, 'reduced': 2, 'sparse': 3}
 
 
 def resolve_skirt_grid(settings, names):

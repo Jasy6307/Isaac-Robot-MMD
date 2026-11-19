@@ -1,9 +1,7 @@
-"""Training-only anatomical mirrors for the 31-DOF unified lateral runner.
+"""Training-only anatomical mirrors for the 31-DOF unified policy.
 
-Transforms raw observations before their saved normalizer. Four-cycle SR clips
-use their measured clock offsets, never an assumed half-cycle shift. The PPO
-augmentation is restricted to settled, pure lateral running; other samples are
-identity copies. No inference action is changed.
+Transforms raw observations and residual actions before normalization.
+Lateral running and turn-stop lanes use the phase of their mirrored reference.
 """
 import json
 import math
@@ -41,6 +39,7 @@ class AnatomicalMirror:
         self.axial=torch.tensor([1.,-1.,-1.],device=device)
         self.quaternion=torch.tensor([1.,-1.,-1.,1.],device=device)
         self.lateral_phase_delta=float(offsets[13]-offsets[14])
+        self.pivot_phase_delta=0.
 
     @classmethod
     def from_env(cls,env):
@@ -52,7 +51,7 @@ class AnatomicalMirror:
 
     def joints(self,x):return x[...,self.index]*self.sign
 
-    def observations(self,x):
+    def observations(self,x,pivot_direction=None):
         if x.shape[-1]!=248:raise ValueError('Observation layout changed; re-audit symmetry')
         y=x.clone(); y[...,0:3]=x[...,0:3]*self.polar
         y[...,3:6]=x[...,3:6]*self.axial; y[...,6:9]=x[...,6:9]*self.polar
@@ -61,6 +60,9 @@ class AnatomicalMirror:
         y[...,199:202]=x[...,199:202]*self.polar
         y[...,202:204]=x[...,202:204].flip(-1)
         angle=2*math.pi*self.lateral_phase_delta*torch.sign(x[...,10])
+        if pivot_direction is not None:
+            turn_angle = (2 * math.pi * self.pivot_phase_delta) * pivot_direction
+            angle = torch.where(pivot_direction != 0., turn_angle, angle)
         s,c=x[...,204],x[...,205]
         y[...,204]=s*angle.cos()+c*angle.sin();y[...,205]=c*angle.cos()-s*angle.sin()
         y[...,206:237]=self.joints(x[...,206:237])
@@ -92,6 +94,33 @@ def eligibility(env):
     return mask[:,None]
 
 
+def pivot_reference_phase_delta(motion, cfg):
+    """Find the phase shift from the left reference to its right counterpart."""
+    from unified_walk_run_reference import sample
+
+    phases = torch.arange(motion.count, device=motion.commands.device, dtype=torch.float32) / motion.count
+    command = torch.zeros((motion.count, 3), device=phases.device)
+    command[:, 2] = cfg['max_yaw']
+    left = sample(motion, phases, command, cfg)['contacts'].flip(-1).cpu().numpy()
+    right = sample(motion, phases, -command, cfg)['contacts'].cpu().numpy()
+    errors = [np.mean((left - np.roll(right, -shift, axis=0)) ** 2) for shift in range(len(left))]
+    return float(np.argmin(errors)) / len(left)
+
+
+def rollout_metadata(env):
+    metadata = {'mirror_eligible': eligibility(env)}
+    if env.cfg.get('train_mirror_pivot_stop', False):
+        from low_speed_commands import pivot_stop_directions
+
+        if not hasattr(env, 'mirror_pivot_direction'):
+            env.mirror_pivot_direction = pivot_stop_directions(env.cfg, env.ids)[:, None]
+        # A dedicated lane keeps its turn direction through braking and idle.
+        direction = env.mirror_pivot_direction
+        metadata['mirror_eligible'] |= direction != 0.
+        metadata['mirror_pivot_direction'] = direction
+    return metadata
+
+
 def paired_reference_std(q,mirror,floor):
     """Reward scales from both anatomical copies, without averaging the motion."""
     std=torch.cat([q,mirror.joints(q)],0).std(0)
@@ -108,7 +137,12 @@ def augmentation(env,obs=None,actions=None):
         from tensordict import TensorDict
         mask=obs['mirror_eligible'].bool()
         transformed={key:value.clone() for key,value in obs.items()}
-        transformed['policy']=torch.where(mask,mirror.observations(obs['policy']),obs['policy'])
+        direction = None
+        if 'mirror_pivot_direction' in obs:
+            pivot = obs['mirror_pivot_direction']
+            direction = pivot[..., 0]
+            transformed['mirror_pivot_direction'] = torch.where(mask, -pivot, pivot)
+        transformed['policy']=torch.where(mask,mirror.observations(obs['policy'], direction),obs['policy'])
         augmented_obs=TensorDict({key:torch.cat([value,transformed[key]],0) for key,value in obs.items()},
                                 batch_size=[2*len(obs)])
     if actions is not None:
@@ -128,6 +162,8 @@ def configure(agent_config,env):
     if not math.isfinite(coefficient) or coefficient<0:
         raise ValueError('Mirror loss coefficient must be finite and nonnegative')
     env.lateral_mirror=AnatomicalMirror.from_env(env)
+    if env.cfg.get('train_mirror_pivot_stop', False):
+        env.lateral_mirror.pivot_phase_delta = pivot_reference_phase_delta(env.motion, env.cfg)
     agent_config['algorithm']['symmetry_cfg']=dict(data_augmentation_func='lateral_symmetry:augmentation',
         use_data_augmentation=bool(env.cfg.get('train_mirror_augmentation',True)),
         use_mirror_loss=coefficient>0,mirror_loss_coeff=coefficient)

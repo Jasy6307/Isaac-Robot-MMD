@@ -57,6 +57,7 @@ Auto-Jump 现在默认使用更窄的跳跃教师门控：`jump_gate_pre_seconds
 
 换另一首舞蹈时改 `--dance`。`window_frames` 是控制步数，不是H5源帧数；
 如果需要新数据的完整长度，省略它，程序按源数据秒数换算为控制步。
+使用 `g1-prepare-motion` 生成的新参考时，将该次 `result.json` 的 `training_h5` 路径传给 `--motion_h5`。这时 `--dance` 用于训练日志的舞蹈名称。
 当前每次训练一个动作文件，不是把多首舞蹈联合训练为一个策略。
 
 ## 全程运动候选反馈（2026-11-02）

@@ -16,6 +16,34 @@
 
 ---
 
+## 统一运行入口
+
+在仓库根目录使用 [sim_main.py](sim_main.py)。`--help` 可以直接列出全部模式，无需加载 Isaac Sim。选择模式后，入口使用当前的 Python 解释器运行原脚本，保留其参数、默认值和退出码。需要 Isaac Sim、USD 或其他依赖的工作流仍使用对应的运行环境。
+
+```powershell
+python sim_main.py --help
+python sim_main.py --mode g1-motion smooth --help
+python sim_main.py --mode g1-tools audit_full_meshes --help
+python sim_main.py --mode pmx-preview --help
+python sim_main.py --mode g1-prepare-motion --vmd "media\dance\IRIS_OUT\IRIS_OUT.vmd" --no-video
+```
+
+| 工作流 | 模式 |
+| --- | --- |
+| G1 回放、训练与续训、策略验证 | `g1-replay`、`g1-train`、`g1-eval` |
+| G1 转换、贴地 IK、避碰平滑、验收和诊断 | `g1-pipeline`、`g1-motion`、`g1-diagnostics`、`g1-tools <工具名>` |
+| PMX 转 USD、VMD 烘焙、资产查看 | `pmx-convert`、`pmx-bake`、`pmx-view` |
+| PMX 预览、实时物理和录像 | `pmx-preview`、`pmx-physx`、`pmx-realtime`、`pmx-record` |
+| 爱音策略训练、评估和交互播放 | `pmx-locomotion`、`pmx-policy-play`、`pmx-policy-inspect` |
+| PMX 动作库、诊断、资产与发布工具 | `pmx-motion <工具名>`、`pmx-diagnostics <工具名>`、`pmx-tools <工具名>` |
+| 从 VMD 生成并验收 G1 训练参考 H5，可录制三列复核视频 | `g1-prepare-motion` |
+| 已有 G1 和 PMX 动作同屏播放与录像 | `compare-g1-pmx` |
+| 查询或复现已登记的 PMX 实验 | `pmx-experiments list`、`pmx-experiments run <名称> --dry-run` |
+
+在模式后加 `--help` 查看原脚本的参数，或列出该组工具。工具名使用脚本名去掉 `.py`。原脚本也可以直接运行。参数从模式名之后原样传递，例如 `python sim_main.py --mode pmx-locomotion --mode eval --help` 中，第二个 `--mode` 由爱音策略脚本解析。
+
+新增正式入口时，在 `sim_main.py` 的注册表里登记。内部 worker 由各工作流启动，历史源码快照保留在归档目录，项目测试继续用 `python run_tests.py`。
+
 ## 开发导航与测试
 
 - [架构与代码导航](source/OVERVIEW.md)：G1 与 PMX 两条链路、主要入口、模块职责、配置和数据边界。
@@ -66,14 +94,13 @@ G1 链路围绕三个入口脚本组织（见下节），由环境注册、重�
 
 ## 核心脚本（三步工作流）
 
-日常开发只需关注以下三个文件，按顺序使用：
+日常从 `sim_main.py` 按顺序调用以下三个模式。原入口也可直接运行。
 
-
-| 步骤    | 脚本                                                               | 作用                                                                                                                    |
-| ----- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| **0** | `[g1_vmd_0_replay.py](source/train_workflow/g1_vmd_0_replay.py)` | **回放与重定向**：加载 VMD/CSV/H5，交互选舞、Mapping UI、足部 IK、伴音；启动时自动扫描 VMD 并生成 CSV/H5；UI 内 **Record H5** 导出训练用参考轨迹                 |
-| **1** | `[g1_vmd_1_train.py](source/train_workflow/g1_vmd_1_train.py)`   | **PPO 训练**：读取 `media/dance/<dance>/<dance>.h5`，在 `Isaac-G1-Vmd-Train-C1-v0`（默认）上学习腿部残差策略；支持 `--dance`、`--window_frames`、课程学习等 |
-| **2** | `[g1_vmd_2_eval.py](source/train_workflow/g1_vmd_2_eval.py)`     | **策略验证**：加载 `logs/rsl_rl/` 下最新或指定 checkpoint，在仿真中播放策略并统计相对 H5 的关节跟踪误差                                                 |
+| 步骤 | 模式 | 原入口 | 作用 |
+| --- | --- | --- | --- |
+| **0** | `g1-replay` | [g1_vmd_0_replay.py](source/train_workflow/g1_vmd_0_replay.py) | 加载 VMD/CSV/H5，使用 Mapping UI 调试并导出训练用 H5 |
+| **1** | `g1-train` | [g1_vmd_1_train.py](source/train_workflow/g1_vmd_1_train.py) | 读取 H5 训练 PPO 策略，支持续训和自动验收 |
+| **2** | `g1-eval` | [g1_vmd_2_eval.py](source/train_workflow/g1_vmd_2_eval.py) | 加载 checkpoint，在仿真中播放并统计相对 H5 的跟踪误差 |
 
 
 ```text
@@ -159,7 +186,7 @@ CSV 的 `quat_x/y/z/w` 列使用 XYZW，读入后的骨字典与 H5 的 `root_qu
 ```powershell
 conda activate isaac61
 cd I:\robot_isaac
-python source\train_workflow\g1_vmd_0_replay.py
+python sim_main.py --mode g1-replay
 ```
 
 该环境采用独立的 Sim pip 安装，保留上述独立版。环境路径、编辑器选择、兼容依赖约束和实际验证记录见 [CONDA_ISAAC61.md](CONDA_ISAAC61.md)。
@@ -175,16 +202,15 @@ Copy-Item source/train_workflow/dances_config.example.yaml source/train_workflow
 # 将 VMD/CSV/H5/WAV 放入 media/（见 media/README.md）
 ```
 
-使用 `isaac61` Conda 环境依次运行回放、训练和验证：
+使用 `isaac61` Conda 环境依次运行回放、极乐净土的 Auto-Jump-Conditional 训练和验证：
 
 ```powershell
-conda activate isaac61
-python source/train_workflow/g1_vmd_0_replay.py
-python source/train_workflow/g1_vmd_1_train.py --task Isaac-G1-Vmd-Train-C1-v0 --num_envs 2048 --viz none --dance ji_le_jing_tu
-python source/train_workflow/g1_vmd_2_eval.py --task Isaac-G1-Vmd-Train-C1-v0 --num_envs 1 --dance ji_le_jing_tu --window_frames 2690
+python sim_main.py --mode g1-replay
+python sim_main.py --mode g1-train --task Isaac-G1-Vmd-Auto-Jump-Conditional-v0 --num_envs 2048 --viz none --dance ji_le_jing_tu --num_steps_per_env 48 --self_collisions --pd_profile deploy --auto_motion_feedback
+python sim_main.py --mode g1-eval --task Isaac-G1-Vmd-Auto-Jump-Conditional-v0 --num_envs 1 --dance ji_le_jing_tu
 ```
 
-独立版环境使用上节的 `run_isaac61.bat` 启动相同脚本。
+独立版也可以把 `sim_main.py --mode ...` 交给上节的 `run_isaac61.bat`。训练和验收配置见 [Auto-Jump 工作流](source/train_workflow/AUTO_JUMP_TRAINING.md)。
 
 ### 自动验收录像的 PMX 视频对照
 
@@ -206,7 +232,7 @@ Iris Out 已登记 `media/dance/IRIS_OUT/IRIS_OUT_pmx.mp4`。修正版 H5 会通
 已完成的验收录像也可以单独合成，不启动 Isaac Sim 或策略：
 
 ```powershell
-python source\train_workflow\scripts\compare_validation_video.py `
+python sim_main.py --mode g1-tools compare_validation_video `
   --validation "完整路径\validation_seeds.mp4" `
   --dance IRIS_OUT_gesture_final_v2
 ```

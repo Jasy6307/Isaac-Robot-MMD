@@ -41,7 +41,7 @@ def main():
     for arm in plan['arms']:
         run=ROOT/f'logs/rsl_rl/anon_locomotion/pivot_ablation_preserved_20261116_{arm}'
         if run.exists():raise RuntimeError(f'Run already exists: {run}')
-        durations[arm+'_train']=execute(arm+'_train',[SOURCE/'train_anon_locomotion.py','--mode','train','--headless',
+        durations[arm+'_train']=execute(arm+'_train',[SOURCE/'train_anon_locomotion.py','--mode','train','--headless','--no-acceptance-video',
             '--checkpoint',BASE,'--num-envs','12288','--iterations','100','--seed','42','--run-dir',run,
             '--config-override',OUT/(arm+'.json')])
         timing=read(run/'training_time.json');models[arm]=str(run/'policy_final.pt')

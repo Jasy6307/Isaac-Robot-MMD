@@ -39,8 +39,8 @@ if _WORKSPACE_ROOT not in sys.path:
     sys.path.insert(0, _WORKSPACE_ROOT)
 
 from source.train_workflow.utils.motion.resolve import (  # noqa: E402
-    resolve_dance_h5_by_name,
     resolve_training_log_root,
+    resolve_training_motion,
 )
 from source.train_workflow.utils.run_note import create_run_note, run_note_filename  # noqa: E402
 from source.train_workflow.utils.checkpoints import latest_checkpoint  # noqa: E402
@@ -82,8 +82,13 @@ parser.add_argument(
     default=None,
     help=(
         "Dance name under media/dance/ (e.g. IRIS_OUT). "
-        "Auto-resolves HDF5; prefers *_z_editted.h5 when present."
+        "Auto-resolves HDF5, preferring *_z_editted.h5. With --motion_h5, use this as the dance label."
     ),
+)
+parser.add_argument(
+    "--motion_h5",
+    type=str,
+    help="Explicit reference H5 path, for example the arm_stabilized.h5 from g1-prepare-motion.",
 )
 parser.add_argument(
     "--window_frames",
@@ -290,15 +295,13 @@ sim_compat.prepare_launcher_args(args_cli, default_visualizer="kit" if args_cli.
 if args_cli.video and args_cli.headless:
     parser.error("--video requires the Kit visualizer; omit --headless/--viz none")
 
-DANCE_NAME: str | None = None
-MOTION_H5_PATH: str | None = None
-if args_cli.dance:
-    MOTION_H5_PATH, DANCE_NAME = resolve_dance_h5_by_name(args_cli.dance)
-
 try:
+    MOTION_H5_PATH, DANCE_NAME = resolve_training_motion(args_cli.dance, args_cli.motion_h5)
     args_cli.validation_reference = reference_video_from_args(args_cli, MOTION_H5_PATH)
 except (OSError, ValueError, TypeError) as error:
     parser.error(str(error))
+if args_cli.motion_h5 is not None:
+    print(f"[INFO] Training reference motion: {MOTION_H5_PATH}", flush=True)
 if args_cli.validation_reference:
     print(f"[PMX对照视频] {args_cli.validation_reference['video']} | "
           f"动作零点对应视频 {args_cli.validation_reference['start_seconds']:g}s", flush=True)
@@ -604,7 +607,7 @@ def main() -> None:
     auto_report = None
     if getattr(env_cfg, "auto_jump", False):
         if MOTION_H5_PATH is None:
-            raise ValueError("Auto-Jump requires --dance to identify the reference")
+            raise ValueError("Auto-Jump requires --dance or --motion_h5 to identify the reference")
         if args_cli.episode_length_curriculum or args_cli.episode_seconds is not None or args_cli.random_motion_start is not None:
             raise ValueError("Auto-Jump manages episode sampling and curriculum; omit manual episode/start overrides")
         from source.train_workflow.utils.auto_jump_training import prepare_auto_config

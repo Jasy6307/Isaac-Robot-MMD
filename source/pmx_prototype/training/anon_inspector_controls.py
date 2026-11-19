@@ -34,7 +34,7 @@ class InspectorCommands:
         self.speed=float(config.get('amp_forward_speed',.4)) if self.fixed_forward else min(self.walk_speed,self.max_speed)
         self.yaw_speed=min(self.walk_yaw,self.max_yaw)
         self.stop();self.reset_pending=False
-        self.notice='Hold movement keys; release to stop.'
+        self.notice=''
 
     def stop(self):
         self.held.clear()
@@ -52,14 +52,14 @@ class InspectorCommands:
             if kind=='KEY_PRESS':
                 if self.fixed_forward and key!='W':
                     self.stop()
-                    self.notice='This policy supports forward/stop only. Switch to WALK for WASD and Q/E.'
-                else:self.held.add(key);self.pulses.add(key);self.notice='Keyboard control active.'
+                    self.notice='Forward only [W].'
+                else:self.held.add(key);self.pulses.add(key);self.notice=''
         elif kind in {'KEY_PRESS','KEY_REPEAT'} and key in self.PLUS|self.MINUS:
-            if self.fixed_forward:self.notice=f'Fixed trained speed: {self.speed:.2f} m/s. Switch to WALK for variable speed.'
-            else:self.set_speed(self.speed+(.05 if key in self.PLUS else -.05));self.notice=f'Speed set to {self.speed:.2f} m/s.'
+            if self.fixed_forward:self.notice=f'Fixed speed: {self.speed:.2f} m/s.'
+            else:self.set_speed(self.speed+(.05 if key in self.PLUS else -.05));self.notice=''
         elif kind=='KEY_PRESS':
-            if key=='SPACE':self.stop();self.notice='Stop requested. Release and press a movement key to resume.'
-            elif key=='R':self.stop();self.reset_pending=True;self.notice='Reset requested.'
+            if key=='SPACE':self.stop();self.notice='Stop requested.'
+            elif key=='R':self.request_reset()
             elif key=='V':self.view=(self.view+1)%4
         return True
 
@@ -73,6 +73,11 @@ class InspectorCommands:
         scale=self.speed/max(1.,math.hypot(forward,left))
         yaw=(float('Q' in keys)-float('E' in keys))*self.yaw_speed
         return [forward*scale,left*scale,yaw]
+
+    def request_reset(self):
+        self.stop()
+        self.reset_pending=True
+        self.notice='Reset requested.'
 
     def consume_reset(self):
         value=self.reset_pending;self.reset_pending=False;return value

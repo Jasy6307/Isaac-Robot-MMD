@@ -279,6 +279,8 @@ def sample_commands(env,ids,on_reset=False):
         bank=torch.tensor([[1.1,0.,.6],[1.1,0.,-.6],[-.9,0.,.6]],device=device)
         cmd[selected]=bank[env.transition_stage[selected_ids]]
         transition_hold=selected
+    pivot_stop_enabled = not env.evaluation and cfg.get('unified_pivot_stop_env_fraction', 0.)
+    previous_yaw = env.commands[ids, 2] if pivot_stop_enabled else None
     if env.evaluation:cmd.zero_()
     env.commands[ids]=cmd;env.command_age[ids]=0.
     if not hasattr(env,'unified_command_hold'):env.unified_command_hold=torch.zeros(env.num_envs,device=device)
@@ -290,6 +292,12 @@ def sample_commands(env,ids,on_reset=False):
     if transition_hold is not None:
         env.unified_command_hold[ids[transition_hold]]=float(cfg.get('unified_transition_hold_seconds',5.))+torch.rand(int(transition_hold.sum()),device=device)*float(cfg.get('unified_transition_hold_jitter_seconds',1.))
     if not env.evaluation:
-        from low_speed_commands import apply_low_speed_pools
+        from low_speed_commands import apply_low_speed_pools, apply_pivot_stop_pool, apply_standing_resets
         apply_low_speed_pools(env,ids,on_reset)
-    if on_reset:env.continuous_ref_commands[ids]=env.commands[ids]
+        if pivot_stop_enabled:
+            apply_pivot_stop_pool(env, ids, previous_yaw, on_reset)
+        if on_reset and cfg.get('unified_stand_reset_env_fraction', 0.):
+            apply_standing_resets(env, ids)
+    if on_reset:
+        from command_plan import limit_yaw_command
+        env.continuous_ref_commands[ids]=limit_yaw_command(env.commands[ids],cfg)

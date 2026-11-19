@@ -6,6 +6,7 @@ import re
 import numpy as np
 
 from source.train_workflow.g1_vmd_pipeline import find_ffmpeg
+from .motion import sha256
 
 PMX_SOURCE = Path('source/pmx_prototype')
 FPS = 30
@@ -70,12 +71,21 @@ def trim_physics(source, baked, cache, count, offset, schema):
     original = Usd.Stage.Open(str(source))
     baked_stage = Usd.Stage.Open(str(baked))
     raw = UsdSkel.Animation.Get(baked_stage, '/Character/Animation')
-    source_anim = UsdSkel.Animation.Get(original, '/Character/Animation')
-    input_joints = list(source_anim.GetJointsAttr().Get())
     ordered_joints = list(raw.GetJointsAttr().Get())
     dynamic = np.asarray(schema['dynamic_mask'], dtype=bool)
-    if input_joints != ordered_joints or len(dynamic) != len(input_joints) or not dynamic.any():
+    if len(dynamic) != len(ordered_joints) or not dynamic.any() or dynamic.all():
         raise ValueError('PhysX and source joint schemas do not match')
+    # Source animation only authors VMD-driven bones. The worker expands it to
+    # the full skeleton, including rest pose joints and the secondary bones.
+    caches, queries = [], []
+    for scene in (original, baked_stage):
+        skeleton = UsdSkel.Skeleton.Get(scene, '/Character/Skeleton')
+        skel_cache = UsdSkel.Cache()
+        skel_cache.Populate(UsdSkel.Root.Get(scene, '/Character'), Usd.PrimDefaultPredicate)
+        if list(skeleton.GetJointsAttr().Get()) != ordered_joints:
+            raise ValueError('PhysX bone ordering differs from the source skeleton')
+        caches.append(skel_cache)
+        queries.append(skel_cache.GetSkelQuery(skeleton))
     expected = list(range(count+offset))
     if any(attr.GetTimeSamples() != expected for attr in (raw.GetTranslationsAttr(), raw.GetRotationsAttr())):
         raise ValueError('PhysX cache has an incomplete clock')
@@ -85,23 +95,23 @@ def trim_physics(source, baked, cache, count, offset, schema):
     for frame in range(count):
         p = raw.GetTranslationsAttr().Get(frame+offset)
         q = raw.GetRotationsAttr().Get(frame+offset)
-        np_pos, np_rot = np.asarray(p), np.asarray(q)
-        if not np.isfinite(np_pos).all() or not np.isfinite(np_rot).all():
+        if not np.isfinite(np.asarray(p)).all() or not np.isfinite(np.asarray(q)).all():
             raise ValueError(f'Nonfinite PMX cache at frame {frame}')
-        p0 = np.asarray(source_anim.GetTranslationsAttr().Get(frame))[~dynamic]
-        q0 = np.asarray(source_anim.GetRotationsAttr().Get(frame))[~dynamic]
-        p1, q1 = np_pos[~dynamic], np_rot[~dynamic]
-        max_position = max(max_position, float(np.max(np.linalg.norm(p1-p0, axis=1))))
-        max_rotation = max(max_rotation, float(np.max(np.minimum(np.linalg.norm(q1-q0, axis=1),
-                                                                 np.linalg.norm(q1+q0, axis=1)))))
+        body, baked_body = (np.asarray(query.ComputeJointSkelTransforms(time))[~dynamic]
+                            for query, time in zip(queries, (frame, frame+offset)))
+        difference = body-baked_body
+        if not np.isfinite(difference).all():
+            raise ValueError(f'Invalid composed PMX body transforms at frame {frame}')
+        max_position = max(max_position, float(np.max(np.linalg.norm(difference[:, 3, :3], axis=1))))
+        max_rotation = max(max_rotation, float(np.max(np.abs(difference[:, :3, :3]))))
         target.GetTranslationsAttr().Set(p, frame)
         target.GetRotationsAttr().Set(q, frame)
     if max_position > 1e-5 or max_rotation > 1e-5:
-        raise ValueError(f'PMX body failed source clock verification: {max_position:g} m, {max_rotation:g} quaternion error')
+        raise ValueError(f'PMX body failed source clock verification: {max_position:g} m, {max_rotation:g} rotation matrix error')
     stage.GetDefaultPrim().SetCustomDataByKey('secondaryMotionSolver', 'PhysX with neutral pre-roll and source clock trim')
     stage.GetRootLayer().Save()
     return dict(frames=count, trimmed_frames=offset, max_body_position_error_m=max_position,
-                max_body_quaternion_error=max_rotation)
+                max_body_rotation_matrix_error=max_rotation)
 
 
 def bake_anon(run, source, pmx, count):
@@ -136,6 +146,9 @@ def record_comparison(run, left, middle, cache, audio, count, width, height):
     if (not report['same_stage'] or report['frames'] != count or report['fps'] != FPS or
             tuple(report['comparison_order']) != LABELS):
         raise ValueError('Recorder metadata does not match the requested scene and clock')
+    for name, path in (('g1', left), ('corrected_h5', middle), ('pmx', cache)):
+        if report[name+'_sha256'] != sha256(path):
+            raise ValueError(f'Recorder input changed: {path}')
     sound = ('-map', '0:a:0') if audio else ()
     log = run.command('decode_video', find_ffmpeg(), '-nostdin', '-xerror', '-stats_period', '1',
                       '-progress', 'pipe:1', '-nostats', '-i', video, '-map', '0:v:0', *sound,

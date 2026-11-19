@@ -66,7 +66,7 @@ def main():
         new_iterations+=iterations
         tag=f'stage{index}';run=ROOT/f'logs/rsl_rl/anon_locomotion/{OUT.name}_{tag}'
         if run.exists():raise RuntimeError(f'Run exists: {run}')
-        durations[tag+'_train']=execute(tag+'_train',[SOURCE/'train_anon_locomotion.py','--mode','train','--headless',
+        durations[tag+'_train']=execute(tag+'_train',[SOURCE/'train_anon_locomotion.py','--mode','train','--headless','--no-acceptance-video',
             '--checkpoint',checkpoint,'--num-envs','12288','--iterations',iterations,'--seed','42','--run-dir',run,'--config-override',OUT/'config.json'])
         timing=read(run/'training_time.json');training+=timing['training_seconds'];checkpoint=run/'policy_final.pt'
         item=dict(checkpoint=str(checkpoint),new_iterations=new_iterations,stage_training_seconds=timing['training_seconds'],

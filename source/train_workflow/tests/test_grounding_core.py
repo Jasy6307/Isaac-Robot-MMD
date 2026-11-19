@@ -3,7 +3,8 @@ from pathlib import Path
 import tempfile
 import unittest
 import sys
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 import h5py
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -13,7 +14,10 @@ from source.train_workflow.utils.grounding.motion import read_motion, write_moti
 from source.train_workflow.utils.grounding.ik import pelvis_rotations, source_contact_report, stance_root_feedback
 from source.train_workflow.utils.grounding.pipeline import require_same_reference, prepare
 from source.train_workflow.utils.grounding import pipeline
-from source.train_workflow.utils.grounding.smoothing import height_bounds
+from source.train_workflow.utils.grounding.smoothing import height_bounds, sample_brackets
+from source.train_workflow.utils.grounding.arms import temporal_scores
+from source.train_workflow.utils.grounding import dance_optimize
+from source.train_workflow.scripts.compare_dance_auto import Run
 
 
 def fixture(path, count=12):
@@ -75,6 +79,11 @@ class GroundingCoreTests(unittest.TestCase):
         self.assertTrue(np.all(lower < upper))
         self.assertGreater(lower[1, 0], .02)
 
+    def test_contact_at_an_integer_frame_does_not_depend_on_the_next_frame(self):
+        support = np.array([False, True, False])
+        coordinates, low, high = sample_brackets(len(support))
+        np.testing.assert_array_equal(coordinates[support[low] & support[high]], [1.])
+
     def test_bounded_root_feedback_retains_flight_and_fixes_support(self):
         desired = np.zeros((20, 2)); desired[8:12] = .06
         heights = desired + .03
@@ -104,6 +113,56 @@ class GroundingCoreTests(unittest.TestCase):
             self.assertTrue((run/'candidate.h5').is_file())
             self.assertTrue((run/'validation.json').is_file())
             self.assertFalse((run/'final.h5').exists())
+
+    def test_wrist_detector_preserves_source_accents_but_flags_an_added_spike(self):
+        target = np.zeros((36, 2, 3))
+        target[18:, 0, 0] = .25
+        self.assertEqual(temporal_scores(target, target, target, target).max(), 0.)
+        candidate = target.copy()
+        candidate[8, 1, 1] += .13
+        peak = temporal_scores(candidate, candidate, target, target)
+        self.assertGreater(peak[8], 1.)
+        self.assertEqual(peak[18], 0.)
+
+    def test_arm_retry_switches_seed_and_rejects_exhausted_budget(self):
+        for solvable in (True, False):
+            with self.subTest(solvable=solvable), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root/'baseline.h5'
+                fixture(source, count=36)
+                with h5py.File(source, 'r+') as stream:
+                    stream['joint_pos_delta'][15, 0] = .2
+                motion = read_motion(source)
+                problem = SimpleNamespace(reference=motion, robot_usd='unused.usd')
+                run = Run(root/'run', accept_eula=False)
+                attempts = run.directory/'attempts'
+                fake = Mock(columns=np.array([0]), fps=30.)
+                fake.scores.side_effect = lambda q: np.where(q[:, 0] > .2, 3., 0.)
+                fake.solve.side_effect = lambda seed, *_args, **_kwargs: seed.copy()
+                def seeds(current, lo, hi):
+                    smoothed = current[lo:hi].copy()
+                    smoothed[:, 0] = .1
+                    return [(0., 2.4, .6, smoothed)] if solvable else []
+                fake.warm_seeds.side_effect = seeds
+                mesh = dict(unexpected=[])
+                with patch.object(dance_optimize, 'ArmRefinement', return_value=fake), \
+                     patch.object(dance_optimize, '_local_clearance', return_value=.01), \
+                     patch.object(dance_optimize, '_hard_checks', return_value={'passed': True}), \
+                     patch.object(dance_optimize, 'audit_mesh', return_value=mesh) as audit:
+                    if solvable:
+                        result, _, _, quality = dance_optimize._arm_motion(
+                            run, attempts, problem, motion, None, None, None, 1)
+                        self.assertEqual(quality['flagged_frames'], [])
+                        self.assertTrue(require_same_reference(motion, result))
+                        np.testing.assert_array_equal(result.delta[:, 1], motion.delta[:, 1])
+                        self.assertEqual(audit.call_count, 1)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, 'failed acceptance'):
+                            dance_optimize._arm_motion(run, attempts, problem, motion, None, None, None, 1)
+                        self.assertFalse(audit.called)
+                self.assertEqual(fake.warm_seeds.call_count, 1)
+                self.assertTrue((run.reports/'arms_01.json').is_file())
+                self.assertFalse((run.directory/'deliverables').exists())
 
 
 if __name__ == '__main__':

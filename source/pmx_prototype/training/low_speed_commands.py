@@ -1,5 +1,14 @@
-"""Explicit sustained low-speed and walk/stop pools for the unified sampler."""
+"""Dedicated low-speed and stop command pools for the unified sampler."""
+import math
+
 import torch
+
+
+def _low_speed_start(cfg):
+    first=round(100*cfg.get('unified_backward_env_fraction',0.))+round(100*cfg.get('unified_right_env_fraction',0.))
+    if cfg.get('unified_pivot_sampling',cfg.get('unified_pivot_training',False)):
+        first+=round(100*cfg.get('unified_pivot_env_fraction',.1))+round(100*cfg.get('unified_reversal_env_fraction',.1))
+    return first+round(100*cfg.get('unified_transition_env_fraction',0.))
 
 
 def apply_low_speed_pools(env,ids,on_reset):
@@ -7,10 +16,7 @@ def apply_low_speed_pools(env,ids,on_reset):
     steady=round(100*cfg.get('unified_low_speed_env_fraction',0.))
     stopping=round(100*cfg.get('unified_low_stop_env_fraction',0.))
     if steady==0 and stopping==0:return  # No RNG or behavior change for old recipes.
-    first=round(100*cfg.get('unified_backward_env_fraction',0.))+round(100*cfg.get('unified_right_env_fraction',0.))
-    if cfg.get('unified_pivot_sampling',cfg.get('unified_pivot_training',False)):
-        first+=round(100*cfg.get('unified_pivot_env_fraction',.1))+round(100*cfg.get('unified_reversal_env_fraction',.1))
-    first+=round(100*cfg.get('unified_transition_env_fraction',0.))
+    first=_low_speed_start(cfg)
     if min(first,steady,stopping)<0 or first+steady+stopping>100:
         raise ValueError('Unified command pools must fit within100 percent')
     bucket=ids.remainder(100)
@@ -49,4 +55,77 @@ def apply_low_speed_pools(env,ids,on_reset):
     duration=walk_hold+torch.rand(n,device=env.device)*walk_jitter
     duration=torch.where(stationary,stop_hold+torch.rand(n,device=env.device)*stop_jitter,duration)
     env.unified_command_hold[ids[selected]]=duration
+
+
+def _pivot_stop_bounds(cfg):
+    fraction = float(cfg.get('unified_pivot_stop_env_fraction', 0.))
+    if not 0. <= fraction <= 1.:
+        raise ValueError('Invalid pivot-stop environment fraction')
+    count = round(100 * fraction)
+    low_speed_count = round(100 * cfg.get('unified_low_speed_env_fraction', 0.))
+    low_stop_count = round(100 * cfg.get('unified_low_stop_env_fraction', 0.))
+    first = _low_speed_start(cfg) + low_speed_count + low_stop_count
+    if cfg.get('unified_transition_env_fraction', 0.):
+        # The running transition pool uses the configured offsets even when
+        # standalone pivot sampling was explicitly turned off.
+        transition_keys = ('unified_backward_env_fraction', 'unified_right_env_fraction',
+                           'unified_pivot_env_fraction', 'unified_reversal_env_fraction',
+                           'unified_transition_env_fraction')
+        transition_end = sum(round(100 * cfg.get(key, 0.)) for key in transition_keys)
+        first = max(first, transition_end)
+    if first < 0 or (fraction and (count < 2 or count % 2)) or first + count > 100:
+        raise ValueError('Pivot-stop lanes require an even number of unused percentage buckets')
+    return first, first + count
+
+
+def pivot_stop_directions(cfg, ids):
+    """Signed turn-stop lane assignment, including the stationary portion."""
+    first, end = _pivot_stop_bounds(cfg)
+    bucket = ids.remainder(100)
+    sign = torch.where((bucket - first).remainder(2) == 0, 1., -1.)
+    return torch.where((bucket >= first) & (bucket < end), sign, 0.)
+
+
+def apply_pivot_stop_pool(env, ids, previous_yaw, on_reset):
+    """Alternate between boundary-speed pivots and a hold at zero command."""
+    cfg = env.cfg
+    direction = pivot_stop_directions(cfg, ids)
+    selected = direction != 0.
+    pool_ids = ids[selected]
+    if not len(pool_ids):
+        return
+
+    yaw = float(cfg['max_yaw'])
+    turn_hold = float(cfg.get('unified_pivot_hold_seconds', 6.))
+    turn_jitter = float(cfg.get('unified_pivot_hold_jitter_seconds', 2.))
+    stop_hold = float(cfg.get('unified_pivot_stop_hold_seconds', 8.))
+    stop_jitter = float(cfg.get('unified_pivot_stop_hold_jitter_seconds', 2.))
+    if (not all(map(math.isfinite, (yaw, turn_hold, turn_jitter, stop_hold, stop_jitter)))
+            or min(yaw, turn_hold, stop_hold) <= 0. or min(turn_jitter, stop_jitter) < 0.):
+        raise ValueError('Invalid pivot-stop yaw or hold durations')
+
+    at_stop = previous_yaw[selected].abs() == yaw
+    if on_reset:
+        at_stop.zero_()
+    env.commands[pool_ids, :2] = 0.
+    env.commands[pool_ids, 2] = torch.where(at_stop, 0., yaw * direction[selected])
+    hold = torch.where(at_stop, stop_hold, turn_hold)
+    jitter = torch.where(at_stop, stop_jitter, turn_jitter)
+    env.unified_command_hold[pool_ids] = hold + jitter * torch.rand_like(hold)
+
+
+def apply_standing_resets(env, ids):
+    """Begin selected general lanes at idle, then resume general sampling."""
+    cfg = env.cfg
+    _, first = _pivot_stop_bounds(cfg)
+    fraction = float(cfg['unified_stand_reset_env_fraction'])
+    if not 0. < fraction <= 1.:
+        raise ValueError('Invalid initial standing environment fraction')
+    count = round(100 * fraction)
+    if count < 1 or first + count > 100:
+        raise ValueError('Initial standing lanes must fit within the general pool')
+    bucket = ids.remainder(100)
+    standing = ids[(bucket >= first) & (bucket < first + count)]
+    env.commands[standing] = 0.
+    env.unified_command_hold[standing] = float(cfg.get('unified_idle_hold_seconds', 40.))
 

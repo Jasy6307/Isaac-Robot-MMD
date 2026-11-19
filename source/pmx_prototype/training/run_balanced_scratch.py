@@ -15,12 +15,28 @@ RECIPE=SOURCE/'configs/training/unified/low_speed_balanced_v2.json'
 MAXIMUM=6000
 BEFORE=88746.49679320009
 NUM_ENVS=8192
+RUN_TO_MAXIMUM=False
 
 
 def read(path):return json.loads(path.read_text(encoding='utf-8'))
 def write(path,value):
     path.parent.mkdir(parents=True,exist_ok=True)
     temp=path.with_suffix('.tmp');temp.write_text(json.dumps(value,indent=2),encoding='utf-8');temp.replace(path)
+
+
+def acceptance_durations(config):
+    if str(SOURCE) not in sys.path:
+        sys.path.insert(0,str(SOURCE))
+    from source_layout import SOURCE_DIR
+    from evaluate_unified_walk_run import LOW_SPEED_SECONDS,suite
+    from locomotion_acceptance import CURRENT_PROTOCOL,RESPONSE_STEADY_PROTOCOLS
+    protocol=config['unified_acceptance_protocol']
+    idle_head=config.get('unified_idle_head_acceptance',protocol in RESPONSE_STEADY_PROTOCOLS)
+    backward_walk=config.get('unified_eval_backward_walk',False)
+    low_speed_seconds=LOW_SPEED_SECONDS if protocol==CURRENT_PROTOCOL else 0
+    return dict(
+        complete_suite_seconds=sum(seconds for _,seconds,_ in suite(protocol=protocol,idle_head=idle_head,backward_walk=backward_walk))+low_speed_seconds,
+        lightweight_suite_seconds=sum(seconds for _,seconds,_ in suite(lite=True,protocol=protocol,idle_head=idle_head,backward_walk=backward_walk)))
 
 
 def execute(stage,args,run=None):
@@ -36,13 +52,17 @@ def execute(stage,args,run=None):
     return time.perf_counter()-started
 
 
-def learn(run,iterations,checkpoint=None):
+def learn(run,iterations,checkpoint=None,*,integrated_low_speed=False):
     config=OUT/('continuation_config.json' if checkpoint else 'config.json')
     arguments=[SOURCE/'train_anon_locomotion.py','--mode','train','--headless','--num-envs',str(NUM_ENVS),
         '--iterations',str(iterations),'--seed','42','--run-dir',run,'--experiment-output',OUT/'acceptance',
         '--scratch-target','latest_unified','--acceptance-interval','500','--scratch-full-interval','1000',
         '--config-override',config]
     arguments+=['--scratch-continuation','--checkpoint',checkpoint] if checkpoint else ['--from-scratch']
+    if RUN_TO_MAXIMUM:
+        arguments.append('--scratch-continue-after-pass')
+        if not integrated_low_speed:
+            arguments.append('--scratch-low-speed-after-full-pass')
     return execute('train_'+run.name,arguments,run)
 
 
@@ -50,31 +70,55 @@ def main():
     if (OUT/'experiment_plan.json').exists() or RUN.exists():raise RuntimeError('Fresh experiment output already exists')
     OUT.mkdir(parents=True,exist_ok=True)
     config=read(RECIPE)
-    assert config['unified_acceptance_protocol']=='response_steady_v2'
+    durations=acceptance_durations(config)
+    from locomotion_acceptance import CURRENT_PROTOCOL,RESPONSE_STEADY_PROTOCOLS
+    protocol=config['unified_acceptance_protocol']
+    assert protocol in RESPONSE_STEADY_PROTOCOLS
+    integrated=protocol==CURRENT_PROTOCOL
     assert not any(config.get(k) for k in ['train_retention_weight','train_retention_teacher_checkpoint','train_teacher_anchor_path'])
     write(OUT/'config.json',config)
     continuation=dict(config);continuation.pop('train_leg_std',None)
     write(OUT/'continuation_config.json',continuation)
     files=['train_anon_locomotion.py','training/anon_scratch_validation.py','training/low_speed_commands.py',
         'training/locomotion_acceptance.py','training/command_plan.py','training/anon_imitation_env.py',
-        'motion/unified_walk_run_reference.py','diagnostics/evaluate_unified_walk_run.py']
+        'motion/unified_walk_run_reference.py','diagnostics/evaluate_unified_walk_run.py',
+        'diagnostics/anon_acceptance_video.py','diagnostics/record_gait_diagnostic.py']
     hashes={name:hashlib.sha256((SOURCE/name).read_bytes()).hexdigest() for name in files}
     plan=dict(started_from_random_weights=True,pretrained_checkpoint=None,external_teacher=None,num_envs=NUM_ENVS,seed=42,
         maximum_iterations=MAXIMUM,screen_interval=500,full_interval=1000,steps_per_env_per_iteration=48,
         recipe=str(RECIPE),recipe_sha256=hashlib.sha256(RECIPE.read_bytes()).hexdigest(),source_hashes=hashes,
-        acceptance_protocol='response_steady_v2',complete_suite_seconds=355,
-        full_gate='Complete v2 suite, zero falls, unchanged original slip reduction and speed-retention checks.',
-        supplemental_low_speed_check='After a full pass, fixed checkpoint walks/stops at0.15,0.20,0.25,0.30,0.35,0.40m/s across16 initial phase/heading states. Zero falls; no new speed threshold.',
+        acceptance_protocol=protocol,**durations,
+        full_gate='Complete response/steady-state suite, zero falls, slip reduction and speed retention.',
+        low_speed_check=('Part of full acceptance. Four starting phase/heading pairs at each speed endpoint, zero falls.'
+                         if integrated else 'Separate six-speed recovery check across 16 initial phase/heading states. Zero falls.'),
         milestone_rule='Record first complete-gate pass separately from first complete+low-speed-check pass. A screen never grants acceptance.',
-        stop_rule='Stop at first complete+low-speed-check pass, or6000 iterations per the prior user limit. Do not extend or retune automatically.',
+        stop_rule=(f'Train through iteration {MAXIMUM}, even if acceptance passes earlier.' if RUN_TO_MAXIMUM
+                   else f'Stop at the first complete and low-speed pass, or iteration {MAXIMUM}.'),
         time_rule='Actual training-loop wall time including shared GPU contention; excludes initialization and all acceptance. Report acceptance and wall time separately.',
-        cumulative_training_seconds_before=BEFORE,shared_gpu_authorized=True)
+        shared_gpu_authorized=True)
+    if BEFORE is not None:
+        plan['cumulative_training_seconds_before']=BEFORE
     write(OUT/'experiment_plan.json',plan)
     launched=time.perf_counter();run=RUN;extra_seconds=0.;attempts=[];accepted=False
-    learn(run,MAXIMUM)
+    video_summaries=[]
+    learn(run,MAXIMUM,integrated_low_speed=integrated)
     for continuation_index in range(20):
         timing=read(run/'training_time.json');history=read(OUT/'acceptance/history.json');last=history[-1]
+        video_summary=run/'acceptance_videos.json'
+        if video_summary.is_file():video_summaries.append(video_summary)
         completed=timing['completed_iterations']
+        if integrated or RUN_TO_MAXIMUM:
+            if (RUN_TO_MAXIMUM and completed!=MAXIMUM) or not last.get('low_speed'):
+                raise RuntimeError(f'Run stopped at iteration {completed} without completing the fixed-budget validation')
+            for row in history:
+                low=row.get('low_speed')
+                if low:
+                    attempts.append(dict(completed_iterations=row['completed_iterations'],
+                        training_seconds=row['active_training_seconds'],full_passed=row['passed'],
+                        low_speed_falls=low['falls'],low_speed_passed=low['passed'],report=low.get('report',row['report'])))
+            write(OUT/'supplemental_history.json',attempts)
+            accepted=last['combined_passed']
+            break
         if last['passed']:
             work=OUT/f'low_speed_{completed:06d}';models=OUT/f'models_{completed:06d}.json'
             write(models,dict(candidate=str(run/'policy_final.pt')))
@@ -92,17 +136,20 @@ def main():
         learn(next_run,MAXIMUM-completed,run/'policy_final.pt');run=next_run
     assert all(hashlib.sha256((SOURCE/name).read_bytes()).hexdigest()==value for name,value in hashes.items()),'Frozen source changed during the experiment'
     first_full=next((row for row in history if row['passed']),None)
-    first_all=next((row for row in attempts if row['low_speed_passed']),None)
+    first_all=next((row for row in attempts if row['full_passed'] and row['low_speed_passed']),None)
     result=dict(accepted=accepted,completed_iterations=completed,num_envs=NUM_ENVS,checkpoint=str(run/'policy_final.pt'),
         first_complete_gate_pass=first_full,first_complete_and_low_speed_pass=first_all,
         training_seconds=timing['experiment_training_seconds'],acceptance_seconds=timing['acceptance_seconds']+extra_seconds,
         wall_seconds_including_setup=time.perf_counter()-launched,
-        cumulative_training_seconds=BEFORE+timing['experiment_training_seconds'],
-        started_from_random_weights=True,configuration_unchanged=True,acceptance_protocol='response_steady_v2',
-        initialization_audit=str(OUT/'acceptance/initialization_audit.json'),supplemental_history=attempts)
+        started_from_random_weights=True,configuration_unchanged=True,acceptance_protocol=protocol,
+        initialization_audit=str(OUT/'acceptance/initialization_audit.json'),supplemental_history=attempts,
+        final_acceptance=last,recording_seconds=sum(read(p)['recording_seconds'] for p in video_summaries),
+        acceptance_video_summaries=[str(p) for p in video_summaries])
+    if BEFORE is not None:
+        result['cumulative_training_seconds']=BEFORE+timing['experiment_training_seconds']
     write(OUT/'result.json',result)
     write(OUT/'controller_status.json',dict(stage='complete',training=False,accepted=accepted,
-        **{k:result[k] for k in ['completed_iterations','training_seconds','acceptance_seconds','cumulative_training_seconds','checkpoint']}))
+        **{k:result[k] for k in ['completed_iterations','training_seconds','acceptance_seconds','cumulative_training_seconds','checkpoint'] if k in result}))
 
 
 if __name__=='__main__':

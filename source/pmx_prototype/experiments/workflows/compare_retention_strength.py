@@ -61,7 +61,7 @@ def main():
         write(OUT/(name+'_config.json'),cfg)
         run=ROOT/f'logs/rsl_rl/anon_locomotion/retention_strength_20261116_{name}'
         if run.exists():raise RuntimeError('Existing run: '+str(run))
-        durations[name+'_train']=execute(name+'_train',[SOURCE/'train_anon_locomotion.py','--mode','train','--headless',
+        durations[name+'_train']=execute(name+'_train',[SOURCE/'train_anon_locomotion.py','--mode','train','--headless','--no-acceptance-video',
             '--checkpoint',BASE,'--num-envs','12288','--iterations','100','--seed','42','--run-dir',run,
             '--config-override',OUT/(name+'_config.json')])
         timing=read(run/'training_time.json');identity=read(run/'resume_identity_audit.json')

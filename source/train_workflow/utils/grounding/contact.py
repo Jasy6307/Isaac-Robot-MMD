@@ -6,7 +6,7 @@ from scipy.spatial.transform import Rotation, Slerp
 
 from source.train_workflow.utils.motion.constrained_trajectory import difference_matrix, local_rows
 from source.train_workflow.utils.retarget.lower_body_ik import RobotLeg
-from .smoothing import FEET, FRACTIONS, sampled_values
+from .smoothing import FEET, FRACTIONS, sample_brackets, sampled_values
 from .visible import visible_hull
 
 
@@ -62,8 +62,7 @@ def project_contact(q, names, fps, root_pos, root_rot, desired, robot, meshes):
     count = len(q)
     contact = desired == 0
     movable = contact.any(1)
-    coordinates = sampled_values(np.arange(count, dtype=float))
-    low, high = np.floor(coordinates).astype(int), np.ceil(coordinates).astype(int)
+    coordinates, low, high = sample_brackets(count)
     samples = contact[low] & contact[high]
     vertical = Slerp(np.arange(count), Rotation.from_matrix(root_rot))(coordinates).as_matrix()[:, 2, :]
     source_legs = sampled_values(leg_angles)

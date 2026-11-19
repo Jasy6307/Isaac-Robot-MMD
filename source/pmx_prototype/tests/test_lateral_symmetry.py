@@ -11,7 +11,7 @@ from tensordict import TensorDict
 SOURCE=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(SOURCE))
 import source_layout
-from lateral_symmetry import AnatomicalMirror,augmentation,eligibility,configure,install_normalization,paired_reference_std
+from lateral_symmetry import AnatomicalMirror,augmentation,eligibility,configure,install_normalization,paired_reference_std,rollout_metadata
 
 
 class MirrorTests(unittest.TestCase):
@@ -84,6 +84,45 @@ class MirrorTests(unittest.TestCase):
         _,means=augmentation(self.e,actions=a)
         torch.testing.assert_close(means,b)
         torch.testing.assert_close(obs['policy'],before['policy'])
+
+    def test_turn_stop_uses_lane_direction_after_yaw_reaches_zero(self):
+        fixture = Path(__file__).parent / 'fixtures/low_speed_sampling.json'
+        cfg = json.loads(fixture.read_text(encoding='utf-8'))
+        cfg.update(unified_pivot_stop_env_fraction=.06, train_mirror_pivot_stop=True)
+        self.e.cfg = cfg
+        self.e.ids = torch.tensor([90, 91, 80, 50, 96], dtype=torch.int32)
+        self.e.commands = torch.tensor([[0., 0., .6], [0., 0., -.6], [0., 0., 0.],
+                                        [0., 0., .6], [0., 1.2, 0.]])
+        self.e.continuous_ref_commands = self.e.commands.clone()
+        self.e.continuous_ref_rate = torch.zeros_like(self.e.commands)
+        self.e.device = 'cpu'
+        self.m.pivot_phase_delta = .5
+        expected_directions = torch.tensor([[1.], [-1.], [0.], [0.], [0.]])
+        expected_eligible = [True, True, False, False, True]
+        for yaw in (.6, .12, 0.):
+            self.e.commands[:2, 2] = torch.tensor([1., -1.]) * yaw
+            self.e.continuous_ref_commands.copy_(self.e.commands)
+            metadata = rollout_metadata(self.e)
+            torch.testing.assert_close(metadata['mirror_pivot_direction'], expected_directions)
+            self.assertEqual(metadata['mirror_eligible'].flatten().tolist(), expected_eligible)
+            x = torch.randn(5, 248)
+            x[:, 9:12] = self.e.commands
+            obs = TensorDict({'policy': x, **metadata}, batch_size=[5])
+            actions = torch.randn(5, 31)
+            paired, action_pairs = augmentation(self.e, obs, actions)
+            reflected, reflected_actions = paired[5:], action_pairs[5:]
+            torch.testing.assert_close(reflected['policy'][:2, 204:206], -x[:2, 204:206])
+            torch.testing.assert_close(reflected['policy'][:2, 11], -x[:2, 11])
+            torch.testing.assert_close(reflected['mirror_pivot_direction'], -expected_directions)
+            torch.testing.assert_close(reflected['policy'][2:4], x[2:4])
+            torch.testing.assert_close(reflected['policy'][4:], self.m.observations(x[4:]))
+            yaw_index = self.m.names.index('neck_yaw_joint')
+            pitch_index = self.m.names.index('neck_pitch_joint')
+            torch.testing.assert_close(reflected_actions[:2, yaw_index], -actions[:2, yaw_index])
+            torch.testing.assert_close(reflected_actions[:2, pitch_index], actions[:2, pitch_index])
+            twice, twice_actions = augmentation(self.e, reflected, reflected_actions)
+            torch.testing.assert_close(twice['policy'][5:], x)
+            torch.testing.assert_close(twice_actions[5:], actions)
 
     def test_real_rsl_mirror_loss_backpropagates(self):
         from rsl_rl.extensions import Symmetry

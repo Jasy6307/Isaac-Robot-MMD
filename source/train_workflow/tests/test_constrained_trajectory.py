@@ -10,7 +10,7 @@ from scipy import sparse
 class ConstrainedTrajectoryTests(unittest.TestCase):
     def test_sparse_derivatives_match_numpy_in_time_order(self):
         q=np.random.default_rng(5).normal(size=(9,3))
-        for order in (1,2):
+        for order in (1,2,3):
             np.testing.assert_allclose((difference_matrix(9,3,order)@q.ravel()).reshape(9-order,3),np.diff(q,n=order,axis=0))
         self.assertEqual(difference_matrix(2,3,2).shape,(0,6))
 

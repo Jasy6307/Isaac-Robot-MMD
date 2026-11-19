@@ -37,10 +37,13 @@ class InspectorInputTests(unittest.TestCase):
     def test_stop_blocks_key_repeat_and_reset(self):
         c=self.walk();c.event('W','KEY_PRESS');c.event('SPACE','KEY_PRESS')
         c.event('W','KEY_REPEAT');self.assertEqual(c.command(),[0.,0.,0.])
+        self.assertFalse(c.consume_reset())
         c.event('R','KEY_PRESS');self.assertTrue(c.consume_reset());self.assertFalse(c.consume_reset())
     def test_yaw_and_disabled_input(self):
         c=self.walk();c.event('Q','KEY_PRESS');self.assertAlmostEqual(c.command()[2],.35)
         c.enabled=False;self.assertEqual(c.command(),[0.,0.,0.])
+        c.event('R','KEY_PRESS');self.assertFalse(c.consume_reset())
+        c.request_reset();self.assertTrue(c.consume_reset());self.assertFalse(c.consume_reset())
     def test_fixed_running_cannot_pretend_variable_or_sideways(self):
         c=InspectorCommands(dict(amp_forward_only=True,amp_forward_speed=1.2,max_speed=1.2,max_yaw=0.))
         c.event('W','KEY_PRESS');self.assertEqual(c.command(),[1.2,0.,0.])

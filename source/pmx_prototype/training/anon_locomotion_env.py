@@ -290,9 +290,16 @@ class AnonLocomotionEnv:
         self.robot.set_dof_positions(self.default, ids)
         self.robot.set_dof_velocities(self.zero_qvel, ids)
         self.robot.set_dof_position_targets(self.default, ids)
+        self._refresh_reset_link_transforms()
         if self.full_body:
             self.style_target[ids] = self.default[ids]
             self.previous_style_target[ids] = self.default[ids]
+
+    def _refresh_reset_link_transforms(self):
+        # PhysX GPU link transforms are cached after reset writes until the
+        # kinematics are updated. The next observation can precede simulation.
+        if self.device == 'cuda:0':
+            self.view.update_articulations_kinematic()
 
     def refresh(self):
         self.root = self.robot.get_root_transforms().clone()
@@ -435,11 +442,10 @@ class AnonLocomotionEnv:
             reward += self.cfg.get('style_head_upright_weight', 0.)*torch.exp(-head_tilt/.02)
             extras_style = (pose_error.mean(), vel_error.mean())
         fallen = (height < .65) | (self.gravity[:, 2] > -.65) | ~torch.isfinite(self.q).all(-1)
-        timeout = self.episode_length_buf >= self.max_episode_length
+        done, timeout = self._episode_outcome(fallen)
         reward -= 5.*fallen
         reward *= self.dt
         self.episode_returns += reward; self.episode_errors += torch.sqrt(error)
-        done = fallen | timeout
         extras = {'time_outs': timeout, 'log': {
             'Tracking/linear_error': torch.sqrt(error).mean(), 'Tracking/yaw_error': torch.sqrt(yaw_error).mean(),
             'Stability/height': height.mean(), 'Stability/fall_rate': fallen.float().mean(),
@@ -449,7 +455,7 @@ class AnonLocomotionEnv:
             extras['log']['Style/upper_velocity_error'] = extras_style[1]
         if self.evaluation:
             self.recorded_state = (self.poses.clone(), self.q.clone(), self.logical_vel.clone(), self.phase.clone())
-        ids = done.nonzero(as_tuple=False).flatten()
+        ids = self._automatic_reset_ids(done)
         if len(ids):
             extras['log']['Episode/seconds'] = self.episode_length_buf[ids].float().mean()*self.dt
             extras['log']['Episode/return'] = self.episode_returns[ids].mean()
@@ -457,6 +463,18 @@ class AnonLocomotionEnv:
         if not self.evaluation:
             self.sample_commands((self.command_age > 4.).nonzero(as_tuple=False).flatten())
         return self.get_observations(), reward, done, extras
+
+    def _episode_outcome(self, fallen):
+        """Manual previews still detect falls and have no episode time limit."""
+        if self.evaluation and self.cfg.get('runtime_manual_reset_only', False):
+            return fallen, torch.zeros_like(fallen)
+        timeout = self.episode_length_buf >= self.max_episode_length
+        return fallen | timeout, timeout
+
+    def _automatic_reset_ids(self, done):
+        if self.evaluation and self.cfg.get('runtime_manual_reset_only', False):
+            return self.ids[:0]
+        return done.nonzero(as_tuple=False).flatten()
 
     def close(self):
         if getattr(self,'_owns_physics',True):self.interface.detach_stage()

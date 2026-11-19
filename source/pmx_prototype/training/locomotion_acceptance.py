@@ -6,13 +6,18 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-from command_plan import command_increment
+from command_plan import command_increment,limit_yaw_command
+from idle_head_alignment import MEAN_BIAS_LIMIT_DEG,P95_LIMIT_DEG,RECENTER_HOLD_SECONDS,RECENTER_LIMIT_DEG
 
 PROTOCOL='response_steady_v2'
+CURRENT_PROTOCOL='response_steady_v3'
+RESPONSE_STEADY_PROTOCOLS=(PROTOCOL,CURRENT_PROTOCOL)
+STATIONARY_SEGMENTS=('stand','stand_end','stop','stop_after_walk','stop_after_pivot_left')
+IDLE_HEAD_GATE_SEGMENTS=('stand','stop_after_walk','stop_after_pivot_left','stand_end')
 
 
-def specification():
-    return dict(protocol=PROTOCOL,min_steady_seconds=2.,response_min_seconds=2.,response_cap_seconds=5.,
+def specification(idle_head=False,protocol=PROTOCOL):
+    spec=dict(protocol=protocol,min_steady_seconds=2.,response_min_seconds=2.,response_cap_seconds=5.,
         response_grace_after_planner='max(1.5 seconds, one target gait cycle +0.5 second confirmation)',
         fallback_gait_period_seconds=1.5,planner_linear_tolerance=.02,planner_yaw_tolerance=.02,
         linear_filter_seconds=1.,yaw_filter_seconds=2.,response_hold_seconds=.5,
@@ -20,6 +25,14 @@ def specification():
         steady_linear_limit='max(0.06,0.22*requested_speed)',steady_idle_speed_limit=.08,
         steady_yaw_limit_stationary=.1,steady_yaw_limit_moving=.2,
         note='Centered filters estimate response time offline. Short screens may be inconclusive; they never grant full acceptance.')
+    if idle_head:
+        spec['idle_head']=dict(target='Horizontal forward in the controller heading frame',
+            window='Uses the stationary segment steady window, after the body response deadline',
+            mean_bias_limit_deg=MEAN_BIAS_LIMIT_DEG,p95_abs_limit_deg=P95_LIMIT_DEG,
+            recenter_report_limit_deg=RECENTER_LIMIT_DEG,recenter_report_hold_seconds=RECENTER_HOLD_SECONDS)
+        spec['idle_head']['required_segments']=(
+            IDLE_HEAD_GATE_SEGMENTS if protocol==CURRENT_PROTOCOL else STATIONARY_SEGMENTS)
+    return spec
 
 
 @lru_cache(maxsize=8)
@@ -41,8 +54,9 @@ def gait_period(target,config):
 def planning_time(initial,target,config,dt):
     current=torch.tensor(initial,dtype=torch.float32).reshape(1,3)
     requested=torch.tensor(target,dtype=torch.float32).reshape(1,3)
+    settled=limit_yaw_command(requested,config)
     for step in range(round(10/dt)+1):
-        difference=current-requested
+        difference=current-settled
         if float(difference[0,:2].norm())<=.02 and abs(float(difference[0,2]))<=.02:return step*dt
         current+=command_increment(requested,current,dt,config)
     return None
@@ -105,31 +119,65 @@ def quality_passed(item,config):
     return bool(passed)
 
 
-def score_segment(item,actual,planned,requested,geometric,initial_plan,config,dt):
+def _score_idle_head(errors,start,body_response,dt):
+    errors=np.asarray(errors)
+    if errors.ndim not in (2,3) or errors.shape[-1]!=2:
+        raise ValueError('Idle head scoring requires a yaw and pitch trace')
+    errors=np.rad2deg(errors.reshape(len(errors),-1,2))
+    if not np.isfinite(errors).all():return dict(status='failed',reason='non_finite_head_pose')
+    hold=math.ceil(RECENTER_HOLD_SECONDS/dt)
+    onset=math.ceil(body_response/dt)
+    within=(np.abs(errors[onset:])<=RECENTER_LIMIT_DEG).all(axis=(1,2))
+    recentered=None
+    if len(within)>=hold:
+        starts=np.flatnonzero(np.convolve(within.astype(int),np.ones(hold,dtype=int),mode='valid')==hold)
+        if len(starts):recentered=float((onset+starts[0]+hold)*dt)
+    result=dict(status='insufficient_duration',recenter_confirmed_seconds=recentered)
+    if len(errors)-start>=round(2/dt):
+        window=errors[start:]
+        bias=window.mean(axis=0)
+        # Use the largest absolute bias per axis so opposite environments cannot cancel.
+        yaw,pitch=bias[np.argmax(np.abs(bias),axis=0),np.arange(2)]
+        yaw_p95,pitch_p95=np.quantile(np.abs(window),.95,axis=0).max(axis=0)
+        passed=max(abs(yaw),abs(pitch))<=MEAN_BIAS_LIMIT_DEG and max(yaw_p95,pitch_p95)<=P95_LIMIT_DEG
+        result.update(status='passed' if passed else 'failed',yaw_bias_deg=float(yaw),pitch_bias_deg=float(pitch),
+            yaw_abs_p95_deg=float(yaw_p95),pitch_abs_p95_deg=float(pitch_p95),start_seconds=start*dt,
+            duration_seconds=(len(errors)-start)*dt)
+    return result
+
+
+def score_segment(item,actual,planned,requested,geometric,initial_plan,config,dt,head_errors=None):
     actual=np.asarray(actual);planned=np.asarray(planned);requested=np.asarray(requested);geometric=np.asarray(geometric)
     if not(len(actual)==len(planned)==len(requested)==len(geometric)) or not np.isfinite(actual).all():
         raise ValueError('Invalid tracking trace')
     duration=len(actual)*dt
     variable=item['label'].startswith('ramp_') or item['label']=='direction_sweep'
-    stationary=item['label'] in ['stand','stand_end','stop']
+    stationary=item['label'] in STATIONARY_SEGMENTS
+    protocol=config.get('unified_acceptance_protocol',PROTOCOL)
     hard=quality_passed(item,config)
-    result=dict(protocol=PROTOCOL,quality_passed=hard,classification='continuous_tracking' if variable else 'step_response')
+    result=dict(protocol=protocol,quality_passed=hard,classification='continuous_tracking' if variable else 'step_response')
     if variable:
         start=round(2/dt)
         error=_tracking_error(actual[start:,:2]-planned[start:,:2],True,dt)
         geometry=_tracking_error(geometric[start:]-planned[start:,:2],True,dt)
-        yaw=float(abs((actual[start:,2]-requested[start:,2]).mean()))
+        yaw_target=planned if config.get('command_yaw_limit_by_speed') else requested
+        yaw=float(abs((actual[start:,2]-yaw_target[start:,2]).mean()))
         lag=_direction_lag(requested[:,:2],actual[:,:2],dt) if item['label']=='direction_sweep' else None
         lag_pass=item['label']!='direction_sweep' or (lag is not None and abs(lag)<=1.)
         passed=hard and error<.2 and geometry<.2 and yaw<.2 and lag_pass
-        result.update(status='passed' if passed else 'failed',passed=bool(passed),
+        status='passed' if passed else 'failed'
+        result.update(status=status,body_status=status,passed=bool(passed),
             tracking_against='planned_command',velocity_error=error,geometric_velocity_error=geometry,
             yaw_error=yaw,raw_command_error=_tracking_error(actual[start:,:2]-requested[start:,:2],True,dt),
             apparent_direction_lag_seconds=lag,direction_lag_limit_seconds=1.,
             lag_note='Direction lag is measured only for the excited circular command; a monotone ramp does not identify lag independently of speed bias.')
         return result
-    target=requested[-1];limit=max(.06,float(np.linalg.norm(target[:2]))*.22);yaw_limit=.1 if stationary else .2
-    plan_seconds=planning_time(initial_plan,target,config,dt)
+    requested_target=requested[-1]
+    target=requested_target
+    if config.get('command_yaw_limit_by_speed'):
+        target=limit_yaw_command(torch.tensor(requested_target),config).numpy()
+    limit=max(.06,float(np.linalg.norm(target[:2]))*.22);yaw_limit=.1 if stationary else .2
+    plan_seconds=planning_time(initial_plan,requested_target,config,dt)
     cycle=gait_period(target,config);grace=max(1.5,cycle+.5)
     deadline=min(5.,max(2.,(plan_seconds if plan_seconds is not None else 10.)+grace))
     linear_response=_response(actual[:,:2],target[:2],limit,dt,1.,stationary)
@@ -154,8 +202,17 @@ def score_segment(item,actual,planned,requested,geometric,initial_plan,config,dt
         steady=dict(start_seconds=start*dt,duration_seconds=(len(actual)-start)*dt,velocity_error=bias,
             geometric_velocity_error=geom,yaw_error=yaw,mean_speed=speed,linear_limit=limit,yaw_limit=yaw_limit,passed=bool(passed))
     failed=not hard or response_status=='failed' or (steady is not None and not steady['passed'])
-    status='failed' if failed else ('passed' if response_status in ['passed','not_applicable'] and enough else 'insufficient_duration')
-    result.update(status=status,passed=status=='passed',planner_settle_seconds=plan_seconds,response_deadline_seconds=deadline,
+    body_status='failed' if failed else ('passed' if response_status in ['passed','not_applicable'] and enough else 'insufficient_duration')
+    status=body_status
+    if stationary and config.get('unified_idle_head_acceptance'):
+        if head_errors is None or len(head_errors)!=len(actual):
+            raise ValueError('Idle head acceptance requires a head pose for each step')
+        head=_score_idle_head(head_errors,start,max(linear_response or 0.,yaw_response or 0.),dt)
+        head['required']=protocol!=CURRENT_PROTOCOL or item['label'] in IDLE_HEAD_GATE_SEGMENTS
+        result['idle_head']=head
+        if head['required'] and (head['status']=='failed' or status=='passed'):
+            status=head['status']
+    result.update(status=status,body_status=body_status,passed=status=='passed',planner_settle_seconds=plan_seconds,response_deadline_seconds=deadline,
         target_gait_period_seconds=cycle,response_grace_seconds=grace,
         linear_response_seconds=linear_response,yaw_response_seconds=yaw_response,response_status=response_status,
         response_required=required,

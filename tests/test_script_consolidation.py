@@ -39,15 +39,20 @@ class ConsolidationTests(unittest.TestCase):
         args = parse_options(self.arguments+['--corrected-h5', str(self.file)], default_preset='girls-full')
         self.assertEqual([a['label'] for a in actor_layout(args)], ['G1 - Motion preserved', 'G1 - Full smooth', 'Anon PMX'])
 
-    def test_legacy_wrapper_and_explicit_preset_make_same_plan(self):
-        arguments = self.arguments+['--corrected-h5', str(self.file), '--dry-run']
-        outputs = []
-        for script, extra in [('compare_girls_full_smooth.py', []), ('play_g1_anon_comparison.py', ['--preset', 'girls-full'])]:
-            result = subprocess.run([sys.executable, '-B', str(ROOT/'source/pmx_prototype'/script), *arguments, *extra],
-                                    cwd=self.directory.name, capture_output=True, text=True, timeout=15)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            outputs.append(json.loads(result.stdout))
-        self.assertEqual(*outputs)
+    def test_comparison_entry_accepts_both_girls_presets(self):
+        entry = ROOT/'source/pmx_prototype/play_g1_anon_comparison.py'
+        common = [*self.arguments, '--corrected-h5', str(self.file), '--dry-run']
+        for preset, extra, expected in (
+            ('girls-full', [], (0., None, 3)),
+            ('girls-segment', ['--fidelity-h5', str(self.file), '--smooth-h5', str(self.file)], (16., 21., 5)),
+        ):
+            with self.subTest(preset=preset):
+                result = subprocess.run([sys.executable, '-B', str(entry), '--preset', preset, *common, *extra],
+                                        cwd=self.directory.name, capture_output=True, text=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                plan = json.loads(result.stdout)
+                self.assertEqual(plan['preset'], preset)
+                self.assertEqual((plan['start_seconds'], plan['end_seconds'], len(plan['layout'])), expected)
 
     def test_existing_video_is_rejected_before_simulator_start(self):
         with self.assertRaises(SystemExit):

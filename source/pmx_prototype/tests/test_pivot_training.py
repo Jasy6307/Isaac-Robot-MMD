@@ -13,11 +13,13 @@ from unified_walk_run_reference import sample_commands
 from pivot_stability import pivot_stability_terms
 
 CONFIG=SOURCE/'configs/training/unified_pivot_recovery.json'
+PIVOT_STOP_CONFIG=SOURCE/'configs/training/unified/pivot_stop_sampling_resume.json'
+LOW_SPEED_CONFIG=Path(__file__).parent/'fixtures/low_speed_sampling.json'
 
 
 class PivotTrainingTests(unittest.TestCase):
-    def make_env(self,n=12288):
-        cfg=json.loads(CONFIG.read_text(encoding='utf-8'))
+    def make_env(self,n=12288,config=CONFIG):
+        cfg=json.loads(config.read_text(encoding='utf-8'))
         return SimpleNamespace(num_envs=n,device='cpu',cfg=cfg,evaluation=False,iteration=7500,
             commands=torch.zeros(n,3),continuous_ref_commands=torch.zeros(n,3),command_age=torch.ones(n))
 
@@ -51,6 +53,77 @@ class PivotTrainingTests(unittest.TestCase):
         self.assertTrue((env.commands==0).all())
         env.evaluation=False;env.cfg['unified_reversal_env_fraction']=.3
         with self.assertRaises(ValueError):sample_commands(env,ids)
+
+    def test_pivot_stop_pool_alternates_exact_limits_and_preserves_other_pools(self):
+        baseline = self.make_env(8192, LOW_SPEED_CONFIG)
+        env = self.make_env(8192, LOW_SPEED_CONFIG)
+        env.cfg.update(json.loads(PIVOT_STOP_CONFIG.read_text(encoding='utf-8')))
+        ids = torch.arange(env.num_envs, dtype=torch.int32)
+        bucket = ids.remainder(100)
+        pool = (bucket >= 90) & (bucket < 96)
+        signs = torch.where(bucket[pool].remainder(2) == 0, 1., -1.)
+        self.assertEqual(int((signs == 1).sum()), 244)
+        self.assertEqual(int((signs == -1).sum()), 244)
+
+        for on_reset, yaw, hold in ((True, .6, 6.), (False, 0., 8.), (False, .6, 6.), (False, 0., 8.)):
+            previous_plan = env.continuous_ref_commands.clone()
+            torch.manual_seed(42)
+            sample_commands(baseline, ids, on_reset=on_reset)
+            torch.manual_seed(42)
+            sample_commands(env, ids, on_reset=on_reset)
+            torch.testing.assert_close(env.commands[pool, 2], yaw * signs, rtol=0., atol=0.)
+            self.assertEqual(int(env.commands[pool, :2].count_nonzero()), 0)
+            durations = env.unified_command_hold[pool]
+            self.assertTrue(((durations >= hold) & (durations < hold + 2.)).all())
+            self.assertTrue(torch.equal(env.commands[~pool], baseline.commands[~pool]))
+            self.assertTrue(torch.equal(env.unified_command_hold[~pool], baseline.unified_command_hold[~pool]))
+            if not on_reset:
+                self.assertTrue(torch.equal(env.continuous_ref_commands, previous_plan))
+
+        reset_ids = ids[pool][::7]
+        original = env.commands.clone()
+        sample_commands(env, reset_ids, on_reset=True)
+        self.assertTrue((env.commands[reset_ids, 2].abs() == .6).all())
+        original[reset_ids] = env.commands[reset_ids]
+        self.assertTrue(torch.equal(env.commands, original))
+        env.evaluation = True
+        sample_commands(env, ids, on_reset=True)
+        self.assertEqual(int(env.commands.count_nonzero()), 0)
+
+    def test_pivot_stop_pool_rejects_overlapping_or_unpaired_reservations(self):
+        env = self.make_env(8192, LOW_SPEED_CONFIG)
+        ids = torch.arange(env.num_envs)
+        for fraction in (.12, .05):
+            with self.subTest(fraction=fraction), self.assertRaises(ValueError):
+                env.cfg['unified_pivot_stop_env_fraction'] = fraction
+                sample_commands(env, ids, on_reset=True)
+
+    def test_initial_standing_is_reset_only_and_uses_the_general_pool(self):
+        baseline = self.make_env(8192, LOW_SPEED_CONFIG)
+        baseline.cfg.update(json.loads(PIVOT_STOP_CONFIG.read_text(encoding='utf-8')))
+        env = self.make_env(8192, LOW_SPEED_CONFIG)
+        env.cfg.update(baseline.cfg, unified_stand_reset_env_fraction=.01)
+        ids = torch.arange(env.num_envs, dtype=torch.int32)
+        stand = ids.remainder(100) == 96
+        self.assertEqual(int(stand.sum()), 81)
+        torch.manual_seed(42)
+        sample_commands(baseline, ids, on_reset=True)
+        torch.manual_seed(42)
+        sample_commands(env, ids, on_reset=True)
+        self.assertTrue((env.commands[stand] == 0.).all())
+        self.assertTrue((env.continuous_ref_commands[stand] == 0.).all())
+        self.assertTrue((env.unified_command_hold[stand] == env.cfg['unified_idle_hold_seconds']).all())
+        self.assertTrue(torch.equal(env.commands[~stand], baseline.commands[~stand]))
+        self.assertTrue(torch.equal(env.unified_command_hold[~stand], baseline.unified_command_hold[~stand]))
+        baseline.commands.copy_(env.commands)
+        baseline.unified_command_hold.copy_(env.unified_command_hold)
+        torch.manual_seed(43)
+        sample_commands(baseline, ids)
+        torch.manual_seed(43)
+        sample_commands(env, ids)
+        self.assertTrue(torch.equal(env.commands, baseline.commands))
+        self.assertTrue(torch.equal(env.unified_command_hold, baseline.unified_command_hold))
+        self.assertTrue((env.commands[stand] != 0.).any())
 
     def test_support_landing_and_drift_costs_are_gated_and_monotone(self):
         cfg=self.make_env(1).cfg

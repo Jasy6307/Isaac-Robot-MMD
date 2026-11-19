@@ -21,6 +21,11 @@ def sampled_values(q):
     return np.concatenate([q, *[q[:-1]*(1-f)+q[1:]*f for f in FRACTIONS]])
 
 
+def sample_brackets(count):
+    coordinates = sampled_values(np.arange(count, dtype=float))
+    return coordinates, np.floor(coordinates).astype(int), np.ceil(coordinates).astype(int)
+
+
 def height_bounds(reference_heights):
     lower = np.where(reference_heights > .02, reference_heights-.01, np.minimum(reference_heights, -.001))-2e-6
     upper = reference_heights+np.where(reference_heights < .02, .008, .025)
@@ -50,9 +55,7 @@ class GroundProblem:
             apply_batch_geometry(self.model, robot_usd, profile=geometry)
         self.columns = np.asarray(self.model.adjustable)
         self.count = len(reference.delta)
-        self.coordinates = np.concatenate([np.arange(self.count), *[np.arange(self.count-1)+f for f in FRACTIONS]])
-        self.lo = np.floor(self.coordinates).astype(int)
-        self.hi = np.minimum(self.lo+1, self.count-1)
+        self.coordinates, self.lo, self.hi = sample_brackets(self.count)
         alpha = self.coordinates-self.lo
         self.world_rot = Slerp(np.arange(self.count), Rotation.from_matrix(reference.root_rot))(self.coordinates).as_matrix()
         self.world_pos = reference.root_pos[self.lo]*(1-alpha[:, None])+reference.root_pos[self.hi]*alpha[:, None]
@@ -184,7 +187,8 @@ class GroundProblem:
         def sample(q):
             return tuple(x[0] for x in batch_sample(q[None]))
         if self.active_derivatives:
-            sample.active_jacobian = batched_central_difference(batch_sample, pair_count+4, chunk_size=5)
+            foot_columns = 4 if self.exact_contact else 2+sum(len(mesh) for mesh in self.soles)
+            sample.active_jacobian = batched_central_difference(batch_sample, pair_count+foot_columns, chunk_size=5)
         else:
             sample.jacobian = batched_central_difference(batch_sample, chunk_size=5)
         return sample

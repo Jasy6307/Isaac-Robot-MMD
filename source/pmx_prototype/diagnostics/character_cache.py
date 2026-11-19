@@ -125,15 +125,11 @@ def audit_reference(args):
 
 
 
-def main(argv=None, *, action=None):
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    if action is None:
-        children = parser.add_subparsers(dest='action', required=True)
-        parsers = [(name, children.add_parser(name)) for name in ('cloth', 'temporal', 'reference')]
-    else:
-        parser.set_defaults(action=action)
-        parsers = [(action, parser)]
-    for name, child in parsers:
+    children = parser.add_subparsers(dest='action', required=True)
+    for name in ('cloth', 'temporal', 'reference'):
+        child = children.add_parser(name)
         if name == 'reference':
             child.add_argument('--previous', type=Path, required=True)
             child.add_argument('--current', type=Path, required=True)

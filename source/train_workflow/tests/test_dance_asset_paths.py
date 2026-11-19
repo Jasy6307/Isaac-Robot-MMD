@@ -9,7 +9,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from source import paths
-from source.train_workflow.utils.motion.resolve import resolve_dance_h5_by_name
+from source.train_workflow.utils.motion.resolve import resolve_dance_h5_by_name, resolve_training_motion
 from source.train_workflow.utils.motion.audio import resolve_motion_audio
 from source.train_workflow.utils.motion import audio as audio_module
 from source.train_workflow.utils.validation_reference import resolve_reference_video
@@ -87,6 +87,16 @@ class DanceAssetPathsTests(unittest.TestCase):
         with patch.object(sync, "compile_dance_csv_to_h5", side_effect=compile_csv):
             result, _ = resolve_dance_h5_by_name("dance_one", dance_dir=str(self.root))
         self.assertEqual(Path(result), csv.with_suffix(".h5"))
+
+    def test_explicit_training_reference_takes_priority_over_dance_name(self):
+        self.asset("dance_one_z_editted.h5")
+        prepared = self.base / "arm_stabilized.h5"
+        prepared.touch()
+        with patch("source.train_workflow.utils.motion.resolve.default_dance_dir", return_value=str(self.root)):
+            self.assertEqual(resolve_training_motion("dance_one", str(prepared)), (str(prepared), "dance_one"))
+            self.assertEqual(resolve_training_motion(None, str(prepared)), (str(prepared), "arm_stabilized"))
+            with self.assertRaises(FileNotFoundError):
+                resolve_training_motion("dance_one", str(self.base / "missing.h5"))
 
     def test_recursive_sync_keeps_siblings_and_registers_nested_paths(self):
         self.asset("dance_one.vmd")

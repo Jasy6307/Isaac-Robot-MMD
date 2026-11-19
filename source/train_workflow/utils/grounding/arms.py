@@ -14,7 +14,7 @@ HAND_LENGTH = .105
 def windows(frames, count, *, padding, gap):
     """Return merged padded half-open intervals, including edge violations."""
     spans = []
-    for frame in sorted(set(frames)):
+    for frame in sorted({int(frame) for frame in frames}):
         lo, hi = max(0, frame-padding), min(count, frame+padding+1)
         if spans and lo <= spans[-1][1]+gap:
             spans[-1][1] = hi

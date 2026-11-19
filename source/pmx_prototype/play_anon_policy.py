@@ -8,6 +8,7 @@ never a saved rollout. Secondary forces do not feed back into the policy.
 from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source, config_path
 import argparse
 import json
+import math
 from pathlib import Path
 import shutil
 import subprocess
@@ -18,17 +19,21 @@ import uuid
 ROOT=PROJECT_ROOT
 HERE=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT))
-from source.pmx_prototype.secondary_profiles import DEFAULT_SECONDARY_PROFILE,DEFAULT_SECONDARY_QUALITY
+from source.pmx_prototype.secondary_profiles import DEFAULT_SECONDARY_PROFILE,DEFAULT_SECONDARY_QUALITY,SKIRT_EDGE_STRIDES
 from anon_policy_catalog import PRESETS
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--checkpoint',type=Path,default=PRESETS['walk'])
 parser.add_argument('--pmx',type=Path,default=ROOT/'media/千早爱音_by_小麦弥望/Anon Chihaya.pmx')
 parser.add_argument('--headless',action='store_true')
+parser.add_argument('--real-time',action='store_true',help='Use the viewer pacing clock in headless playback')
+parser.add_argument('--render-fps',type=int,choices=[30,60],help='Display rate; 60 interpolates while the policy still runs at 30 Hz')
+parser.add_argument('--interpolate-60',action='store_true',help='Use the dance viewer’s 60 Hz pose interpolation')
 parser.add_argument('--steps',type=int,default=0,help='Finite 30 Hz steps; 0 keeps the interactive viewer open')
 parser.add_argument('--demo',action='store_true',help='Autonomous forward, reverse, sidestep, turn and stop sequence')
 parser.add_argument('--inspector',action='store_true',help='Visual keyboard inspector; WASD/QE, +/- speed, Space stop, R reset')
 parser.add_argument('--record-video',type=Path)
 parser.add_argument('--no-secondary-physics',action='store_true')
+parser.add_argument('--physics-detail',choices=SKIRT_EDGE_STRIDES,default='full',help='VMD preview skirt-edge collision proxy density; reduced and sparse change skirt contact coverage')
 parser.add_argument('--secondary-profile',type=config_path,default=DEFAULT_SECONDARY_PROFILE,help='JSON appearance physics settings')
 parser.add_argument('--quality',choices=['hair','cloth'],default=None)
 parser.add_argument('--legacy-secondary-physics',action='store_true',help='Use the previous thick collision and rigid skirt profile for comparison')
@@ -44,6 +49,7 @@ parser.add_argument('--legacy-compute',action='store_true',help='A/B check: reta
 parser.add_argument('--reference-hair-compute',action='store_true',help='A/B check: use the previous hair solve and chain-velocity calculation, preserving all physics parameters')
 parser.add_argument('--secondary-worker',action='store_true',help='Run secondary simulation in a separate process')
 parser.add_argument('--physics-threads',type=int,help='CPU PhysX worker threads; 0 runs synchronously')
+parser.add_argument('--frontend-task-threads',type=int,help='Limit Kit task threads in the viewer; independent of PhysX threads')
 parser.add_argument('--worker-physics-threads',type=int,default=0,help='The single-body inference worker needs no parallel PhysX task pool')
 parser.add_argument('--benchmark-warmup',type=int,default=30,help='Frames excluded from steady-state timing')
 parser.add_argument('--runtime-audit',action='store_true',help='Save body and rendered skeleton arrays for behavior equivalence checks')
@@ -51,12 +57,26 @@ parser.add_argument('--async-render',action='store_true',help='Overlap live rend
 parser.add_argument('--save-preview',action='store_true',help='Save one final viewport image after the measured loop')
 parser.add_argument('--control-script',type=Path,help='Reproducible switch/command events: JSON list of frame, switch_to, command, reset')
 args=parser.parse_args()
+if args.interpolate_60 and args.render_fps==30:
+    parser.error('--interpolate-60 requires a 60 FPS display')
+args.render_fps=args.render_fps or (60 if args.interpolate_60 else 30)
+if args.render_fps==60 and (not args.secondary_worker or args.no_secondary_physics or args.record_video):
+    parser.error('60 FPS interpolation requires the secondary physics worker and is for live preview')
+args.skirt_edge_stride=SKIRT_EDGE_STRIDES[args.physics_detail]
+if args.no_secondary_physics and args.skirt_edge_stride!=1:
+    parser.error('--physics-detail requires secondary physics')
+if args.frontend_task_threads is not None and args.frontend_task_threads<1:
+    parser.error('--frontend-task-threads must be positive')
 accelerated_hair=not (args.legacy_compute or args.reference_hair_compute)
 if args.inspector and (args.headless or args.demo):parser.error('--inspector needs a visible window and cannot be combined with --demo')
 args.quality=args.quality or ('hair' if args.legacy_secondary_physics else DEFAULT_SECONDARY_QUALITY)
 W,H=args.video_width,args.video_height
 if W%2 or H%2:parser.error('Video dimensions must be even')
 args.checkpoint=args.checkpoint.resolve(); args.output=args.output.resolve()
+script_events={int(event['frame']):event for event in json.loads(args.control_script.read_text(encoding='utf-8'))} if args.control_script else {}
+script_switches=any(event.get('switch_to') for event in script_events.values())
+if args.inspector and script_switches:
+    parser.error('Policy Inspector uses a fixed checkpoint and manual resets')
 policy_config=json.loads((args.checkpoint.parent/'env_config.json').read_text(encoding='utf-8'))
 if args.policy_config_override:policy_config.update(json.loads(args.policy_config_override.read_text(encoding='utf-8')))
 from anon_config_compat import clean_legacy_config
@@ -73,8 +93,9 @@ extra=['--/app/asyncRendering=false']
 if args.async_render and not args.record_video:
     extra=['--/app/asyncRendering=true','--/app/asyncRenderingLowLatency=true','--/app/omni.usd/asyncHandshake=true','--/omni/replicator/asyncRendering=true']
 if args.physics_threads is not None:extra.append(f'--/persistent/physics/numThreads={args.physics_threads}')
+renderer_options={} if args.frontend_task_threads is None else {'limit_cpu_threads':args.frontend_task_threads}
 app=SimulationApp({'headless':args.headless,'width':W,'height':H,'renderer':'RaytracedLighting',
-                   'anti_aliasing':args.anti_aliasing,'extra_args':extra})
+                   'anti_aliasing':args.anti_aliasing,'extra_args':extra,**renderer_options})
 import numpy as np
 from scipy.spatial.transform import Rotation
 from PIL import Image,ImageDraw,ImageFont
@@ -96,7 +117,7 @@ def atomic_request(data):
     channel.send(data)
 
 
-def receive(seq,timeout=120):
+def receive(seq,timeout=120,on_wait=None):
     deadline=time.perf_counter()+timeout
     next_ui_update=time.perf_counter()+.05
     while time.perf_counter()<deadline:
@@ -104,7 +125,8 @@ def receive(seq,timeout=120):
         if worker.poll() is not None: raise RuntimeError('Policy worker exited; see '+str(args.output/'policy_worker.log'))
         value=channel.receive(seq)
         if value is not None:return value
-        if time.perf_counter()>=next_ui_update:
+        if on_wait is not None:on_wait()
+        elif time.perf_counter()>=next_ui_update:
             app.update(); next_ui_update=time.perf_counter()+.05
         time.sleep(.001)
     raise TimeoutError('Policy worker response timed out')
@@ -121,7 +143,8 @@ try:
     if args.legacy_compute:worker_args+=['--legacy-compute']
     worker_args+=['--physics-threads',str(args.worker_physics_threads)]
     if args.policy_config_override:worker_args+=['--config-override',str(args.policy_config_override.resolve())]
-    if args.inspector or args.control_script:worker_args+=['--preload-presets']
+    if args.inspector:worker_args.append('--manual-reset-only')
+    if script_switches:worker_args.append('--preload-presets')
     hand_trace=[];command_trace=[];body_trace=[];skeleton_p=[];skeleton_q=[];policy_trace=[];switches=[];fall_events=[];identities=set()
     worker=subprocess.Popen(worker_args,
                             stdout=worker_log,stderr=subprocess.STDOUT,creationflags=subprocess.CREATE_NO_WINDOW)
@@ -131,6 +154,7 @@ try:
     policy_config=json.loads(str(state['config_json']))
     motion=LiveBodyMotion(ROOT/'output/pmx_prototype/character.usdc',args.pmx,secondary_profile=args.secondary_profile if not args.legacy_secondary_physics else None)
     motion.rig_settings['max_node_distance_from_target_m']=2.
+    motion.rig_settings['preview_skirt_edge_stride']=args.skirt_edge_stride
     manifest=json.loads((Path(policy_config['asset']).parent/'manifest.json').read_text(encoding='utf-8'))
     assert list(manifest['bone_paths'])==motion.joints,'Skeleton order mismatch'
     links=list(state['link_names']); pelvis=links.index('pelvis')
@@ -189,7 +213,7 @@ try:
     models=[ui.SimpleFloatModel(0) for _ in range(3)]
     if args.inspector:
         from anon_inspector_ui import PolicyInspector
-        inspector=PolicyInspector(policy_config,args.checkpoint,args.output,request_switch,catalog,active_policy)
+        inspector=PolicyInspector(policy_config,args.output,catalog,active_policy,args.render_fps)
     elif not args.headless:
         panel=ui.Window('Anon live policy | Hair and skirt PhysX',width=390,height=230)
         with panel.frame:
@@ -205,7 +229,10 @@ try:
     # startup can take a while on first launch, so keep the viewport responsive.
     if not args.no_secondary_physics and args.secondary_worker:
         from anon_secondary_stream import AnonSecondaryStream
+        secondary_started=time.perf_counter()
+        print('ANON_SECONDARY_STARTING',flush=True)
         secondary_stream=AnonSecondaryStream(args,state['poses'],manifest,links,app)
+        print(f'ANON_SECONDARY_READY seconds={time.perf_counter()-secondary_started:.2f}',flush=True)
     schedule=[(2,(0,0,0)),(6,(.35,0,0)),(2,(0,0,0)),(4,(-.25,0,0)),(4,(0,.3,0)),(4,(0,-.3,0)),
               (4,(.2,0,.6)),(4,(.2,0,-.6)),(4,(0,0,.6)),(3,(0,0,0))]
     if policy_config.get('motion_stage') in ['forward_speeds','forward_speeds_aligned']:
@@ -239,8 +266,9 @@ try:
                                   '-c:v','libx264','-crf','16','-preset','fast','-pix_fmt','yuv420p','-movflags','+faststart',str(args.record_video)],stdin=subprocess.PIPE)
     font=ImageFont.truetype('C:/Windows/Fonts/msyh.ttc',round(23*H/720))
     deviations={'hair':[],'skirt':[]}; costs=[]; details=[];frame_intervals=[]; completed=falls=0; started=time.perf_counter(); last=state['poses']
+    frame_period=1/30
+    deadline=started
     limit=args.steps or (sum(x[0] for x in schedule)*30 if args.headless and args.demo else 0)
-    script_events={} if not args.control_script else {int(e['frame']):e for e in json.loads(args.control_script.read_text(encoding='utf-8'))}
     script_command=[0.,0.,0.];script_reset=False
     if not args.steps and args.headless and args.demo and policy_config.get('continuous_commands') and not policy_config.get('amp_forward_only'):
         if policy_config.get('unified_walk_run'):
@@ -266,12 +294,34 @@ try:
         data=dict(seq=seq,command=command,reset=inspector.controls.consume_reset() if inspector else script_reset)
         if queued_switch:data['switch_to']=queued_switch;queued_switch=''
         atomic_request(data);script_reset=False
+
+    face_op=UsdGeom.Xformable(face_softbox).GetOrderedXformOps()[0]
+    camera_heading=0.
+    def aim_camera(pelvis_position,heading):
+        center=pelvis_position.astype(float); center[2]=.88
+        face_op.Set(Gf.Vec3d(float(center[0]),float(center[1]-2.5),1.7))
+        if inspector:center,offset=inspector.camera_target(center,heading,time.perf_counter())
+        else:offset=[2.3,-4,1.15]
+        camera_op.Set(Gf.Matrix4d().SetLookAt(Gf.Vec3d(*(center+np.array(offset))),Gf.Vec3d(*center),Gf.Vec3d(0,0,1)).GetInverse())
+
+    def draw_interpolated(p,q,center,heading,frame):
+        publish(p,q)
+        aim_camera(center,heading)
+        if appearance is not None:appearance.update(frame)
+        app.update()
+        if inspector:inspector.record_render()
+
+    display=None
+    if args.render_fps==60:
+        from anon_interpolated_display import InterpolatedDisplay
+        display=InterpolatedDisplay(draw_interpolated)
+    present_if_due=display.present_if_due if display else None
     pending_command=choose_command(0)
     send_command(0,pending_command)
     prefetched_state=None
     while app.is_running() and (not limit or completed<limit):
         tick=time.perf_counter(); cmd=pending_command
-        state=prefetched_state if prefetched_state is not None else receive(completed,30)
+        state=prefetched_state if prefetched_state is not None else receive(completed,30,present_if_due)
         prefetched_state=None
         if secondary_stream and completed==0:secondary_stream.send(completed,state,args.runtime_audit)
         identities.add((int(state['worker_pid']),int(state['physics_stage_id']),int(context.get_stage_id()),id(physics)))
@@ -296,17 +346,30 @@ try:
             pending_command=choose_command(completed+1)
             send_command(completed+1,pending_command)
         current=state['poses']; falls+=int(state['done'])
+        restart=bool(state['restart'])
         if bool(state['done']):fall_events.append(dict(frame=completed,policy=active_policy))
         hand_world=current[[links.index('left_hand'),links.index('right_hand')],:3]-current[pelvis,:3]
-        hand_trace.append(Rotation.from_quat(current[pelvis,3:]).inv().apply(hand_world))
+        pelvis_rotation=Rotation.from_quat(current[pelvis,3:])
+        hand_trace.append(pelvis_rotation.inv().apply(hand_world))
+        if inspector:
+            # Anon faces local -Y. Use its horizontal direction and keep the camera upright.
+            forward=pelvis_rotation.apply([0.,-1.,0.])
+            if math.hypot(forward[0],forward[1])>1e-4:
+                camera_heading=math.atan2(forward[0],-forward[1])
         command_trace.append(cmd)
         body_started=time.perf_counter()
         if secondary_stream:
-            secondary_state=secondary_stream.receive(completed)
-            p,q=secondary_state['p'],secondary_state['q'];publish(p,q)
+            # Queue one pose while the worker is still solving this frame. This
+            # lets it start the next solve as soon as it returns the current one.
+            if not limit or completed+1<limit:
+                prefetched_state=receive(completed+1,30,present_if_due)
+                secondary_stream.send(completed+1,prefetched_state,args.runtime_audit)
+            secondary_state=secondary_stream.receive(completed,on_wait=present_if_due)
+            p,q=secondary_state['p'],secondary_state['q']
+            if not display:publish(p,q)
             deviations['hair'].append(secondary_state['deviations'][0]);deviations['skirt'].append(secondary_state['deviations'][1])
         elif physics:
-            if bool(state['done']) or bool(state.get('reset',False)):
+            if restart:
                 motion.live=body_pose(current); physics.initial_nodes=motion.live[2][motion.nodes].copy(); physics.reset(); last=current.copy()
             qa,qb=last[:,3:],current[:,3:].copy(); qb[(qa*qb).sum(-1)<0]*=-1
             substeps=physics.physics_hz//30
@@ -329,22 +392,24 @@ try:
         if args.runtime_audit:
             body_trace.append(current.copy());skeleton_p.append(p.copy());skeleton_q.append(q.copy())
         secondary_finished=time.perf_counter()
-        center=current[pelvis,:3].astype(float); center[2]=.88
-        UsdGeom.Xformable(face_softbox).GetOrderedXformOps()[0].Set(
-            Gf.Vec3d(float(center[0]),float(center[1]-2.5),1.7))
-        offset=inspector.camera_offset() if inspector else [2.3,-4,1.15]
-        camera_op.Set(Gf.Matrix4d().SetLookAt(Gf.Vec3d(*(center+np.array(offset))),Gf.Vec3d(*center),Gf.Vec3d(0,0,1)).GetInverse())
-        if inspector:inspector.update(state,falls,completed+1,time.perf_counter()-started)
+        if inspector and restart:inspector.reset_camera()
+        if display:
+            display.push(completed,p,q,current[pelvis,:3],camera_heading,restart=restart)
+        else:
+            aim_camera(current[pelvis,:3],camera_heading)
+        if inspector:
+            inspector.update(state,falls,completed+1)
         look_started=time.perf_counter()
-        if appearance is not None:appearance.update(completed)
+        if not display and appearance is not None:appearance.update(completed)
         secondary_done=time.perf_counter()
         details.append([(secondary_finished-body_started)*1000,(look_started-secondary_finished)*1000,(secondary_done-look_started)*1000])
-        if secondary_stream and (not limit or completed+1<limit):
-            prefetched_state=receive(completed+1,30)
-            secondary_stream.send(completed+1,prefetched_state,args.runtime_audit)
-        app.update()
-        if completed==0:
-            for _ in range(5):app.update()
+        if display:
+            display.present_if_due()
+        else:
+            app.update()
+            if inspector:inspector.record_render()
+            if completed==0:
+                for _ in range(5):app.update()
         render_done=time.perf_counter()
         if encoder:
             rgb=_capture_viewport_rgb()
@@ -361,28 +426,51 @@ try:
         last=current.copy(); completed+=1
         costs.append([(policy_done-tick)*1000,(secondary_done-policy_done)*1000,(render_done-secondary_done)*1000,(time.perf_counter()-render_done)*1000])
         if completed%150==0:print('ANON_LIVE_SECONDARY',completed,flush=True)
-        if not args.headless and not encoder:time.sleep(max(0,1/30-(time.perf_counter()-tick)))
+        if (display or not args.headless or args.real_time) and not encoder:
+            # Keep the 30 Hz clock through small overruns, but cap catch-up at one frame.
+            now=time.perf_counter()
+            deadline=max(deadline+frame_period,now-frame_period)
+            if display:display.wait_until(deadline)
+            else:time.sleep(max(0,deadline-now))
         frame_intervals.append((time.perf_counter()-tick)*1000)
+    if not completed:
+        if not args.headless and not encoder and not app.is_running():
+            print('ANON_VIEWER_CLOSED_BEFORE_FIRST_FRAME',flush=True)
+            raise SystemExit(0)
+        raise RuntimeError('The policy viewer exited before completing a frame')
+    if display and limit and completed==limit and app.is_running():
+        display.finish()
     if encoder:
         encoder.stdin.close()
         if encoder.wait()!=0:raise RuntimeError('Video encoder failed')
         encoder=None
     np.savez_compressed(args.output/'policy_trace.npz',hands=hand_trace,commands=command_trace,policy_ids=policy_trace,dt=1/30)
     if args.runtime_audit:np.savez_compressed(args.output/'runtime_audit.npz',body=body_trace,translations=skeleton_p,rotations=skeleton_q,link_names=links,dt=1/30)
+    if args.runtime_audit and display:
+        np.savez_compressed(args.output/'display_audit.npz',wall_seconds=np.asarray(display.times)-started,source_frames=display.source_frames)
     if args.save_preview:
         for _ in range(5):app.update()
         rgb=_capture_viewport_rgb()
         if rgb is None:raise RuntimeError('Final preview capture failed')
         Image.fromarray(rgb).save(args.output/'preview.png')
-    measured=np.sum(np.asarray(costs)[min(args.benchmark_warmup,max(0,len(costs)-1)):],axis=1)
+    warmup_frames=min(args.benchmark_warmup,completed-1)
+    measured=np.sum(np.asarray(costs)[warmup_frames:],axis=1)
+    policy_intervals=frame_intervals[warmup_frames:]
+    solved_pose_fps=1000/float(np.mean(policy_intervals))
+    delivered_intervals=display.intervals_ms(warmup_frames) if display else policy_intervals
+    delivered_stats=dict(delivered_fps=1000/float(np.mean(delivered_intervals)),
+                         delivered_frame_ms_p95=float(np.percentile(delivered_intervals,95)),
+                         delivered_frame_ms_p99=float(np.percentile(delivered_intervals,99))) if len(delivered_intervals) else {}
     report=dict(method='Live PPO inference in isolated PhysX worker; native CPU PhysX secondary rigid-node simulation; no rollout input',
                 body_device=args.body_device,transport=args.transport,legacy_compute=args.legacy_compute,physics_threads=args.physics_threads,
+                frontend_task_threads=args.frontend_task_threads,
                 worker_physics_threads=args.worker_physics_threads,
                 compiled_hair=accelerated_hair,optimized_hair_contacts=accelerated_hair,
                 reference_hair_compute=args.reference_hair_compute,
                 asynchronous_rendering=bool(args.async_render and not args.record_video),
-                benchmark=dict(warmup_frames=min(args.benchmark_warmup,max(0,len(costs)-1)),frames=len(measured),fps=1000/float(np.mean(measured)),frame_ms_p50=float(np.percentile(measured,50)),frame_ms_p95=float(np.percentile(measured,95)),frame_ms_p99=float(np.percentile(measured,99))),
-                delivered_fps=1000/float(np.mean(frame_intervals[min(args.benchmark_warmup,max(0,len(frame_intervals)-1)):])),
+                benchmark=dict(warmup_frames=warmup_frames,frames=len(measured),fps=1000/float(np.mean(measured)),frame_ms_p50=float(np.percentile(measured,50)),frame_ms_p95=float(np.percentile(measured,95)),frame_ms_p99=float(np.percentile(measured,99))),
+                **delivered_stats,solved_pose_fps=solved_pose_fps,target_render_fps=args.render_fps,
+                render_frames=len(display.times) if display else completed,display_pose_interpolation=bool(display),
                 secondary_cost_ms=dict(zip(['prepare','simulate','fetch','fabric','reconstruct','contact_feedback_and_diagnostics'],(physics.runtime_costs/max(1,physics.runtime_calls)).tolist() if physics else secondary_state['runtime_costs'])) if (physics or secondary_stream) else {},
                 secondary_diagnostics_collected=args.legacy_compute,
                 frame_detail_ms=dict(zip(['secondary_and_skeleton','camera_and_ui','appearance'],np.mean(details[min(args.benchmark_warmup,max(0,len(details)-1)):],axis=0).tolist())),
@@ -402,6 +490,7 @@ try:
                 inspector_mode=args.inspector,
                 inference_pipeline='One step ahead; every body state consumed in order',
                 secondary_steps=physics.steps if physics else (secondary_state['steps'] if secondary_stream else 0),quality=args.quality,
+                physics_detail=args.physics_detail,skirt_edge_stride=args.skirt_edge_stride,
                 physics_hz=physics.physics_hz if physics else (secondary_stream.metadata['physics_hz'] if secondary_stream else None),
                 secondary_substeps_per_frame=physics.physics_hz//30 if physics else (secondary_stream.metadata['physics_hz']//30 if secondary_stream else 0),
                 dynamic_nodes=physics.dynamic_view.count if physics else (secondary_stream.metadata['dynamic_nodes'] if secondary_stream else 0),

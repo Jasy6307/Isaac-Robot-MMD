@@ -11,7 +11,6 @@ import argparse, hashlib, json, os, struct, subprocess, sys
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT))
-import imageio_ffmpeg
 from source.paths import resolve_dance_asset
 from source.pmx_prototype.secondary_profiles import DEFAULT_SECONDARY_PROFILE
 from source.pmx_prototype.appearance_defaults import DEFAULT_LOOK,LOOK_CHOICES
@@ -26,7 +25,10 @@ p.add_argument('--legacy-secondary-physics',action='store_true',help='Use the or
 p.add_argument('--look',choices=LOOK_CHOICES,default=DEFAULT_LOOK)
 p.add_argument('--mesh-camera-dances',nargs='*',default=[],help='Fit rendered mesh bounds for low-pose clips')
 p.add_argument('--output',type=Path,default=ROOT/'output/mutsumi_validation_references')
-a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
+a=p.parse_args()
+import imageio_ffmpeg
+
+a.output.mkdir(parents=True,exist_ok=True)
 manifest_path=a.output/'manifest.json'
 manifest=json.loads(manifest_path.read_text(encoding='utf-8')) if manifest_path.exists() else dict(version=1,dances={})
 encoder=imageio_ffmpeg.get_ffmpeg_exe()

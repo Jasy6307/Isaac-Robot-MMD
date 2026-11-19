@@ -4,13 +4,13 @@
 
 ## 代码导航
 
-第三轮预览合并见 [tools 导航](tools/README.md)：`preview_dance.py`、`preview_mutsumi.py` 共用一个实现；睦的缓存/裙摆/参考动作检查统一为 `diagnostics/character_cache.py cloth/temporal/reference`。旧入口保留，默认外观和物理不变。源码快照集中在 [第三轮压缩归档](../archive/script_round3_20261117/README.md)。
+第三轮预览合并见 [tools 导航](tools/README.md)：`preview_dance.py`、`preview_mutsumi.py` 两个入口共用一个实现。睦的缓存、裙摆和参考动作检查统一使用 `diagnostics/character_cache.py` 的 `cloth`、`temporal`、`reference` 子命令。源码快照见 [第三轮压缩归档](../archive/script_round3_20261117/README.md)。
 
 实验控制见 [experiments/README.md](experiments/README.md)：9 个历史控制入口迁入工作流，继续采样与 transition 共用实现；正在运行的 balanced 实验原样保留。低速/转向等 14 个历史诊断归入 [7 类诊断模块](diagnostics/README.md)。统一发现入口为 `pmx.py experiments list` 与 `pmx.py diagnostics locomotion --help`；旧文件名继续兼容，新诊断结果另存。整理前源码及校验清单见 [历史快照](archive/experiments/locomotion_20261116_17/README.md)。
 
 G1 / Anon 同屏比较统一由 `play_g1_anon_comparison.py` 调用 `runtime/comparison_player.py`，支持原两列、三列、四列及附加 `--smooth-h5` 的五列。`--start-seconds/--end-seconds` 选择同步片段，录像音轨按源帧时间截取；`--dry-run` 只检查路径并输出布局，不启动 Kit。
 
-旧 `compare_girls_full_smooth.py`、`compare_girls_smooth_segment.py` 保留为薄入口，分别等同 `--preset girls-full` 与 `--preset girls-segment`；后者继续默认 16–21 秒五列比较。旧入口的列标签和原参数保持，角色外观、地面及音画时间轴共用同一实现。
+Girls 整段三列及片段五列统一走 `sim_main.py --mode compare-g1-pmx`，分别传入 `--preset girls-full` 和 `--preset girls-segment`。片段预设默认 16–21 秒，原列标签、外观和音画时间轴沿用共享播放器。
 
 本目录同时保留当前运行链路与历史实验。先按下表定位入口；历史章节中的能力描述只对应当时阶段，当前外观和物理默认以本文开头的说明为准。
 
@@ -579,7 +579,7 @@ max_pushout_m_s=0.3，linear_damping=10；不改变腰线、网格尺寸与前�
 
 `record_mutsumi_references.py` 默认关闭额外腿部避碰；仅用 `--leg-clearance-dances 舞蹈名 ...` 显式启用。IRIS OUT 上调出的避碰参数不可泛化到全部编舞：旧版极乐净土每只脚额外横移最高 25 cm，改变了脚步。新策略保留单位换算、Anon 初始腿距和基础 IK，不追加逐帧外移。缓存签名包含策略版本及避碰开关。旧库 manifest 的动作保真检查与视频解码/时钟检查分开标注；未重新检查的旧片不能仅凭 verified 状态判定动作保真。
 
-批录默认通过 `--preserve-existing-dances IRIS_OUT` 保留已验收的 IRIS OUT 视频（包括 `--force` 时），复用前检查 sidecar SHA256；完整重新渲染需要显式用空的 `--preserve-existing-dances` 覆盖此保护。其余舞蹈的修正记录见 `output/mutsumi_other_dances_fixed/clearance_audit.json`，逐帧骨骼对照工具为 `audit_mutsumi_reference_motion.py`。
+批录默认通过 `--preserve-existing-dances IRIS_OUT` 保留已验收的 IRIS OUT 视频（包括 `--force` 时），复用前检查 sidecar SHA256；完整重新渲染需要显式用空的 `--preserve-existing-dances` 覆盖此保护。其余舞蹈的修正记录见 `output/mutsumi_other_dances_fixed/clearance_audit.json`，逐帧骨骼对照使用 `character_cache.py reference`。
 
 最终逐帧核查：HAL 完整版、Girls、Galaxias 的实际脚踝曾被额外外移，已取消额外避碰并完整重录；你最重要与 Deep Blue Town 的 VMD 全程关闭腿部 IK，控制目标外移未作用于腿部，保留原视频。HAL 短版额外修正全程为零，保留。IRIS OUT 按用户要求保留原视频并通过 SHA256 核验。`load_vmd.py` 的 `active_mean_m`/`active_max_m` 只统计启用 IK 的帧，禁用时为 null；旧 `mean_m`/`max_m` 为兼容保留，包含禁用帧，不能独立作为解算失败判据。核查汇总：`output/mutsumi_other_dances_fixed/review_summary.json`。
 
@@ -593,7 +593,7 @@ max_pushout_m_s=0.3，linear_damping=10；不改变腰线、网格尺寸与前�
 
 `configs/physics/models/mutsumi_secondary_girls.json` 为睦专用试验配置，仅验证 Girls，不改变 USD 静态裙长、蒙皮、身体动作或相机。保留新版后发物理和前发锁定，分别控制裙子/头发的自由垂落，恢复裙子支撑与接触厚度；将手部代理拟合范围从整只张开手（约 16 cm）改为掌部（约 7.5 cm）；裙子下段边胶囊允许与大腿/膝腿代理接触，上段排除新增腿部接触；168 条纵向边胶囊之间增加 147 个 PhysX SphericalJoint 弯曲限位，使用 Z 轴 30° 双锥参数。该参数为关节设置，不等于保证所有渲染顶点折角小于 30°。所有新增行为均须由配置显式启用，默认不改变爱音。
 
-验收文件在 `output/mutsumi_girls_physics_tuned/`：`girls_before_after_tuned.mp4` 左侧是上次直接迁移爱音配置的卷裙版本，右侧为睦校准版；`results.json` 提供整首同时间点的卷折及共用腿部碰撞代理指标，`body_motion_audit.json` 提供身体矩阵逐帧检查。`analyze_mutsumi_cloth_cache.py` 评估真实蒙皮裙子顶点对共用 PMX 腿部胶囊的穿入，不能作为三角网格精确无穿模的证明。完整旧参考库保留不变。
+验收文件在 `output/mutsumi_girls_physics_tuned/`：`girls_before_after_tuned.mp4` 左侧是上次直接迁移爱音配置的卷裙版本，右侧为睦校准版；`results.json` 提供整首同时间点的卷折及共用腿部碰撞代理指标，`body_motion_audit.json` 提供身体矩阵逐帧检查。`character_cache.py cloth` 评估真实蒙皮裙子顶点对共用 PMX 腿部胶囊的穿入，不能作为三角网格精确无穿模的证明。完整旧参考库保留不变。
 
 爱音先前的行走使用 quality=hair / 120 Hz，Girls 睦使用 quality=cloth / 240 Hz，并非同条件对照。爱音主裙网格垂直长约 65.7 cm，当前睦约 37.8 cm；控制链、蒙皮、碰撞体不同。两者裙子相邻纵向节点间距都约 4.6–4.8 cm，不能简单将问题归因于节点密度。
 

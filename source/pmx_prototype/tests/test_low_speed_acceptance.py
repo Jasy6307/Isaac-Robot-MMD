@@ -89,6 +89,16 @@ class SamplingTests(unittest.TestCase):
         e=env(cfg)
         with self.assertRaises(ValueError):sample_commands(e,torch.arange(e.num_envs),True)
 
+    def test_training_reset_applies_yaw_envelope_after_sampling(self):
+        cfg=load_config();cfg['command_yaw_limit_by_speed']=True
+        e=env(cfg,n=8192)
+        torch.manual_seed(42);sample_commands(e,torch.arange(e.num_envs),True)
+        speed=e.commands[:,:2].norm(dim=-1)
+        slow=speed<=.55;fast=speed>=.9-1e-6
+        self.assertTrue((e.commands[fast,2].abs()>.4).any())
+        self.assertTrue((e.continuous_ref_commands[fast,2].abs()<=.4+1e-6).all())
+        self.assertTrue(torch.equal(e.continuous_ref_commands[slow],e.commands[slow]))
+
 
 class AcceptanceTests(unittest.TestCase):
     def setUp(self):self.cfg=load_config();self.dt=1/30
@@ -148,6 +158,13 @@ class AcceptanceTests(unittest.TestCase):
             actual=np.stack([np.cos(2*np.pi*(t-lag)/12),np.sin(2*np.pi*(t-lag)/12),np.zeros_like(t)],-1)
             result=score_segment(item('direction_sweep',12),actual,planned,raw,actual[:,:2],[1,0,0],self.cfg,self.dt)
             self.assertEqual(result['passed'],expected)
+
+    def test_turn_assessment_uses_reachable_steady_target(self):
+        self.cfg['command_yaw_limit_by_speed']=True
+        result=self.score('run_turn_right',[0,0,-.6],[0,-1.1,-.6],8)
+        self.assertTrue(result['passed'])
+        self.assertLess(result['steady']['yaw_error'],.001)
+        self.assertEqual(result['steady']['yaw_limit'],.2)
 
 
 if __name__=='__main__':unittest.main()

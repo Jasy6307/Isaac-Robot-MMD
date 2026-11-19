@@ -9,6 +9,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from source_layout import PROJECT_ROOT, config_path, resolve_source
+from secondary_profiles import SKIRT_EDGE_STRIDES
 def dance_catalog():
     return json.loads(resolve_source('configs/playback/mutsumi_dances.json').read_text(encoding='utf-8'))
 
@@ -61,7 +62,7 @@ def main(argv=None, *, preset_only=False):
     parser.add_argument('--interpolate-60',action='store_true',help='Smooth 30Hz simulated poses for 60Hz display')
     parser.add_argument('--music-sync-tolerance', type=float, help='Seconds of audio drift allowed before seeking')
     parser.add_argument('--physics-threads', type=int, help='CPU PhysX worker threads (default 16)')
-    parser.add_argument('--physics-detail', choices=['full','reduced','sparse'], default='full', help='Experimental reduced skirt-edge collision proxies')
+    parser.add_argument('--physics-detail', choices=SKIRT_EDGE_STRIDES, default='full', help='Experimental reduced skirt-edge collision proxies')
     parser.add_argument('--async-render',action='store_true',help='Experimental asynchronous rendering')
     parser.add_argument('--capture-frames',type=int,nargs='*',help=argparse.SUPPRESS)
     parser.add_argument('--startup-settle-seconds', type=float)
@@ -105,7 +106,7 @@ def main(argv=None, *, preset_only=False):
             parser.error('--physics-threads must be positive')
         values += ['--physics-threads', str(args.physics_threads)]
     if args.physics_detail != 'full':
-        values += ['--skirt-edge-stride','2' if args.physics_detail == 'reduced' else '3']
+        values += ['--skirt-edge-stride',str(SKIRT_EDGE_STRIDES[args.physics_detail])]
     if args.async_render:
         values += ['--async-render']
     if args.interpolate_60:
