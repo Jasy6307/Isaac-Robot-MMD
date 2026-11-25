@@ -19,8 +19,8 @@ from command_plan import command_increment,limit_yaw_command
 from full_motion_reference import FullMotionReference
 from idle_head_alignment import (
     HeadSwayPenalty, backward_walk_head_alignment_reward, head_facing_error,
-    idle_head_reward, idle_neck_pitch_reward, neck_pitch_level_target,
-    neck_pitch_stop_context, straight_backward_walk,
+    idle_head_reward, idle_neck_pitch_reward, idle_neck_yaw_reward, neck_pitch_level_target,
+    neck_pitch_stop_context, neck_yaw_forward_target, neck_yaw_stop_context, straight_backward_walk,
 )
 
 
@@ -33,15 +33,18 @@ def quat_multiply(a,b):
 
 
 class AnonImitationEnv(AnonLocomotionEnv):
-    def __init__(self,num_envs=2048,seed=42,app=None,evaluation=False,config=None,shared_physics=None):
+    def __init__(self,num_envs=2048,seed=42,app=None,evaluation=False,config=None):
         device=config.get('simulation_device','cuda:0')
         self.motion=FullMotionReference(config['full_motion_path'],device)
         if config.get('unified_walk_run'):
             from locomotion_acceptance import CURRENT_PROTOCOL,RESPONSE_STEADY_PROTOCOLS
             from unified_walk_run_reference import prepare
+            protocol=config.get('unified_acceptance_protocol',CURRENT_PROTOCOL)
             config.setdefault('command_yaw_limit_by_speed', True)
             config.setdefault('idle_head_reward_weight',2.)
-            config.setdefault('unified_idle_head_acceptance',config.get('unified_acceptance_protocol',CURRENT_PROTOCOL) in RESPONSE_STEADY_PROTOCOLS)
+            config.setdefault('unified_idle_head_acceptance',protocol in RESPONSE_STEADY_PROTOCOLS)
+            if not evaluation and protocol==CURRENT_PROTOCOL:
+                config.setdefault('unified_backward_diagonal_speed_cap',.859)
             config['unified_contact_offsets']=prepare(self.motion)
         if config.get('continuous_phase_alignment'):
             from continuous_motion_reference import align_contacts
@@ -55,7 +58,7 @@ class AnonImitationEnv(AnonLocomotionEnv):
         self._pending_command_delta=None
         self.preferred_clip_ids=torch.arange(num_envs,device=device)%len(self.motion.clip_names)
         self.imitation_ready=False
-        super().__init__(num_envs,seed,app,evaluation,config,shared_physics=shared_physics)
+        super().__init__(num_envs,seed,app,evaluation,config)
         self.q_order=[self.motion.names.index(n) for n in self.names]
         self.link_order=[self.motion.links.index(n) for n in self.links]
         self.base_id=0
@@ -104,12 +107,22 @@ class AnonImitationEnv(AnonLocomotionEnv):
         self.neck_pitch_stop_source = None
         if self.idle_neck_pitch_weight and self.neck_pitch_stop_multiplier > 1.:
             self.neck_pitch_stop_source = torch.zeros(num_envs, dtype=torch.bool, device=self.device)
-        if self.idle_neck_pitch_weight:
+        self.idle_neck_yaw_weight = float(self.cfg.get('idle_neck_yaw_target_weight', 0.))
+        if not np.isfinite(self.idle_neck_yaw_weight) or self.idle_neck_yaw_weight < 0.:
+            raise ValueError('Idle neck yaw target weight must be finite and nonnegative')
+        if self.idle_neck_pitch_weight or self.idle_neck_yaw_weight:
             self.chest_id = self.links.index('waist_pitch')
+        if self.idle_neck_pitch_weight:
             self.neck_pitch_id = self.names.index('neck_pitch_joint')
             lower, upper = self.limits[self.neck_pitch_id]
             self.neck_pitch_target_min = lower + DRIVE_TARGET_MARGIN_RAD
             self.neck_pitch_target_max = upper - DRIVE_TARGET_MARGIN_RAD
+        if self.idle_neck_yaw_weight:
+            self.neck_yaw_stop_source = torch.zeros(num_envs, dtype=torch.bool, device=self.device)
+            self.neck_yaw_id = self.names.index('neck_yaw_joint')
+            lower, upper = self.limits[self.neck_yaw_id]
+            self.neck_yaw_target_min = lower + DRIVE_TARGET_MARGIN_RAD
+            self.neck_yaw_target_max = upper - DRIVE_TARGET_MARGIN_RAD
         self.upper_ids=[i for i,n in enumerate(self.names) if any(k in n for k in ['waist','neck','shoulder','elbow','forearm','wrist'])]
         if self.cfg.get('amp_enabled'):
             from amp_motion_prior import AMPMotionPrior
@@ -242,13 +255,15 @@ class AnonImitationEnv(AnonLocomotionEnv):
                                        quat_rotate_inverse(conjugate,result['velocities'][...,3:])],-1)
         return result
 
-    def sample_reference(self,phase,indices=None,future=0.):
+    def sample_reference(self,phase,indices=None,future=0.,*,joint_positions_only=False):
         if self.cfg.get('unified_walk_run'):
-            from unified_walk_run_reference import sample
+            from unified_walk_run_reference import sample, sample_vectorized
             cmd=self.continuous_ref_commands if indices is None else self.continuous_ref_commands[indices]
             rate=self.continuous_ref_rate if indices is None else self.continuous_ref_rate[indices]
             if future and self.cfg.get('unified_reference_derivatives'):
                 cmd=limit_yaw_command(cmd+future*rate,self.cfg)
+            if joint_positions_only:
+                return sample_vectorized(self.motion,phase,cmd,self.cfg,joint_positions_only=True)
             return self.apply_heading(sample(self.motion,phase,cmd,self.cfg,rate),indices,future)
         if self.cfg.get('continuous_commands'):
             from continuous_motion_reference import sample_continuous
@@ -282,6 +297,8 @@ class AnonImitationEnv(AnonLocomotionEnv):
         self.idle_head_stop_time[ids]=0.
         if self.neck_pitch_stop_source is not None:
             self.neck_pitch_stop_source[ids] = False
+        if self.idle_neck_yaw_weight:
+            self.neck_yaw_stop_source[ids] = False
         if self.head_sway is not None:
             self.head_sway.reset(ids)
         if hasattr(self,'amp'):self.amp.reset(ids)
@@ -309,6 +326,7 @@ class AnonImitationEnv(AnonLocomotionEnv):
         self._refresh_reset_link_transforms()
         self.actions[ids]=0;self.previous_actions[ids]=0;self.filtered_leg_actions[ids]=0
         self.episode_length_buf[ids]=0;self.episode_returns[ids]=0;self.episode_errors[ids]=0
+        return ref
 
     def _command_delta(self):
         if self._pending_command_delta is None:
@@ -322,6 +340,12 @@ class AnonImitationEnv(AnonLocomotionEnv):
         self.refresh()
         ref=self.sample_reference(self.phase)
         future=self.sample_reference(self.phase+.1*self.frequency(),future=.1)
+        return self._observations_from_reference(ref,future['q'])
+
+    def _future_joint_positions(self):
+        return self.sample_reference(self.phase+.1*self.frequency(),future=.1,joint_positions_only=True)['q']
+
+    def _observations_from_reference(self,ref,future_q):
         qref=ref['q'][:,self.q_order];qdref=ref['qd'][:,self.q_order]
         pelvis_q=ref['rotations'][:,self.pelvis_reference_id]
         gravity=quat_rotate_inverse(pelvis_q,torch.tensor([0.,0.,-1.],device=self.device).expand(self.num_envs,-1))
@@ -334,7 +358,7 @@ class AnonImitationEnv(AnonLocomotionEnv):
                        self.q,self.qd*.05,self.actions,qref,qdref*.05,self.q-qref,
                        ref['positions'][:,self.pelvis_reference_id,2:3],gravity,ref['contacts'],
                        ref.get('gait_sin',torch.sin(2*torch.pi*self.phase))[:,None],ref.get('gait_cos',torch.cos(2*torch.pi*self.phase))[:,None],
-                       future['q'][:,self.q_order]],-1)
+                       future_q[:,self.q_order]],-1)
         if self.cfg.get('imitation_heading_observation',False):
             actual=self.poses[:,self.pelvis_id,3:]
             velocity_delta=self.root_vel[:,:3]-self.reference_root_velocity(ref)[:,:3]
@@ -352,8 +376,10 @@ class AnonImitationEnv(AnonLocomotionEnv):
             observations.update(rollout_metadata(self))
         return TensorDict(observations,batch_size=[self.num_envs],device=self.device)
 
-    def step(self,actions):
+    def _prepare_step(self,actions):
+        reuse_reference=not self.evaluation and self.cfg.get('unified_walk_run') and self.cfg.get('unified_vectorized_reference')
         reward_diagnostics=not (self.evaluation and self.cfg.get('runtime_inference_only',False))
+        parallel_acceptance = self.evaluation and self.cfg.get('unified_eval_parallel_envs') == 4
         leg_smooth_enabled=bool(self.cfg.get('leg_acceleration_weight',0.)) and reward_diagnostics
         if leg_smooth_enabled:
             if self.cfg.get('leg_acceleration_from_positions',False):
@@ -389,7 +415,8 @@ class AnonImitationEnv(AnonLocomotionEnv):
         if self.cfg.get('diagnostic_controller_trace',False):
             self.diagnostic_target=target.clone()
             self.diagnostic_reference=ref['q'][:,self.q_order].clone()
-        self.robot.set_dof_position_targets(target,self.ids)
+        self._step_position_target=target
+        self._step_velocity_target=None
         if self.cfg.get('reference_velocity_feedforward',False):
             velocity_target=torch.zeros_like(self.default)
             if self.cfg.get('reference_full_body_velocity_feedforward',False):velocity_target[:]=ref['qd'][:,self.q_order]
@@ -397,26 +424,46 @@ class AnonImitationEnv(AnonLocomotionEnv):
             if self.cfg.get('reference_distal_arm_velocity_feedforward',False):
                 distal=[i for i,n in enumerate(self.names) if any(k in n for k in ['forearm','wrist'])]
                 velocity_target[:,distal]=ref['qd'][:,self.q_order][:,distal]
-            self.robot.set_dof_velocity_targets(velocity_target.clamp(-10,10),self.ids)
-        measure_forces=self.evaluation and self.cfg.get('unified_substep_support_forces',False)
-        if measure_forces and not hasattr(self,'ground_contact_view'):raise ValueError('Substep force audit requires contact sensors')
-        substep_forces=[]
-        for _ in range(self.cfg['decimation']):
-            self._simulate()
-            if measure_forces:
-                substep_forces.append(self.ground_contact_view.get_contact_force_matrix(1/self.cfg['physics_hz'])[:,0,:].clone())
-        if measure_forces:self.last_substep_support_forces=torch.stack(substep_forces)
-        self.refresh();self.steps+=1;self.episode_length_buf+=1
+            self._step_velocity_target=velocity_target.clamp(-10,10)
+
+        values=locals()
+        return {key:values.get(key) for key in ('reuse_reference', 'parallel_acceptance', 'leg_smooth_enabled', 'geometric_slip_enabled', 'ref', 'old_sole', 'old_near', 'previous_leg_q', 'previous_leg_qd')}
+
+    def _apply_step_targets(self):
+        self.robot.set_dof_position_targets(self._step_position_target,self.ids)
+        if self._step_velocity_target is not None:
+            self.robot.set_dof_velocity_targets(self._step_velocity_target,self.ids)
+
+    def _begin_substeps(self):
+        self._measure_step_forces=self.evaluation and self.cfg.get('unified_substep_support_forces',False)
+        if self._measure_step_forces and not hasattr(self,'ground_contact_view'):
+            raise ValueError('Substep force audit requires contact sensors')
+        self._substep_forces=[]
+
+    def _record_substep(self):
+        if self._measure_step_forces:
+            self._substep_forces.append(self.ground_contact_view.get_contact_force_matrix(1/self.cfg['physics_hz'])[:,0,:].clone())
+
+    def _evaluate_step(self,context):
+        reuse_reference=context.get('reuse_reference')
+        parallel_acceptance=context.get('parallel_acceptance')
+        leg_smooth_enabled=context.get('leg_smooth_enabled')
+        geometric_slip_enabled=context.get('geometric_slip_enabled')
+        ref=context.get('ref')
+        old_sole=context.get('old_sole')
+        old_near=context.get('old_near')
+        previous_leg_q=context.get('previous_leg_q')
+        previous_leg_qd=context.get('previous_leg_qd')
+        if self._measure_step_forces:self.last_substep_support_forces=torch.stack(self._substep_forces)
+        self.refresh(root_from_links=reuse_reference);self.steps+=1
         if self.evaluation and self.cfg.get('runtime_inference_only',False):
             # Rewards and AMP diagnostics do not feed back into inference.
             fallen=(self.poses[:,self.pelvis_id,2]<.65)|(self.gravity[:,2]>-.5)|~torch.isfinite(self.q).all(-1)
             done,timeout=self._episode_outcome(fallen)
-            ids=self._automatic_reset_ids(done)
-            if len(ids):self.reset(ids)
-            self.command_age+=self.dt
             # The interactive worker requests fresh observations after the
             # next command, so a second reference sample here is unused.
-            return None,torch.zeros_like(self.phase),done,{'time_outs':timeout}
+            context['inference']=True
+            return torch.zeros_like(self.phase),done,{'time_outs':timeout}
         qref=ref['q'][:,self.q_order];qdref=ref['qd'][:,self.q_order]
         joint_weights=torch.ones(self.num_actions,device=self.device)
         if self.cfg.get('amp_enabled'):joint_weights[self.upper_ids]=self.cfg.get('amp_upper_pose_weight',.2)
@@ -556,6 +603,8 @@ class AnonImitationEnv(AnonLocomotionEnv):
             reward+=3.*torch.exp(-deficit.square().mean(-1)/.0004)
             if not self.cfg.get('spatial_clearance_only'):reward+=1.5*torch.exp(-error.square().mean(-1)/.01)
             self.learned_clearance_deficit=deficit.sum()/torch.stack(gates,-1).sum().clamp_min(1e-6)
+            if parallel_acceptance:
+                clearance_by_env = deficit.sum(-1) / torch.stack(gates, -1).sum(-1).clamp_min(1e-6)
         if self.hand_skirt_clearance is not None:
             skirt_reference = torch.cat((ref['positions'][:, self.skirt_reference_ids],
                                          ref['rotations'][:, self.skirt_reference_ids]), dim=-1)
@@ -599,7 +648,7 @@ class AnonImitationEnv(AnonLocomotionEnv):
             fallen|=(key_error>.09)|(height_error>.035)
         head_weight=self.cfg.get('idle_head_reward_weight',0.)
         measure_head=self.evaluation and self.cfg.get('unified_idle_head_acceptance',False)
-        measure_alignment = head_weight or self.idle_neck_pitch_weight or measure_head
+        measure_alignment = head_weight or self.idle_neck_pitch_weight or self.idle_neck_yaw_weight or measure_head
         if measure_alignment or self.head_sway is not None or self.backward_head_alignment_weight:
             head_error=head_facing_error(self.poses[:,self.head_id,3:],self.reference_heading)
         if measure_alignment:
@@ -620,6 +669,14 @@ class AnonImitationEnv(AnonLocomotionEnv):
             neck_pitch_rate = idle_neck_pitch_reward(
                 self.q[:, self.neck_pitch_id], level_pitch, head_gain, pitch_weight)
             reward += neck_pitch_rate
+        if self.idle_neck_yaw_weight:
+            self.neck_yaw_stop_source = neck_yaw_stop_context(self.neck_yaw_stop_source, self.commands)
+            target_yaw = neck_yaw_forward_target(self.poses[:, self.chest_id, 3:], self.reference_heading)
+            target_yaw = target_yaw.clamp(self.neck_yaw_target_min, self.neck_yaw_target_max)
+            neck_yaw_rate = idle_neck_yaw_reward(
+                self.q[:, self.neck_yaw_id], target_yaw, head_gain,
+                self.neck_yaw_stop_source, self.idle_neck_yaw_weight)
+            reward += neck_yaw_rate
         boost_backward_sway = self.head_sway is not None and self.backward_sway_multiplier > 1.
         if boost_backward_sway or self.backward_head_alignment_weight:
             walk_limit = self.cfg.get('walk_run_blend_start', .55)
@@ -652,6 +709,8 @@ class AnonImitationEnv(AnonLocomotionEnv):
             extras['log']['IdleHead/reward_rate']=head_rate.mean()
         if self.idle_neck_pitch_weight:
             extras['log']['IdleHead/neck_pitch_target_rate'] = neck_pitch_rate.mean()
+        if self.idle_neck_yaw_weight:
+            extras['log']['IdleHead/neck_yaw_target_rate'] = neck_yaw_rate.mean()
         if self.head_sway is not None:
             extras['log']['Head/sway_reward_rate'] = sway_rate.mean()
         if boost_backward_sway:
@@ -699,7 +758,21 @@ class AnonImitationEnv(AnonLocomotionEnv):
             extras['log']['Unified/right_reference_velocity_error']=base_velocity_error[moving].sqrt().mean() if moving.any() else torch.zeros((),device=self.device)
             extras['log']['Unified/right_termination_rate']=fallen[moving].float().mean() if moving.any() else torch.zeros((),device=self.device)
         if self.evaluation:self.recorded_state=(self.poses.clone(),self.q.clone(),self.logical_vel.clone(),self.phase.clone())
-        ids=self._automatic_reset_ids(done)
+        if parallel_acceptance:
+            extras['per_env_metrics'] = {
+                'Imitation/joint_rmse_rad': pose_error.sqrt(),
+                'Imitation/keypoint_rmse_m': key_error.sqrt(),
+                'Imitation/pelvis_height_rmse_m': height_error.sqrt(),
+                'Imitation/pelvis_orientation_rmse_rad': orientation_error.sqrt(),
+                'Imitation/contact_accuracy': 1-contact_error,
+                'Imitation/base_velocity_rmse': base_velocity_error.sqrt(),
+            }
+            if self.cfg.get('learn_arm_clearance', False):
+                extras['per_env_metrics']['Imitation/near_hip_clearance_deficit_m'] = clearance_by_env
+            if self.cfg.get('hand_orientation_weight', 0.):
+                extras['per_env_metrics']['Imitation/hand_orientation_error_rad'] = (2*torch.acos(dot.clamp_max(1.))).mean(-1)
+            if self.cfg.get('running_arm_spacing_weight', 0.):
+                extras['per_env_metrics']['Imitation/arm_spacing_deficit_m'] = torch.stack(deficits, -1).mean(-1)
         if hasattr(self,'amp'):
             extras['log']['Imitation/amp_style_reward']=self.amp.last_reward
             extras['log']['Imitation/amp_policy_score']=self.amp.last_score
@@ -712,12 +785,30 @@ class AnonImitationEnv(AnonLocomotionEnv):
             ).sum() / skirt_context.sum().clamp_min(1.)
         if self.cfg.get('hand_orientation_weight',0.):extras['log']['Imitation/hand_orientation_error_rad']=(2*torch.acos(dot.clamp_max(1.))).mean()
         if self.cfg.get('running_arm_spacing_weight',0.):extras['log']['Imitation/arm_spacing_deficit_m']=torch.stack(deficits,-1).mean()
+        return reward,done,extras
+
+    def _reset_step(self,ids,extras):
+        reset_reference=None
         if len(ids):
-            extras['log']['Episode/seconds']=self.episode_length_buf[ids].float().mean()*self.dt
-            extras['log']['Episode/return']=self.episode_returns[ids].mean()
-            self.reset(ids)
+            if 'log' in extras:
+                extras['log']['Episode/seconds']=self.episode_length_buf[ids].float().mean()*self.dt
+                extras['log']['Episode/return']=self.episode_returns[ids].mean()
+            reset_reference=self.reset(ids)
+        return reset_reference
+
+    def _complete_step(self,context,ids,reset_reference=None):
         self.command_age+=self.dt
+        if context.get('inference'):return None
+        reuse_reference=context['reuse_reference'];ref=context['ref']
         if self.motion.bank and not self.evaluation and self.cfg.get('imitation_transition_training',False):
             hold=self.unified_command_hold if self.cfg.get('unified_walk_run') else self.cfg.get('imitation_command_hold_seconds',4.)
             self.sample_commands((self.command_age>hold).nonzero(as_tuple=False).flatten())
-        return self.get_observations(),reward,done,extras
+        if reuse_reference:
+            if len(ids):
+                # Resampling a command leaves the running reference clock
+                # intact. Only reset rows have new reference and physics state.
+                self.refresh(root_from_links=True)
+                for name, value in reset_reference.items():
+                    ref[name][ids] = value
+            return self._observations_from_reference(ref,self._future_joint_positions())
+        return self.get_observations()

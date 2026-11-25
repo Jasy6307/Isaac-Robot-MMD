@@ -2,6 +2,7 @@
 from source.paths import REPO_ROOT
 from source.pmx_prototype.experiments import jobs
 from source.pmx_prototype.experiments.jobs import read, write
+from source.pmx_prototype.training.anon_scratch_validation import DEFAULT_ACCEPTANCE_INTERVAL
 import hashlib
 import json
 import os
@@ -29,7 +30,7 @@ def launch(stage, arguments):
 def train(run,config,envs,iterations,checkpoint=None):
     command=[SOURCE/'train_anon_locomotion.py','--mode','train','--headless','--num-envs',str(envs),
         '--iterations',str(iterations),'--run-dir',run,'--experiment-output',OUT/'acceptance',
-        '--scratch-target','latest_unified','--acceptance-interval','500','--scratch-full-interval','2500',
+        '--scratch-target','latest_unified',
         '--config-override',config,'--seed','42']
     if checkpoint:command+=['--scratch-continuation','--checkpoint',checkpoint]
     else:command+=['--from-scratch']
@@ -48,23 +49,25 @@ def extra_checks(checkpoint,tag):
     pivots=read(work/'pivots/report.json')
     pivot_falls=sum(s['total_falls'] for s in pivots['models']['candidate'])
     result=dict(pivot_falls=pivot_falls)
-    reports={}
-    for label,override in [('lite',dict(unified_eval_lite=True)),('brakes',dict(unified_eval_cases=read(TESTS/'plan.json')['brake_cases']))]:
-        config=work/(label+'_config.json');write(config,override)
-        code,_=launch(tag+'_'+label,[SOURCE/'train_anon_locomotion.py','--mode','eval','--headless','--num-envs','1',
-            '--checkpoint',checkpoint,'--output',work/label,'--config-override',config])
-        if code:raise RuntimeError('Fresh '+label+' inference failed; see log')
-        reports[label]=read(work/label/'report.json')
-    lite=reports['lite'];brakes=reports['brakes']
-    checks=regression(read(TESTS/'baseline_lite/report.json'),lite)
+    config=work/'brakes_config.json';write(config,dict(unified_eval_cases=read(TESTS/'plan.json')['brake_cases']))
+    code,_=launch(tag+'_brakes',[SOURCE/'train_anon_locomotion.py','--mode','eval','--headless','--num-envs','1',
+        '--checkpoint',checkpoint,'--output',work/'brakes','--config-override',config])
+    if code:raise RuntimeError('Fresh braking diagnostic failed; see log')
+    brakes=read(work/'brakes/report.json')
     brake_checks=regression(read(TESTS/'baseline_brakes/report.json'),brakes)
     latest=read(OUT/'acceptance/history.json')[-1]
-    full=full_checks(read(Path(latest['full_report'])),read(ROOT/'output/anon_locomotion/command_plan_tests_20261116/baseline_full/report.json'))
-    targets=[s for s in lite['segments'] if s['label'] in ['run_diagonal_135','reverse_turn']]
-    result.update(lite_targets=targets,lite_regression=checks,lite_falls=lite['total_falls'],
+    official=read(Path(latest['full_report']))
+    baseline=TESTS/'baseline_full/report.json'
+    if not baseline.is_file():
+        baseline=ROOT/'output/anon_locomotion/command_plan_tests_20261116/baseline_full/report.json'
+    baseline=read(baseline)
+    full=full_checks(official,baseline)
+    checks=regression(baseline,official)
+    targets=[s for s in official['segments'] if s['label'] in ['run_diagonal_135','reverse_turn']]
+    result.update(full_targets=targets,full_regression=checks,full_falls=official['total_falls'],
         brakes_passed=all(s['passed'] for s in brakes['segments']),brakes_falls=brakes['total_falls'],
         brake_regression=brake_checks,full_checks=full)
-    result['passed']=bool(pivot_falls==0 and lite['total_falls']==0 and all(s['passed'] for s in targets) and
+    result['passed']=bool(pivot_falls==0 and official['total_falls']==0 and all(s['passed'] for s in targets) and
         all(s['passed'] for s in checks) and all(s['passed'] for s in brake_checks) and
         result['brakes_passed'] and brakes['total_falls']==0 and full['accepted'])
     write(work/'result.json',result)
@@ -97,8 +100,8 @@ def main():
     plan=dict(started_from_random_weights=True,external_checkpoint_used=False,external_teacher_used=False,
         source_configuration=str(BASE_CONFIG),chosen_split_plan=chosen,fixed_policy_test_report=str(TESTS/'result.json'),
         num_envs=12288,fallback_num_envs=8192,maximum_iterations=TOTAL,seed=42,
-        acceptance_interval=500,full_acceptance_interval=2500,removed_teacher_settings=removed,
-        acceptance='Unchanged original full325s gate, zero falls and original slip/speed thresholds; additionally64 pivot probes, rapid target switches, stop/backward diagnostics and fixed-actor lite regression checks.',
+        acceptance_interval=DEFAULT_ACCEPTANCE_INTERVAL,removed_teacher_settings=removed,
+        acceptance='Complete suite with zero falls and existing slip and speed thresholds. Also check pivot probes, target switches and braking regressions.',
         stop_rule='Stop at first full plus extra-check pass, or7500 iterations. Same-lineage continuation only, without tuning.',
         cumulative_training_seconds_before=51378.49378980009,
         active_training_time_excludes='Scene setup, all acceptance and rendering; no video requested in this experiment.')

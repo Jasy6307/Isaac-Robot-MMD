@@ -75,11 +75,13 @@ class SourceLayoutTests(unittest.TestCase):
     def test_snapshot_runs_without_original_source_on_pythonpath(self):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
-            files = copy_sources(folder, ['train_anon_locomotion.py',
+            files = copy_sources(folder, ['train_anon_locomotion.py', 'train_anon_lab.py',
+                                         'build_anon_v3.py', 'build_anon_v4.py',
                                          'measure_gait_slip.py', 'anon_v5_config.json',
                                          'secondary_profiles.py'])
             for required in ('training/reference_asset_builder.py', 'runtime/physical_character.py',
-                             'training/build_anon_v4.py', 'diagnostics/measure_gait_slip.py',
+                             'training/build_anon_v4.py', 'training/anon_lab_direct_env.py',
+                             'diagnostics/measure_gait_slip.py',
                              'archive/configs/anon_v5_config.json',
                              'configs/training/v5/anon_v5_config.json',
                              'configs/physics/secondary_default.json'):

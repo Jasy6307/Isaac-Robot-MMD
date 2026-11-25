@@ -144,14 +144,16 @@ def apply_review(report, review):
     return report
 
 
-def analyze_h5(path, robot_usd, frames=None):
+def analyze_h5(path, robot_usd, frames=None, *, ground_z=0., root_anchor_z=None):
     """USD FK uses the reference's recorded baseline, not a learned policy."""
     import h5py
     import torch
     from scipy.spatial.transform import Rotation
+    from source.train_workflow.utils.grounding.visible import visible_hull
     from .self_collision import G1CollisionModel, playback_baseline
 
     path = Path(path).resolve()
+    robot_usd = Path(robot_usd).resolve()
     if frames is not None and frames < 3:
         raise ValueError("Analysis requires at least three source frames")
     root = Path(__file__).resolve().parents[4]
@@ -166,17 +168,30 @@ def analyze_h5(path, robot_usd, frames=None):
         valid = f["root_valid"][:count].astype(bool)
         fps = float(f.attrs["fps"])
         anchor = np.asarray(f.attrs.get("record_root_anchor_quat_wxyz", [.70710678, 0, 0, .70710678]))
+        if root_anchor_z is None:
+            root_anchor_z = float(f.attrs.get("record_root_anchor_pos", [0., 0., .76])[2])
     if not np.isfinite(q).all() or not np.isfinite(pos).all() or not np.isfinite(quat).all():
         raise ValueError("Non-finite reference")
-    model = G1CollisionModel(Path(robot_usd), names, "cpu")
+    if not np.isfinite([ground_z, root_anchor_z]).all():
+        raise ValueError("Non-finite reference ground or root height")
+    ankle_links = ("left_ankle_roll_link", "right_ankle_roll_link")
+    model = G1CollisionModel(robot_usd, names, "cpu")
     with torch.no_grad():
-        _, positions = model.fk(torch.tensor(q + baseline, dtype=torch.float32))
-        feet = torch.stack([positions[f"{side}_ankle_roll_link"] for side in ("left", "right")], 1).numpy()
-    rotation = Rotation.from_quat(quat[:, [1, 2, 3, 0]]) * Rotation.from_quat(anchor[[1, 2, 3, 0]])
-    feet = np.einsum("nij,nkj->nki", rotation.as_matrix(), feet) + pos[:, None]
+        rotations, positions = model.fk(torch.tensor(q + baseline, dtype=torch.float32))
+        feet = torch.stack([positions[link] for link in ankle_links], 1).numpy()
+    rotation = (Rotation.from_quat(quat[:, [1, 2, 3, 0]]) *
+                Rotation.from_quat(anchor[[1, 2, 3, 0]])).as_matrix()
+    feet = np.einsum("nij,nkj->nki", rotation, feet) + pos[:, None]
+    sole_heights = []
+    for side, link in enumerate(ankle_links):
+        vertices = visible_hull(robot_usd, link)[0]
+        vertical = np.einsum("ni,nij->nj", rotation[:, 2], rotations[link].numpy())
+        bottom = (vertical @ vertices.T).min(axis=1) + feet[:, side, 2]
+        sole_heights.append(bottom + root_anchor_z - ground_z)
     report = analyze_signals(pos[:, 2], feet, fps, valid)
     report.update(source=str(path), source_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
-                  robot_usd=str(Path(robot_usd).resolve()))
+                  robot_usd=str(robot_usd),
+                  reference_sole_heights_m=np.round(np.stack(sole_heights, axis=1), 6).tolist())
     return report
 
 

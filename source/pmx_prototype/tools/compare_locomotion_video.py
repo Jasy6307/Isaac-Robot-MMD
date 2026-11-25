@@ -39,7 +39,7 @@ def main():
                    "drawtext=fontfile='C\\:/Windows/Fonts/arial.ttf':text='Backward 1.20 m/s':x=(w-tw)/2:y=77:fontsize=30:fontcolor=0x79d8ff:enable='lt(t,6)',"
                    "drawtext=fontfile='C\\:/Windows/Fonts/arial.ttf':text='Left 1.20 m/s':x=(w-tw)/2:y=77:fontsize=30:fontcolor=0x79d8ff:enable='gte(t,6)*lt(t,12)',"
                    "drawtext=fontfile='C\\:/Windows/Fonts/arial.ttf':text='Right 1.20 m/s':x=(w-tw)/2:y=77:fontsize=30:fontcolor=0x79d8ff:enable='gte(t,12)',"
-                   "drawtext=fontfile='C\\:/Windows/Fonts/arial.ttf':text='Same camera and look 08 | Hair + skirt PhysX ON | No runtime compensation':x=(w-tw)/2:y=1038:fontsize=25:fontcolor=white[out]")
+                   "drawtext=fontfile='C\\:/Windows/Fonts/arial.ttf':text='Same camera and appearance | Hair + skirt PhysX ON | No runtime compensation':x=(w-tw)/2:y=1038:fontsize=25:fontcolor=white[out]")
     a.output.parent.mkdir(parents=True,exist_ok=True)
     command=[str(ff),'-v','error','-y','-i',str(a.baseline),'-i',str(a.candidate),
              '-filter_complex',';'.join(filters),'-map','[out]','-an','-c:v','libx264','-crf','16',

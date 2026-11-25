@@ -1,0 +1,7 @@
+{
+  "train_lateral_mirror": false,
+  "train_mirror_augmentation": false,
+  "train_mirror_loss_coeff": 0.0,
+  "train_mirror_pivot_stop": false,
+  "amp_mirror_augmentation": false
+}

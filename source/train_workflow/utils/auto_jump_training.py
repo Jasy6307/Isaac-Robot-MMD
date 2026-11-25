@@ -25,7 +25,9 @@ def prepare_auto_config(cfg, h5_path, window_seconds, review_path=None, *, hold_
     if window_seconds > duration + 1e-5:
         raise ValueError("Auto training window exceeds source duration; refusing held-tail analysis")
     report = analyze_h5(h5_path, cfg.scene.robot.spawn.usd_path,
-                        frames=max(3, int(math.ceil(window_seconds * fps))))
+                        frames=max(3, int(math.ceil(window_seconds * fps))),
+                        ground_z=float(getattr(cfg.scene.terrain, "ground_z_offset", 0.)),
+                        root_anchor_z=float(cfg.scene.robot.init_state.pos[2]))
     cfg.auto_jump_report = report
     if getattr(cfg, "reference_reward_version", None):
         report["reward_contract"] = dict(version=cfg.reference_reward_version,

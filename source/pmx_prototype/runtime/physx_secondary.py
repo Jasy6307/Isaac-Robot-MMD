@@ -720,8 +720,10 @@ class PhysxSecondary:
             col.CreateContactOffsetAttr(.002)
             col.CreateRestOffsetAttr(0.)
         px = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
-        px.CreateSolverPositionIterationCountAttr(255 if self.motion.rig_settings.get('skirt_max_stretch') else 96 if self.quality == 'cloth' else 40 if self.hair_quality else 24)
-        px.CreateSolverVelocityIterationCountAttr(16 if self.quality == 'cloth' else 8 if self.hair_quality else 4)
+        px.CreateSolverPositionIterationCountAttr(int(self.motion.rig_settings.get('native_solver_position_iterations',
+            255 if self.motion.rig_settings.get('skirt_max_stretch') else 96 if self.quality == 'cloth' else 40 if self.hair_quality else 24)))
+        px.CreateSolverVelocityIterationCountAttr(int(self.motion.rig_settings.get('native_solver_velocity_iterations',
+            16 if self.quality == 'cloth' else 8 if self.hair_quality else 4)))
         px.CreateLinearDampingAttr((4.0 if mass == .012 else 4.5) if self.hair_quality else
                                  (4.0 if mass == .012 else 4.2) if self.quality == 'smooth' else
                                  (3.3 if mass == .012 else 2.2))
@@ -738,6 +740,27 @@ class PhysxSecondary:
             px.CreateMaxDepenetrationVelocityAttr(float(contact['max_pushout_m_s']))
             px.CreateLinearDampingAttr(float(contact['linear_damping']))
 
+
+    def set_secondary_mode(self, mode, base_settings):
+        """Update native iteration counts in place between simulation batches."""
+        from copy import deepcopy
+        from secondary_profiles import apply_secondary_mode
+        settings=deepcopy(apply_secondary_mode(base_settings,mode))
+        position=int(settings.get('native_solver_position_iterations',
+            255 if settings.get('skirt_max_stretch') else 96 if self.quality=='cloth' else 40 if self.hair_quality else 24))
+        velocity=int(settings.get('native_solver_velocity_iterations',16 if self.quality=='cloth' else 8 if self.hair_quality else 4))
+        if not hasattr(self,'_solver_budget_attrs'):
+            self._solver_budget_attrs=[]
+            for view in (self.dynamic_view,self.pin_view,self.body_view,self.edge_view):
+                if view is None:continue
+                for path in view.prim_paths:
+                    api=PhysxSchema.PhysxRigidBodyAPI(self.stage.GetPrimAtPath(path))
+                    self._solver_budget_attrs.append((api.GetSolverPositionIterationCountAttr(),api.GetSolverVelocityIterationCountAttr()))
+        with Sdf.ChangeBlock():
+            for pos,vel in self._solver_budget_attrs:pos.Set(position);vel.Set(velocity)
+        self.interface.flush_changes()
+        self.motion.rig_settings=settings
+        self.hair_constraint_solver=settings.get('hair_constraint_solver')
 
     def start(self, stage_id):
         import omni.physx

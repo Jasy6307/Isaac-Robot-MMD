@@ -163,7 +163,7 @@ def record(app, lanes, output, ffmpeg):
                         '-filter_complex', 'hstack=inputs=2', '-an', '-c:v', 'libx264', '-preset', 'fast',
                         '-crf', '16', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(output)], check=True)
     out = measure_video(ffmpeg, output, expected)
-    return dict(out, video=str(output), sha256=sha256(output), appearance='shared approved look 08',
+    return dict(out, video=str(output), sha256=sha256(output), appearance='mmd-toon (cel-studio)',
                 bangs_shadow_enabled=appearance.bangs is not None, physics_hz=a['info']['physics_hz'],
                 edge_nodes=a['info']['edge_nodes'], secondary_profile_sha256=a['info']['secondary_profile_sha256'],
                 rollout_sha256=[d['info']['rollout_sha256'] for d in lanes], shots=shots)

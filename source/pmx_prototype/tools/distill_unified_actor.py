@@ -71,5 +71,5 @@ cfg['offline_single_actor_distillation']=dict(source_checkpoint=str(args.checkpo
 seconds=time.perf_counter()-started
 (out/'training_time.json').write_text(json.dumps(dict(training_seconds=seconds,completed_steps=step+1,definition='Offline actor optimization plus save; excludes physical teacher data collection'),indent=2))
 (out/'distillation.json').write_text(json.dumps(dict(normalization_rebase_max_action_delta=parity,history=history,best_validation_sum_rmse=best_score,samples=n,one_actor=True),indent=2))
-copy_sources(out,['tools/distill_unified_actor.py','tools/collect_unified_teachers.py','anon_imitation_env.py','unified_walk_run_reference.py','policy_normalization_rebase.py'])
+copy_sources(out,['tools/distill_unified_actor.py','anon_imitation_env.py','unified_walk_run_reference.py','policy_normalization_rebase.py'])
 print('DISTILL_COMPLETE',seconds,flush=True)

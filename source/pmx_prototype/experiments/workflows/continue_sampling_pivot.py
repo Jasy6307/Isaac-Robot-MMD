@@ -1,4 +1,4 @@
-"""Continue sampling-only policy with staged regression and full acceptance."""
+"""Continue the sampling-only policy with matched full acceptance and pivot probes."""
 from source.paths import REPO_ROOT
 from source.pmx_prototype.experiments import jobs
 from source.pmx_prototype.experiments.jobs import read, write
@@ -57,10 +57,11 @@ def main():
               gates='Zero falls across 64 pivot stress conditions; no walk/run regression versus the starting 7600 checkpoint; then original full 325-second gate and original slip/speed thresholds.',
               stop_rule='Stop on a passing complete gate, any walk/run regression, or the 400-iteration cap. No reward additions.')
     write(OUT/'plan.json',plan)
-    baseline=read(PREVIOUS/'sampling_only_lite/report.json')
     slip_baseline={s['label']:s for s in read(ROOT/'output/anon_locomotion/unified_walk_run/full8_final_cpu/report.json')['segments']}
     checkpoint=BASE;stages=[];training=0.;durations={};new_iterations=0
-    write(OUT/'lite_config.json',dict(unified_eval_lite=True))
+    durations['baseline_full']=execute('baseline_full',[SOURCE/'train_anon_locomotion.py','--mode','eval','--headless',
+        '--checkpoint',BASE,'--num-envs','1','--output',OUT/'baseline_full'])
+    baseline=read(OUT/'baseline_full/report.json')
     outcome='iteration_limit_not_passed'
     for index,iterations in enumerate(plan['stage_iterations'],1):
         new_iterations+=iterations
@@ -78,9 +79,10 @@ def main():
         durations[tag+'_pivots']=execute(tag+'_pivots',[SOURCE/'diagnostics/diagnose_pivot_failure.py','--models',OUT/(tag+'_models.json'),'--output',OUT/tag/'pivots'])
         item['pivot_probes']=read(OUT/tag/'pivots/report.json')['models']['candidate']
         item['pivot_total_falls']=sum(r['total_falls'] for r in item['pivot_probes'])
-        durations[tag+'_lite']=execute(tag+'_lite',[SOURCE/'train_anon_locomotion.py','--mode','eval','--headless',
-            '--checkpoint',checkpoint,'--num-envs','1','--output',OUT/tag/'lite','--config-override',OUT/'lite_config.json'])
-        item['regression']=regression(baseline,read(OUT/tag/'lite/report.json'))
+        durations[tag+'_full']=execute(tag+'_full',[SOURCE/'train_anon_locomotion.py','--mode','eval','--headless',
+            '--checkpoint',checkpoint,'--num-envs','1','--output',OUT/tag/'full'])
+        report=read(OUT/tag/'full/report.json')
+        item['regression']=regression(baseline,report)
         item['no_walk_run_regression']=all(r['passed'] for r in item['regression'])
         if not item['no_walk_run_regression']:
             outcome='walk_run_regression_stopped';break
@@ -95,9 +97,6 @@ def main():
                                reverse['metrics']['Imitation/keypoint_rmse_m']<=old_reverse['metrics']['Imitation/keypoint_rmse_m']+.01)
             item['exact_prefix_passed']=prefix_passed;item['exact_prefix_reverse']=reverse
         if item['pivot_total_falls']==0 and prefix_passed:
-            durations[tag+'_full']=execute(tag+'_full',[SOURCE/'train_anon_locomotion.py','--mode','eval','--headless',
-                '--checkpoint',checkpoint,'--num-envs','1','--output',OUT/tag/'full'])
-            report=read(OUT/tag/'full/report.json')
             checks=[]
             for row in report['segments']:
                 if row['label'] in ('run_backward','run_left','run_right'):

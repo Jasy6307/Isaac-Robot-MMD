@@ -9,11 +9,13 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 
 from source import sim_compat
+from source.train_workflow.task_ids import G1_TRAIN_TASK_ID, normalize_g1_train_task_id
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--h5", required=True)
-parser.add_argument("--task", default="Isaac-G1-Vmd-Auto-Jump-Conditional-v0")
+parser.add_argument("--task", type=normalize_g1_train_task_id, choices=(G1_TRAIN_TASK_ID,),
+                    default=G1_TRAIN_TASK_ID)
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--steps", type=int, default=2)
 parser.add_argument("--motion_start_seconds", type=float, default=0.)

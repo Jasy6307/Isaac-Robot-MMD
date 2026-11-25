@@ -1,6 +1,7 @@
-"""Minimal local G1 scene on Sim 6.1 / Lab 3; no dance assets required.
+"""Minimal local G1 scene on Sim 6.1 / Lab 3.
 
 Run ``run_isaac61.bat`` for a window, or pass this file with ``--viz none``.
+Replay mode needs no dance assets. Training mode uses IRIS_OUT or ``--h5``.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from source import sim_compat
+from source.train_workflow.task_ids import G1_TRAIN_TASK_ID
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -44,26 +46,44 @@ from source.train_workflow.utils.playback.sim_robot import apply_joint_state_ins
 
 
 def main():
-    task_id = "Isaac-G1-Vmd-Replay-v0" if args.task == "replay" else "Isaac-G1-Vmd-Train-C1-v0"
+    task_id = "Isaac-G1-Vmd-Replay-v0" if args.task == "replay" else G1_TRAIN_TASK_ID
     cfg = parse_env_cfg(task_id, device=args.device, num_envs=args.num_envs)
     cfg.scene.terrain.visual_material = sim_utils.PreviewSurfaceCfg(diffuse_color=(0.3, 0.3, 0.3))
     cfg.scene.sky_light.spawn = sim_utils.DomeLightCfg(intensity=1500.0)
     cfg.sim.default_visualizer_cfg.eye = (0.0, 7.0, 3.0)
     cfg.sim.default_visualizer_cfg.lookat = (0.0, 0.0, 1.2)
-    cfg.scene.robot = apply_robot_pd_profile(
-        G1_29DOF_O6_CFG.replace(prim_path=cfg.scene.robot.prim_path, init_state=cfg.scene.robot.init_state),
-        "deploy", o6_hands=True,
-    )
+    if args.task == "replay":
+        cfg.scene.robot = G1_29DOF_O6_CFG.replace(
+            prim_path=cfg.scene.robot.prim_path, init_state=cfg.scene.robot.init_state
+        )
+    cfg.scene.robot = apply_robot_pd_profile(cfg.scene.robot, "deploy", o6_hands=True)
     if args.task == "replay":
         cfg.scene.robot.spawn.rigid_props.disable_gravity = True
     else:
+        import h5py
+
+        from source.paths import resolve_dance_asset
+        from source.train_workflow.utils.auto_jump_training import prepare_auto_config
+        from source.train_workflow.utils.motion.resolve import resolve_dance_h5_by_name
+
         if args.h5:
-            for container in (cfg.observations.policy, cfg.rewards, cfg.events):
-                for term in vars(container).values():
-                    params = getattr(term, "params", None)
-                    if params and "h5_path" in params:
-                        params["h5_path"] = str(Path(args.h5).resolve())
-            cfg.actions.joint_pos.motion_h5_path = str(Path(args.h5).resolve())
+            h5_path = str(resolve_dance_asset(args.h5))
+        else:
+            h5_path, _ = resolve_dance_h5_by_name("IRIS_OUT", compile_from_csv=False)
+        action = cfg.actions.joint_pos
+        with h5py.File(h5_path) as motion:
+            duration = len(motion["joint_pos_delta"]) / float(motion.attrs["fps"])
+        window_seconds = min(action.motion_window_seconds, duration)
+        for container in (cfg.observations.policy, cfg.rewards, cfg.events):
+            for term in vars(container).values():
+                params = getattr(term, "params", None)
+                if params and "h5_path" in params:
+                    params["h5_path"] = h5_path
+                if params and "window_seconds" in params:
+                    params["window_seconds"] = window_seconds
+        action.motion_h5_path = h5_path
+        action.motion_window_seconds = window_seconds
+        prepare_auto_config(cfg, h5_path, window_seconds)
         # A single environment does not need the large training contact allocation.
         cfg.sim.physics.gpu_max_rigid_patch_count = 2**16
         cfg.sim.physics.gpu_max_rigid_contact_count = 2**20

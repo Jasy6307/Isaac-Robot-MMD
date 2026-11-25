@@ -12,6 +12,30 @@ from pathlib import Path
 DEFAULT_SECONDARY_PROFILE = resolve_source('secondary_default.json')
 DEFAULT_SECONDARY_QUALITY = 'cloth'
 SKIRT_EDGE_STRIDES = {'full': 1, 'reduced': 2, 'sparse': 3}
+SECONDARY_MODES = ('full', 'light', 'light2', 'light3')
+
+
+def crowd_secondary_modes(count, controlled, mode='full', mixed=False, controlled_mode='light'):
+    """Resolve an ordered per-actor budget from the control request snapshot."""
+    if count<1 or not 0<=controlled<count:raise ValueError('Invalid crowd actor selection')
+    if mode not in SECONDARY_MODES:raise ValueError(f'Unknown secondary mode: {mode}')
+    if controlled_mode not in SECONDARY_MODES:raise ValueError(f'Unknown controlled secondary mode: {controlled_mode}')
+    return [(controlled_mode if i==controlled else 'light3') if mixed else mode for i in range(count)]
+
+
+def apply_secondary_mode(settings, mode='full'):
+    """Opt-in solve budget; preserve topology, collision coverage and 120 Hz."""
+    if mode not in SECONDARY_MODES:raise ValueError(f'Unknown secondary mode: {mode}')
+    if mode=='full':return settings
+    from copy import deepcopy
+    result=deepcopy(settings)
+    position,hair,contacts={'light':(64,48,8),'light2':(32,16,8),'light3':(8,4,2)}[mode]
+    result['native_solver_position_iterations']=position
+    result['native_solver_velocity_iterations']=8
+    if result.get('hair_constraint_solver'):
+        result['hair_constraint_solver'].update(iterations=hair,contact_refine_iterations=contacts)
+    result['secondary_mode']=mode
+    return result
 
 
 def resolve_skirt_grid(settings, names):

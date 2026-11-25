@@ -13,16 +13,16 @@ p.add_argument('--command',type=float,nargs=3,default=[-1.2,0.,0.]);p.add_argume
 p.add_argument('--zero-actions',action='store_true')
 p.add_argument('--check-metric-parity',action='store_true')
 p.add_argument('--device',choices=['cpu','cuda:0'],default='cpu');args=p.parse_args()
-from isaacsim import SimulationApp
-app=SimulationApp({'headless':True,'fast_shutdown':True,'disable_viewport_updates':True,'limit_cpu_threads':2})
+from isaaclab.app import AppLauncher
+app=AppLauncher(dict(headless=True,device=args.device,disable_viewport_updates=True,limit_cpu_threads=2)).app
 import torch
-from anon_imitation_env import AnonImitationEnv
+from anon_environment import create_environment
 from rsl_rl.runners import OnPolicyRunner
 try:
     torch.set_num_threads(1)
     cfg=json.loads((args.checkpoint.parent/'env_config.json').read_text())
     cfg.update(simulation_device=args.device,amp_reward_diagnostics=False,runtime_inference_only=True)
-    env=AnonImitationEnv(1,42,app,evaluation=True,config=cfg)
+    env=create_environment(1,42,app,evaluation=True,config=cfg)
     env.max_episode_length=round(600/env.dt)
     runner=OnPolicyRunner(env,json.loads((args.checkpoint.parent/'agent_config.json').read_text()),device=args.device)
     runner.load(str(args.checkpoint),map_location=args.device);infer=runner.get_inference_policy()

@@ -10,15 +10,15 @@ from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 
 import json
 from pathlib import Path
-from isaacsim import SimulationApp
-app=SimulationApp({'headless':True,'fast_shutdown':True})
+from isaaclab.app import AppLauncher
+app=AppLauncher(dict(headless=True,device='cuda:0')).app
 import torch
-from anon_imitation_env import AnonImitationEnv
+from anon_environment import create_environment
 root=PROJECT_ROOT
 env=None
 try:
     config=json.loads((root/'source/pmx_prototype/configs/training/v6/anon_v6_config.json').read_text())
-    env=AnonImitationEnv(1,42,app,True,config)
+    env=create_environment(1,42,app,True,config)
     for phase in [0.,.25,.5,.75]:
         env.phase[:]=phase
         env.evaluation=False

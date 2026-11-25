@@ -116,7 +116,7 @@ def resolve_dance_h5_by_name(
 
 
 def resolve_training_log_root(experiment_name: str, dance_name: str | None = None) -> str:
-    """Checkpoint search root: ``logs/rsl_rl/<experiment>[/<dance>]``."""
+    """Directory for one experiment under ``logs/rsl_rl/<experiment>[/<dance>]``."""
     root = os.path.abspath(os.path.join(_repo_root(), "logs", "rsl_rl", str(experiment_name)))
     if dance_name:
         canonical = normalize_dance_stem(dance_name)

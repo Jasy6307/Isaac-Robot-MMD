@@ -28,6 +28,7 @@ class G1VmdAutoJumpEnvCfg(G1VmdJumpV2EnvCfg):
         super().__post_init__()
         self.events.reset_robot_joints.params.update(
             motion_start_seconds=None, random_start=False, joint_pos_noise=.01)
+        self.terminations.fall_height.func = auto_jump.reference_height_below_minimum
         self.observations.policy.jump_state.func = auto_jump.observation
         # Keep action/observation layouts and legacy functions for old bundles.
         for name in (

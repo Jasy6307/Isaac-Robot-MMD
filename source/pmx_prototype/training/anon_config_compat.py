@@ -1,4 +1,4 @@
-"""Read historical null settings, but reject removed active compensation."""
+"""Load historical configurations with the current evaluation and runtime settings."""
 
 import sys as _sys
 from pathlib import Path as _Path
@@ -11,6 +11,8 @@ from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 
 def clean_legacy_config(config):
     result = dict(config)
+    result.pop('unified_eval_lite', None)
+    result.pop('unified_eval_short', None)
     if result.pop('runtime_arm_clearance', None):
         raise ValueError(
             'Runtime arm compensation has been removed. Remove the legacy '

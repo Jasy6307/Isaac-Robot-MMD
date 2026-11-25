@@ -32,6 +32,7 @@ python source/train_workflow/g1_vmd_2_eval.py `
 Runner 所需的检查点会从包内释放到临时目录，在进程退出时清理。
 
 包固定 task、策略、舞蹈、窗口、控制频率、关节顺序、默认关节角及控制配置。
+部署包按内置配置加载，兼容性取决于当前代码和运行环境是否仍提供包内引用的类和函数。
 不允许用 CLI 覆盖 dance/checkpoint/window_frames/physics_hz/decimation/
 residual_alpha/use_reference_residual/pd_profile/self_collisions；UI 内也不切换策略或窗口。
 更换这些内容应重新导出或加载另一份部署包。

@@ -1,4 +1,4 @@
-"""Matched retention-strength continuations; unchanged screen/regression gates."""
+"""Matched retention-strength continuations with complete acceptance."""
 from source.paths import REPO_ROOT
 from source.pmx_prototype.experiments import jobs
 from source.pmx_prototype.experiments.jobs import read, write
@@ -73,12 +73,12 @@ def main():
     write(OUT/'models.json',models)
     durations['pivots']=execute('pivots',[SOURCE/'diagnostics/diagnose_pivot_failure.py','--models',OUT/'models.json','--output',OUT/'pivots'])
     pivots=read(OUT/'pivots/report.json')['models']
-    write(OUT/'lite_config.json',dict(unified_eval_lite=True,unified_record_controller=True))
+    write(OUT/'full_config.json',dict(unified_record_controller=True))
     reports={};responses={}
     for name,checkpoint in models.items():
-        durations[name+'_lite']=execute(name+'_lite',[SOURCE/'train_anon_locomotion.py','--mode','eval','--headless',
-            '--checkpoint',checkpoint,'--num-envs','1','--output',OUT/(name+'_lite'),'--config-override',OUT/'lite_config.json'])
-        reports[name]=read(OUT/(name+'_lite')/'report.json');responses[name]=switch_metrics(OUT/(name+'_lite'))
+        durations[name+'_full']=execute(name+'_full',[SOURCE/'train_anon_locomotion.py','--mode','eval','--headless',
+            '--checkpoint',checkpoint,'--num-envs','1','--output',OUT/(name+'_full'),'--config-override',OUT/'full_config.json'])
+        reports[name]=read(OUT/(name+'_full')/'report.json');responses[name]=switch_metrics(OUT/(name+'_full'))
     # Reuse precisely the established regression tolerances and official rows.
     from continue_sampling_pivot import regression
     for name,arm in arms.items():
@@ -86,9 +86,9 @@ def main():
         arm['switch_response']=responses[name];arm['walk_run_regression']=regression(reports['baseline'],reports[name])
         arm['walk_run_regression_passes']=sum(row['passed'] for row in arm['walk_run_regression'])
         arm['no_walk_run_regression']=all(row['passed'] for row in arm['walk_run_regression'])
-        arm['screen_total_falls']=reports[name]['total_falls'];arm['screen_passed']=reports[name]['passed_lite_gate']
-        arm['screen_segment_passes']=sum(row['passed'] for row in reports[name]['segments'])
-        arm['original_gates_passed']=bool(arm['pivot_total_falls']==0 and arm['no_walk_run_regression'] and arm['screen_passed'])
+        arm['full_total_falls']=reports[name]['total_falls'];arm['full_passed']=reports[name]['passed_unified_gate']
+        arm['full_segment_passes']=sum(row['passed'] for row in reports[name]['segments'])
+        arm['original_gates_passed']=bool(arm['pivot_total_falls']==0 and arm['no_walk_run_regression'] and arm['full_passed'])
     cumulative=plan['cumulative_training_seconds_before']
     for arm in arms.values():
         cumulative+=arm['training_seconds'];arm['experiment_cumulative_training_seconds']=cumulative

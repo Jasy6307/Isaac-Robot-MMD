@@ -10,17 +10,17 @@ from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 
 import json
 from pathlib import Path
-from isaacsim import SimulationApp
-app=SimulationApp({'headless':True,'fast_shutdown':True})
+from isaaclab.app import AppLauncher
+app=AppLauncher(dict(headless=True,device='cuda:0')).app
 import torch
-from anon_imitation_env import AnonImitationEnv
+from anon_environment import create_environment
 ROOT=PROJECT_ROOT
 env=None
 result=0
 try:
     config=json.loads((ROOT/'logs/rsl_rl/anon_locomotion/v6_anatomical_speeds/env_config.json').read_text())
     config['imitation_motion_probabilities']=[0,0,0,1]
-    env=AnonImitationEnv(1,42,app,False,config)
+    env=create_environment(1,42,app,False,config)
     env.evaluation=True;env.max_episode_length=10000;env.refresh()
     falls=0;min_height=2.
     for k in range(300):

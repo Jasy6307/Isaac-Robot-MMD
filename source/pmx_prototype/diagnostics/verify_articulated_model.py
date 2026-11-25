@@ -7,20 +7,20 @@ if str(_source_dir) not in _sys.path:
     _sys.path.insert(0, str(_source_dir))
 from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 
-from isaacsim import SimulationApp
-app=SimulationApp({'headless':True})
+from isaaclab.app import AppLauncher
+app=AppLauncher(dict(headless=True,device='cuda:0')).app
 import json
 from pathlib import Path
 import numpy as np
 import torch
 from scipy.spatial.transform import Rotation as R
-from anon_imitation_env import AnonImitationEnv
+from anon_environment import create_environment
 from retarget_100style import Retarget
 root=PROJECT_ROOT;out=root/'output/anon_locomotion/running_wrists'
 env=None;code=0
 try:
     cfg=json.loads((out/'training.json').read_text());cfg.update(amp_reward_diagnostics=False,imitation_evaluation_initial_clip=2)
-    env=AnonImitationEnv(1,42,app,evaluation=True,config=cfg)
+    env=create_environment(1,42,app,evaluation=True,config=cfg)
     for _ in range(12):env.step(torch.zeros_like(env.actions))
     model=Retarget(root/'output/anon_physical_v4/manifest.json')
     actual=env.poses[0].cpu().numpy();q=env.q[0].cpu().numpy();pelvis=actual[env.links.index('pelvis')]

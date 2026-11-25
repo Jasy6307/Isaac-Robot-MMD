@@ -9,6 +9,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from source import paths
+from source.train_workflow.task_ids import G1_TRAIN_EXPERIMENT_NAME
+from source.train_workflow.utils.checkpoints import resolve_training_checkpoint
 from source.train_workflow.utils.motion.resolve import resolve_dance_h5_by_name, resolve_training_motion
 from source.train_workflow.utils.motion.audio import resolve_motion_audio
 from source.train_workflow.utils.motion import audio as audio_module
@@ -146,6 +148,71 @@ class DanceAssetPathsTests(unittest.TestCase):
             self.assertEqual(pipeline.dance_output_directory(vmd, self.root), self.folder)
             self.assertEqual(pipeline.dance_output_directory(vmd, self.base), self.base)
             self.assertEqual(pipeline.dance_output_directory(self.base / "new.vmd"), self.root / "new")
+
+
+class CheckpointPathsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(dir=ROOT / "output")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        patcher = patch("source.train_workflow.utils.motion.resolve._repo_root", return_value=str(self.root))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.current = G1_TRAIN_EXPERIMENT_NAME
+        self.former = "g1_auto_jump_conditional"
+        self.dance = "dance_one"
+
+    def model(self, experiment, run, filename):
+        path = self.root / "logs/rsl_rl" / experiment / self.dance / run / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+        return path
+
+    def lookup(self, **options):
+        return Path(resolve_training_checkpoint(self.current, self.dance, **options))
+
+    def test_latest_run_precedes_iteration_comparison_and_skips_empty_runs(self):
+        self.model(self.former, "2026-11-19_12-00-00", "model_12000.pt")
+        run = "2026-11-24_12-00-00"
+        self.model(self.current, run, "model_9.pt")
+        latest = self.model(self.current, run, "model_10.pt")
+        self.model(self.current, "2026-11-24_12-01-00", "deploy/deployment.pt")
+        self.assertEqual(self.lookup(), latest)
+
+    def test_legacy_run_is_found_when_new_root_is_missing_or_older(self):
+        legacy = self.model(self.former, "2026-11-24_12-00-00", "model_4.pt")
+        self.assertEqual(self.lookup(), legacy)
+        self.model(self.current, "2026-11-19_12-00-00", "model_8.pt")
+        self.assertEqual(self.lookup(), legacy)
+
+    def test_named_run_and_checkpoint_stay_scoped_to_that_run(self):
+        old_run = "2026-11-19_12-00-00"
+        legacy = self.model(self.former, old_run, "model_4.pt")
+        newer = self.model(self.current, "2026-11-24_12-00-00", "model_8.pt")
+        self.assertEqual(self.lookup(load_run=old_run), legacy)
+        self.assertEqual(self.lookup(load_run=old_run, checkpoint=legacy.name), legacy)
+        with self.assertRaises(FileNotFoundError):
+            self.lookup(load_run=old_run, checkpoint=newer.name)
+
+    def test_explicit_paths_and_tied_run_names(self):
+        run = "2026-11-19_12-00-00"
+        legacy = self.model(self.former, run, "model_12.pt")
+        renamed = self.model(self.current, run, "model_4.pt")
+        self.assertEqual(self.lookup(), renamed)
+        self.assertEqual(self.lookup(load_run=run, checkpoint=legacy.name), legacy)
+        self.assertEqual(self.lookup(checkpoint_dir=str(legacy.parent)), legacy)
+        self.assertEqual(self.lookup(checkpoint=str(renamed), checkpoint_dir=str(legacy.parent)), renamed)
+        with self.assertRaises(FileNotFoundError):
+            self.lookup(checkpoint_dir=str(self.root / "missing"))
+
+    def test_matching_suffix_searches_only_its_own_experiments(self):
+        run = "2026-11-19_12-00-00"
+        suffixed = self.model(f"{self.former}_example", run, "model_12.pt")
+        self.model(self.current, "2026-11-24_12-00-00", "model_100.pt")
+        selected = resolve_training_checkpoint(
+            f"{self.current}_example", self.dance, load_run="2026-11-19.*", checkpoint="model_[0-9]+[.]pt"
+        )
+        self.assertEqual(Path(selected), suffixed)
 
 
 if __name__ == "__main__":

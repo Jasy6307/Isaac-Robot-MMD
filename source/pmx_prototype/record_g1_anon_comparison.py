@@ -318,21 +318,23 @@ try:
     floor.CreateSubdivisionSchemeAttr("none")
     floor.CreateDisplayColorAttr([(.25, .28, .33)])
 
-    if args.look == "soft-pbr":
-        from character_appearance import apply_bright_character_look
-        apply_bright_character_look(stage, anon_center)
+    def publish_anon(p, q):
+        animation.GetRotationsAttr().Set(Vt.QuatfArray.FromNumpy(q.astype(np.float32)))
+        animation.GetTranslationsAttr().Set(Vt.Vec3fArray.FromNumpy(p.astype(np.float32)))
+
+    p, q, _, _ = motion.pose(0)
+    publish_anon(p, q)
+    from character_appearance import DefaultCharacterLook, apply_bright_character_look
     bangs_shadow = None
     if args.look == DEFAULT_LOOK:
-        from character_appearance import apply_bright_character_look, apply_cel_look
-        apply_bright_character_look(stage, anon_center)
-        apply_cel_look(stage, brightness_scale=args.cel_brightness_scale,
-                       face_shaping=args.face_shaping)
-        from bangs_shadow import BangsShadow
-        try:
-            bangs_shadow = BangsShadow(stage, shadow_level=args.bangs_shadow_level)
-        except ValueError as error:
-            print(f"[Appearance] Bangs occlusion unavailable: {error}", flush=True)
-    dome.GetIntensityAttr().Set(float(dome.GetIntensityAttr().Get()) * args.environment_scale)
+        appearance = DefaultCharacterLook(
+            stage, anon_center, environment_scale=args.environment_scale, brightness_scale=args.cel_brightness_scale,
+            face_shaping=args.face_shaping, bangs_shadow_level=args.bangs_shadow_level)
+        bangs_shadow = appearance.bangs
+    else:
+        if args.look == "soft-pbr":
+            apply_bright_character_look(stage, anon_center)
+        dome.GetIntensityAttr().Set(float(dome.GetIntensityAttr().Get()) * args.environment_scale)
 
     camera = UsdGeom.Camera.Define(stage, "/World/Camera")
     camera.CreateFocalLengthAttr(50)
@@ -344,12 +346,6 @@ try:
     viewport.camera_path = "/World/Camera"
     viewport.set_texture_resolution((W, H))
 
-    def publish_anon(p, q):
-        animation.GetRotationsAttr().Set(Vt.QuatfArray.FromNumpy(q.astype(np.float32)))
-        animation.GetTranslationsAttr().Set(Vt.Vec3fArray.FromNumpy(p.astype(np.float32)))
-
-    p, q, _, _ = motion.pose(0)
-    publish_anon(p, q)
     publish_g1(0)
     for _ in range(20):
         app.update()

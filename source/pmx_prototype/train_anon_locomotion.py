@@ -1,6 +1,7 @@
 """Train or evaluate Anon's physically simulated residual walking policy."""
 
 from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source, config_path
+from anon_scratch_validation import DEFAULT_ACCEPTANCE_INTERVAL, ScratchValidation
 import argparse
 import copy
 from datetime import datetime
@@ -16,7 +17,7 @@ ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--mode', choices=['train', 'eval', 'smoke', 'reference'], default='train')
-parser.add_argument('--num-envs', type=int, default=2048)
+parser.add_argument('--num-envs',type=int,help='Default: 2048 for training, 1 for evaluation')
 parser.add_argument('--iterations', type=int, default=1800)
 parser.add_argument('--ppo-mini-batches', type=int, help='Set PPO mini-batches per epoch for this training run')
 parser.add_argument('--checkpoint', type=Path)
@@ -37,9 +38,8 @@ parser.add_argument('--mocap-library', type=Path, help='Retargeted 100STYLE peri
 parser.add_argument('--config-override',type=config_path,help='JSON environment settings applied after checkpoint config')
 parser.add_argument('--from-scratch',action='store_true',help='Require random initialization and record fresh-state evidence')
 parser.add_argument('--scratch-continuation',action='store_true',help='Continue only this experiment\'s own random-initialization lineage, keeping cumulative timing')
-parser.add_argument('--acceptance-interval',type=int,default=500,help='Scratch experiment: lightweight screen every N completed iterations')
-parser.add_argument('--scratch-acceptance-mode',choices=['staged','full-every-checkpoint'],default='staged',help='Staged mode screens often and reserves the complete suite for periodic, promising and final checkpoints')
-parser.add_argument('--scratch-full-interval',type=int,default=2500,help='Staged mode: run full acceptance at least every N completed iterations')
+parser.add_argument('--acceptance-interval',type=int,default=DEFAULT_ACCEPTANCE_INTERVAL,
+                    help='Run complete acceptance every N completed iterations (default: %(default)s) and on the final checkpoint')
 parser.add_argument('--scratch-continue-after-pass',action='store_true',help='Keep collecting the agreed sample budget after a passing scratch checkpoint')
 parser.add_argument('--scratch-low-speed-after-full-pass',action='store_true',
                     help='Enable the separate low-speed probe when reproducing the v2 acceptance flow')
@@ -47,8 +47,10 @@ parser.add_argument('--resume-audit-only',action='store_true',help='Verify compa
 parser.add_argument('--experiment-output',type=Path,help='Scratch experiment acceptance and timing records')
 parser.add_argument('--scratch-target',choices=['continuous_wrists','latest_unified'],default='continuous_wrists',help='Acceptance target for a fresh random initialization')
 parser.add_argument('--acceptance-video', action=argparse.BooleanOptionalAction, default=True,
-                    help='Record measured unified policy acceptance after the simulation exits')
-parser.add_argument('--scratch-record-full', action='store_true', help=argparse.SUPPRESS)
+                    help='Record measured unified policy acceptance, including scheduled training checkpoints')
+parser.add_argument('--acceptance-video-interval', type=int,
+                    help='Record scheduled full acceptances at multiples of this iteration count (default: every full acceptance)')
+parser.add_argument('--record-scheduled-acceptance', '--scratch-record-full', action='store_true', help=argparse.SUPPRESS)
 args = parser.parse_args()
 if args.ppo_mini_batches is not None and (args.mode != 'train' or args.ppo_mini_batches < 1):
     parser.error('--ppo-mini-batches requires train mode and a positive count')
@@ -58,23 +60,23 @@ if args.from_scratch and (args.run_dir/'policy_final.pt').exists():parser.error(
 if args.scratch_continuation and (args.from_scratch or args.mode!='train' or not args.checkpoint or not args.run_dir or not args.experiment_output):
     parser.error('--scratch-continuation requires train, this experiment checkpoint, a new --run-dir and --experiment-output')
 if args.acceptance_interval<1:parser.error('--acceptance-interval must be positive')
-if args.scratch_full_interval<1:parser.error('--scratch-full-interval must be positive')
-if args.scratch_target=='latest_unified' and args.scratch_acceptance_mode=='staged' and args.scratch_full_interval%args.acceptance_interval:
-    parser.error('--scratch-full-interval must be divisible by --acceptance-interval in staged mode')
+if args.acceptance_video_interval is not None and args.acceptance_video_interval<1:
+    parser.error('--acceptance-video-interval must be positive')
 # Programmatic diagnostic replays use runpy and install their own evaluator.
 if __name__ == '__main__' and args.acceptance_video and (__package__ is None or __spec__ is not None):
     from diagnostics.anon_acceptance_video import supervise_acceptance_video
     result = supervise_acceptance_video(args, Path(__file__).resolve(), sys.argv[1:])
     if result is not None:
         sys.exit(result)
-from isaacsim import SimulationApp
-app = SimulationApp({'headless': args.headless, 'renderer': 'RaytracedLighting', 'fast_shutdown': True,
-                     'disable_viewport_updates':args.headless,
-                     'extra_args': ['--/app/asyncRendering=false']})
+if args.mode=='train' and args.run_dir and args.run_dir.exists():
+    if (args.run_dir/'env_config.json').exists() or any(args.run_dir.glob('*.pt')):
+        parser.error('Lab Direct training requires a fresh --run-dir; existing checkpoints/config are preserved')
+from isaaclab.app import AppLauncher
+app=AppLauncher({'headless':args.headless,'device':'cuda:0','disable_viewport_updates':args.headless,
+                 'kit_args':'--/app/asyncRendering=false'}).app
 import numpy as np
 import torch
 from rsl_rl.runners import OnPolicyRunner
-from anon_locomotion_env import AnonLocomotionEnv
 
 
 def agent_config():
@@ -296,6 +298,9 @@ def evaluate_imitation(env,runner):
 
 def evaluate_motion_bank(env,runner):
     if env.cfg.get('unified_walk_run'):
+        if env.cfg.get('unified_eval_parallel_envs') == 4:
+            from diagnostics.evaluate_parallel_walk_run import evaluate
+            return evaluate(env, runner, args.output, args.checkpoint)
         from evaluate_unified_walk_run import evaluate
         return evaluate(env,runner,args.output,args.checkpoint)
     if env.cfg.get('amp_forward_only'):
@@ -406,9 +411,16 @@ def main():
             config.setdefault('unified_acceptance_protocol',PROTOCOL)
         else:
             config['unified_acceptance_protocol']=override.get('unified_acceptance_protocol',CURRENT_PROTOCOL)
+    num_envs = args.num_envs if args.num_envs is not None else (1 if args.mode=='eval' else 2048)
     if args.mode=='eval' and config.get('unified_walk_run'):
         for key in ['measure_ground_contact','unified_eval_force_flight','unified_substep_support_forces','unified_command_frame_metrics']:
             config.setdefault(key,True)
+        from diagnostics.evaluate_parallel_walk_run import PARALLEL_ENVS, resolve_parallel_envs
+        parallel_envs = resolve_parallel_envs(args.checkpoint, args.output, args.config_override, override)
+        config.pop('unified_eval_parallel_envs', None)
+        if parallel_envs == PARALLEL_ENVS:
+            num_envs = parallel_envs
+            config['unified_eval_parallel_envs'] = parallel_envs
     if config.get('full_motion_path') and args.mode=='train' and args.run_dir:
         args.run_dir.mkdir(parents=True,exist_ok=True)
         source=Path(config['full_motion_path']).resolve();frozen=args.run_dir.resolve()/'full_motion.npz'
@@ -421,11 +433,8 @@ def main():
             if source!=destination:shutil.copyfile(source,destination)
             paths.append(str(destination))
         config['amp_expert_paths']=paths
-    environment=AnonLocomotionEnv
-    if config.get('full_motion_path'):
-        from anon_imitation_env import AnonImitationEnv
-        environment=AnonImitationEnv
-    env = environment(args.num_envs, args.seed, app, evaluation=args.mode != 'train', config=config)
+    from anon_environment import create_environment
+    env = create_environment(num_envs,args.seed,app,evaluation=args.mode!='train',config=config)
     if args.mode == 'smoke':
         started = time.perf_counter()
         smoke_falls=0
@@ -462,7 +471,7 @@ def main():
             configure(cfg,env)
         (run/'agent_config.json').write_text(json.dumps(cfg, indent=2), encoding='utf-8')
         copy_sources(run, (
-            'anon_locomotion_env.py', 'train_anon_locomotion.py',
+            'anon_locomotion_env.py', 'train_anon_locomotion.py', 'train_anon_lab.py',
             'natural_walk_reference.py', 'build_anon_v3.py', 'mocap_walk_reference.py',
             'anon_imitation_env.py', 'full_motion_reference.py', 'build_full_motion.py',
             'continuous_motion_reference.py', 'evaluate_continuous.py',
@@ -485,20 +494,27 @@ def main():
             for group in runner.alg.optimizer.param_groups:group['lr']=runner.alg.learning_rate
         from amp_motion_prior import install_amp
         install_amp(runner,env)
-        scratch=None
-        if args.from_scratch or args.scratch_continuation:
-            if not hasattr(env,'amp'):raise ValueError('Scratch experiment requires the full-body AMP configuration')
-            from anon_scratch_validation import ScratchValidation
+        scratch_training=args.from_scratch or args.scratch_continuation
+        validation=None
+        if scratch_training or (args.record_scheduled_acceptance and env.cfg.get('unified_walk_run')):
+            if scratch_training and not hasattr(env,'amp'):
+                raise ValueError('Scratch experiment requires the full-body AMP configuration')
             copy_sources(run, ['anon_scratch_validation.py'])
-            scratch=ScratchValidation(run,args.experiment_output,args.acceptance_interval,ROOT,continuation=args.scratch_continuation,target=args.scratch_target,
-                                      acceptance_mode=args.scratch_acceptance_mode,full_interval=args.scratch_full_interval,
-                                      protocol=env.cfg.get('unified_acceptance_protocol','legacy_v1'),
-                                      speed_dependent_yaw=env.cfg.get('command_yaw_limit_by_speed',False),
-                                      idle_head=env.cfg.get('unified_idle_head_acceptance',False),
-                                      backward_walk=env.cfg.get('unified_eval_backward_walk',False),
-                                      low_speed_after_full=args.scratch_low_speed_after_full_pass,
-                                      record_full_video=args.scratch_record_full)
-            if args.from_scratch:scratch.audit_initialization(runner,env)
+            validation=ScratchValidation(
+                run,args.experiment_output if scratch_training else run/'acceptance',args.acceptance_interval,ROOT,
+                continuation=args.scratch_continuation,target=args.scratch_target if scratch_training else 'latest_unified',
+                protocol=env.cfg.get('unified_acceptance_protocol','legacy_v1'),
+                speed_dependent_yaw=env.cfg.get('command_yaw_limit_by_speed',False),
+                idle_head=env.cfg.get('unified_idle_head_acceptance',False),
+                backward_walk=env.cfg.get('unified_eval_backward_walk',False),
+                low_speed_after_full=args.scratch_low_speed_after_full_pass,
+                record_full_video=args.record_scheduled_acceptance,
+                video_interval=args.acceptance_video_interval,
+                stand_seconds=env.cfg.get('unified_eval_stand_hold_seconds'),
+                integrated_low_speed=env.cfg.get('unified_eval_low_speed',False),
+                parallel_envs=env.cfg.get('unified_eval_parallel_envs'),stop_timing=env.cfg.get('unified_eval_stop_timing'),
+                backward_diagonal_run_speed=env.cfg.get('unified_eval_backward_diagonal_run_speed'))
+            if args.from_scratch:validation.audit_initialization(runner,env)
         if args.checkpoint:
             migration = load_policy(runner, env, args.checkpoint)
             resume_identity=None
@@ -512,7 +528,7 @@ def main():
             if env.cfg.get('train_preserve_optimizer_learning_rate') and not migration:
                 runner.alg.learning_rate=float(runner.alg.optimizer.param_groups[0]['lr'])
                 (run/'resumed_learning_rate.json').write_text(json.dumps(dict(learning_rate=runner.alg.learning_rate,source=str(args.checkpoint)),indent=2),encoding='utf-8')
-        if args.scratch_continuation:scratch.audit_continuation(runner,args.checkpoint)
+        if args.scratch_continuation:validation.audit_continuation(runner,args.checkpoint)
         if env.cfg.get('train_upper_std_cap'):
             parameter=dict(runner.alg.actor.named_parameters())['distribution.log_std_param']
             with torch.no_grad():
@@ -576,24 +592,23 @@ def main():
             install(runner,env)
         original_log = runner.logger.log
         if env.cfg.get('train_normalization_rebase'):runner.save(str(run/'initial_rebased.pt'))
-        if args.from_scratch and scratch.evaluate(runner,0,0.):
+        if args.from_scratch and validation.evaluate(runner,0,0.):
             runner.save(str(run/'policy_final.pt'))
             runner.export_policy_to_jit(str(run),'policy_jit.pt')
             (run/'training_time.json').write_text(json.dumps(dict(training_seconds=0.,completed_iterations=0,
-                acceptance_seconds=scratch.validation_seconds,started_from_random_weights=True,quantitative_gate_passed=True),indent=2),encoding='utf-8')
+                acceptance_seconds=validation.validation_seconds,started_from_random_weights=True,quantitative_gate_passed=True),indent=2),encoding='utf-8')
             env.close()
             return
         started = time.perf_counter()
-        initial_validation_seconds=scratch.validation_seconds if scratch else 0.
-        initial_pause_seconds=scratch.pause_seconds if scratch else 0.
+        initial_validation_seconds=validation.validation_seconds if validation else 0.
+        initial_pause_seconds=validation.pause_seconds if validation else 0.
         target_iteration = runner.current_learning_iteration+args.iterations
-        if scratch:scratch.final_iteration=target_iteration
         class StopTraining(Exception):
             pass
         def log(**kwargs):
             env.iteration = kwargs['it']
             original_log(**kwargs)
-            active_elapsed=time.perf_counter()-started-(scratch.pause_seconds-initial_pause_seconds if scratch else 0.)
+            active_elapsed=time.perf_counter()-started-(validation.pause_seconds-initial_pause_seconds if validation else 0.)
             status = dict(iteration=kwargs['it'], total=target_iteration, elapsed_seconds=active_elapsed,
                           num_envs=env.num_envs,gpu_peak_allocated_mb=torch.cuda.max_memory_allocated()/1024**2,
                           tracking_error=float(torch.linalg.vector_norm(env.logical_vel[:, :2]-env.commands[:, :2], dim=-1).mean()),
@@ -602,17 +617,18 @@ def main():
             if hasattr(env,'amp'):status.update(env.amp.stats)
             (run/'status.json').write_text(json.dumps(status, indent=2), encoding='utf-8')
             if kwargs['it'] % 10 == 0: print('爱音训练 '+json.dumps(status, ensure_ascii=False), flush=True)
-            if scratch:
+            if scratch_training:
                 # Predeclared scratch-only exploration anneal. Mean controller,
                 # rewards, motion references and physical gains are unchanged.
                 fraction=min(1.,(kwargs['it']+1)/float(env.cfg.get('scratch_anneal_iterations',300.)))
                 runner.alg.entropy_coef=.003+(.0005-.003)*fraction
                 parameter=dict(runner.alg.actor.named_parameters())['distribution.log_std_param']
                 with torch.no_grad():parameter[env.upper_ids]=parameter[env.upper_ids].clamp(max=float(np.log(.2+(.08-.2)*fraction)))
-                completed=kwargs['it']+1
-                if completed%args.acceptance_interval==0 or completed>=target_iteration:
-                    passed=scratch.evaluate(runner,completed,scratch.training_offset+active_elapsed,force_full=completed>=target_iteration)
-                    if passed and not args.scratch_continue_after_pass:raise StopTraining
+            completed=kwargs['it']+1
+            if validation and validation.due(completed,target_iteration):
+                passed=validation.evaluate(runner,completed,validation.training_offset+active_elapsed,
+                                           final_checkpoint=completed>=target_iteration)
+                if passed and scratch_training and not args.scratch_continue_after_pass:raise StopTraining
             if (run/'stop.request').is_file(): raise StopTraining
         runner.logger.log = log
         print('ANON_TRAIN_RUN '+str(run), flush=True)
@@ -623,18 +639,20 @@ def main():
             runner.logger.stop_logging_writer()
         runner.save(str(run/'policy_final.pt'))
         runner.export_policy_to_jit(str(run), 'policy_jit.pt')
-        timing=dict(training_seconds=time.perf_counter()-started-(scratch.pause_seconds-initial_pause_seconds if scratch else 0.),
+        timing=dict(training_seconds=time.perf_counter()-started-(validation.pause_seconds-initial_pause_seconds if validation else 0.),
                     completed_iteration=int(env.iteration),
                     definition='Training loop plus final checkpoint/JIT export; excludes scene setup, evaluation and video recording')
-        (run/'training_time.json').write_text(json.dumps(timing,indent=2),encoding='utf-8')
-        if scratch:
-            timing.update(acceptance_seconds=scratch.validation_seconds,initial_acceptance_seconds=initial_validation_seconds,
-                          recording_pause_seconds=scratch.recording_seconds,
-                          loop_wall_seconds_including_acceptance=time.perf_counter()-started,started_from_random_weights=args.from_scratch,
-                          same_scratch_lineage=True,experiment_training_seconds=scratch.training_offset+timing['training_seconds'],
+        if validation:
+            last=validation.history[-1] if validation.history else {}
+            timing.update(acceptance_seconds=validation.validation_seconds,initial_acceptance_seconds=initial_validation_seconds,
+                          recording_pause_seconds=validation.recording_seconds,
+                          loop_wall_seconds_including_acceptance=time.perf_counter()-started,
                           completed_iterations=int(env.iteration)+1,
-                          quantitative_gate_passed=bool(scratch.history[-1].get('combined_passed',scratch.history[-1]['passed'])))
-            (run/'training_time.json').write_text(json.dumps(timing,indent=2),encoding='utf-8')
+                          quantitative_gate_passed=bool(last.get('combined_passed',last.get('passed',False))))
+        if scratch_training:
+            timing.update(started_from_random_weights=args.from_scratch,same_scratch_lineage=True,
+                          experiment_training_seconds=validation.training_offset+timing['training_seconds'])
+        (run/'training_time.json').write_text(json.dumps(timing,indent=2),encoding='utf-8')
         print('ANON_TRAIN_TIME '+json.dumps(timing),flush=True)
     env.close()
 

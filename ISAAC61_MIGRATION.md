@@ -66,7 +66,10 @@ Completed on 2026-10-01 on this machine: Windows 11 Pro 25H2, RTX 5090 D v2, NVI
 
 The short training/evaluation above only establishes that the migrated API and model format work. It does not establish policy quality. Full dance replay/recording, video export, old checkpoint migration and long training convergence were not validated.
 
-### Reproduce the short training and evaluation
+### Commands used for the original C1 verification
+
+These commands apply to the October 1 code revision. The current training and evaluation
+commands are in the [G1 dance tracking workflow](source/train_workflow/AUTO_JUMP_TRAINING.md).
 
 ```powershell
 .\run_isaac61.bat source\train_workflow\g1_vmd_1_train.py --dance IRIS_OUT --window_frames 30 --num_envs 4 --max_iterations 1 --headless --episode_seconds 1 --experiment_suffix isaac61_smoke

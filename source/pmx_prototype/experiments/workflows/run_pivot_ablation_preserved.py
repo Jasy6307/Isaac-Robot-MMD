@@ -51,12 +51,11 @@ def main():
     write(OUT/'models.json',models)
     durations['pivot_probes']=execute('pivot_probes',[SOURCE/'diagnostics/diagnose_pivot_failure.py','--models',OUT/'models.json','--output',OUT/'pivot_probes'])
     probes=read(OUT/'pivot_probes/report.json')['models']
-    write(OUT/'lite_config.json',dict(unified_eval_lite=True))
     reports={}
     for arm,checkpoint in models.items():
-        durations[arm+'_lite']=execute(arm+'_lite',[SOURCE/'train_anon_locomotion.py','--mode','eval','--headless',
-            '--checkpoint',checkpoint,'--num-envs','1','--output',OUT/(arm+'_lite'),'--config-override',OUT/'lite_config.json'])
-        reports[arm]=read(OUT/(arm+'_lite')/'report.json')
+        durations[arm+'_full']=execute(arm+'_full',[SOURCE/'train_anon_locomotion.py','--mode','eval','--headless',
+            '--checkpoint',checkpoint,'--num-envs','1','--output',OUT/(arm+'_full')])
+        reports[arm]=read(OUT/(arm+'_full')/'report.json')
     baseline_falls=sum(row['total_falls'] for row in probes['baseline'])
     for arm,result in results.items():
         rows=probes[arm];result['pivot_probes']=rows
@@ -73,7 +72,7 @@ def main():
                 passed &= new['mean_speed']>=old['mean_speed']*.95 and new['stance_slip_geometry_m_s']<=old['stance_slip_geometry_m_s']+.03
             regressions.append(dict(label=old['label'],passed=bool(passed),baseline=old,candidate=new))
         result['walk_run_regression']=regressions;result['no_walk_run_regression']=all(r['passed'] for r in regressions)
-        result['lite_total_falls']=reports[arm]['total_falls']
+        result['full_total_falls']=reports[arm]['total_falls']
         result['experiment_cumulative_training_seconds']=plan['cumulative_training_seconds_before']+sum(results[a]['training_seconds'] for a in plan['arms'][:plan['arms'].index(arm)+1])
     report=dict(plan=plan,durations=durations,arms=results,baseline_pivot_falls=baseline_falls,
                 cumulative_training_seconds=plan['cumulative_training_seconds_before']+sum(row['training_seconds'] for row in results.values()),

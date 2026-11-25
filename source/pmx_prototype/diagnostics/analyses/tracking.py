@@ -29,12 +29,18 @@ def build_diagnose_tracking_margin(workspace, legacy_argv=None):
         from evaluate_unified_walk_run import suite
         models = read(OUT / 'models.json')
         rows = []
-        write(OUT / 'repeat_config.json', dict(unified_eval_lite=True, unified_record_controller=True))
+        write(OUT / 'repeat_config.json', dict(unified_record_controller=True))
         execute('repeat_after', models['after'], OUT / 'repeat_config.json')
-        rows.append(dict(stage='repeat_after', model='after', report=read(OUT / 'repeat_after/report.json')))
+        report = read(OUT / 'repeat_after/report.json')
+        rows.append(dict(stage='repeat_after', model='after', report=report))
+        cfg = report['env_config']
+        schedule = suite(protocol=report['acceptance_protocol'], idle_head=cfg.get('unified_idle_head_acceptance', False),
+                         backward_walk=cfg.get('unified_eval_backward_walk', False),
+                         stand_seconds=cfg.get('unified_eval_stand_hold_seconds'),
+                         stop_timing=report.get('full_stop_timing', 'original'))
         for label, seconds in [('run_diagonal_135', 8), ('reverse_turn', 10)]:
             cases = []
-            for item in suite(lite=True):
+            for item in schedule:
                 cases.append([item[0], seconds if item[0] == label else item[1], item[2]])
                 if item[0] == label:
                     break

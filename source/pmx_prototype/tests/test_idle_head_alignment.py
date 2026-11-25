@@ -12,9 +12,10 @@ from evaluate_unified_walk_run import suite
 from idle_head_alignment import (
     HeadSwayPenalty, MOVING_GAIN, RECOVERY_RAMP_SECONDS, backward_walk_head_alignment_reward,
     head_facing_error, idle_head_reward,
-    idle_neck_pitch_reward, neck_pitch_level_target, neck_pitch_stop_context, straight_backward_walk,
+    idle_neck_pitch_reward, idle_neck_yaw_reward, neck_pitch_level_target, neck_pitch_stop_context,
+    neck_yaw_forward_target, neck_yaw_stop_context, straight_backward_walk,
 )
-from locomotion_acceptance import CURRENT_PROTOCOL,IDLE_HEAD_GATE_SEGMENTS,PROTOCOL,score_segment
+from locomotion_acceptance import CURRENT_PROTOCOL,PROTOCOL,score_segment,specification
 
 
 class IdleHeadRewardTests(unittest.TestCase):
@@ -164,36 +165,41 @@ class BackwardWalkHeadAlignmentTests(unittest.TestCase):
 
 
 class IdleNeckPitchTargetTests(unittest.TestCase):
-    def test_pitch_boost_remembers_only_straight_walk_and_left_pivot_stops(self):
+    def test_pitch_boost_remembers_straight_walk_and_both_in_place_turn_stops(self):
         moves = torch.tensor([
             [.3, 0., 0.], [0., 0., .6], [0., 0., -.6], [0., 0., 0.],
             [.8, 0., 0.], [-.3, 0., 0.], [.3, .15, 0.], [.3, 0., .2],
+            [.3, 0., -.2],
         ])
         previous = torch.zeros(len(moves), dtype=torch.bool)
         still = torch.zeros_like(moves)
         context = neck_pitch_stop_context(previous, moves, .55)
-        expected = torch.tensor([True, True, False, False, False, False, False, False])
+        expected = torch.tensor([True, True, True, False, False, False, False, False, False])
         torch.testing.assert_close(context, expected)
         torch.testing.assert_close(neck_pitch_stop_context(context, still, .55), expected)
         torch.testing.assert_close(neck_pitch_stop_context(previous, still, .55), previous)
-        moves[:2] = moves[2]
+        moves[:3] = moves[4]
         torch.testing.assert_close(neck_pitch_stop_context(context, moves, .55), previous)
 
-    def test_target_levels_the_commanded_direction_and_is_mirror_invariant(self):
+    def test_joint_targets_level_the_commanded_direction_and_reflect_correctly(self):
         chest = Rotation.from_euler('zyx', [[12., 8., -9.], [139., -5., 14.], [-171., 10., 19.]], degrees=True)
         heading = np.deg2rad([8., 127., 175.])
         q = torch.from_numpy(chest.as_quat())
         target = neck_pitch_level_target(q, torch.from_numpy(heading)).numpy()
         forward = np.stack((np.sin(heading), -np.cos(heading), np.zeros_like(heading)), axis=-1)
         local = chest.apply(forward, inverse=True)
-        yaw = np.arctan2(local[:, 0], -local[:, 1])
-        realized = chest * Rotation.from_euler('z', yaw[:, None]) * Rotation.from_euler('x', target[:, None])
+        yaw = neck_yaw_forward_target(q, torch.from_numpy(heading))
+        torch.testing.assert_close(yaw, torch.from_numpy(np.arctan2(local[:, 0], -local[:, 1])),
+                                   rtol=0., atol=1e-12)
+        realized = chest * Rotation.from_euler('z', yaw.numpy()[:, None]) * Rotation.from_euler('x', target[:, None])
         errors = head_facing_error(torch.from_numpy(realized.as_quat()), torch.from_numpy(heading))
         torch.testing.assert_close(errors, torch.zeros_like(errors), rtol=0., atol=1e-12)
 
         reflected = q * torch.tensor([1., -1., -1., 1.])
         reflected_pitch = neck_pitch_level_target(reflected, -torch.from_numpy(heading))
         torch.testing.assert_close(reflected_pitch, torch.from_numpy(target), rtol=0., atol=1e-12)
+        reflected_yaw = neck_yaw_forward_target(reflected, -torch.from_numpy(heading))
+        torch.testing.assert_close(reflected_yaw, -yaw, rtol=0., atol=1e-12)
 
     def test_reward_respects_stop_gain_dead_zone_and_invalid_pose(self):
         pitch = torch.tensor([1., 2., 8., 16., -16., 16., 16., 1.e21]).deg2rad()
@@ -208,14 +214,47 @@ class IdleNeckPitchTargetTests(unittest.TestCase):
         self.assertEqual(float(rate[-1]), -1.)
 
 
+class IdleNeckYawTargetTests(unittest.TestCase):
+    def test_context_remembers_only_in_place_turns_and_clears_on_other_motion(self):
+        moves = torch.tensor([
+            [0., 0., .6], [0., 0., -.6], [.3, 0., 0.], [0., -.3, 0.],
+            [.8, 0., .4], [-.3, 0., -.2], [0., 0., 0.],
+        ])
+        reset = torch.zeros(len(moves), dtype=torch.bool)
+        stopped = torch.zeros_like(moves)
+        context = neck_yaw_stop_context(reset, moves)
+        expected = torch.tensor([True, True, False, False, False, False, False])
+        torch.testing.assert_close(context, expected)
+        torch.testing.assert_close(neck_yaw_stop_context(context, stopped), expected)
+        torch.testing.assert_close(neck_yaw_stop_context(reset, stopped), reset)
+        moves[0:2] = moves[2]
+        torch.testing.assert_close(neck_yaw_stop_context(context, moves), reset)
+
+    def test_reward_is_symmetric_and_uses_pivot_context_stop_gain_and_tolerance(self):
+        target = torch.zeros(10)
+        target[9] = float('nan')
+        yaw = torch.tensor([3., -3., 5., -5., 10., -10., 5., -5., 5., 5.]).deg2rad()
+        gain = torch.ones_like(target)
+        gain[6:8] = torch.tensor([.5, 0.])
+        pivot_stop = torch.ones_like(target, dtype=torch.bool)
+        pivot_stop[8] = False
+        rate = idle_neck_yaw_reward(yaw, target, gain, pivot_stop, .5)
+        torch.testing.assert_close(rate[[0, 1, 7, 8, 9]], torch.zeros(5), atol=0., rtol=0.)
+        torch.testing.assert_close(rate[[2, 4]], rate[[3, 5]], atol=0., rtol=0.)
+        torch.testing.assert_close(rate[6], .5 * rate[2], atol=0., rtol=0.)
+        self.assertGreater(float(rate[2]), float(rate[4]))
+        self.assertLess(float(rate[2]), 0.)
+
+
 class IdleHeadAcceptanceTests(unittest.TestCase):
     def score(self, label, initial, seconds, yaw, pitch=None, *, protocol=PROTOCOL, falls=0):
         cfg = {'unified_idle_head_acceptance': True, 'unified_acceptance_protocol': protocol}
         actual = reference_trace(initial, [0., 0., 0.], seconds, cfg)
         requested = np.zeros_like(actual)
-        angles = np.column_stack((yaw, np.zeros(len(yaw)) if pitch is None else pitch))
+        angles = None if yaw is None else np.deg2rad(np.column_stack(
+            (yaw, np.zeros(len(yaw)) if pitch is None else pitch)))
         return score_segment(item(label, seconds, falls=falls), actual, actual, requested, actual[:, :2], initial,
-                             cfg, 1/30, head_errors=np.deg2rad(angles))
+                             cfg, 1/30, head_errors=angles)
 
     def test_transient_recovery_passes_with_small_sway(self):
         time = np.arange(240) / 30
@@ -228,49 +267,58 @@ class IdleHeadAcceptanceTests(unittest.TestCase):
                 self.assertGreater(result['idle_head']['recenter_confirmed_seconds'], 2.)
                 self.assertLess(result['idle_head']['yaw_abs_p95_deg'], 3.1)
 
+    def test_ten_degree_boundary_passes_both_head_limits(self):
+        yaw = 10. * (-1.)**np.arange(240)
+        result = self.score('stand', [0, 0, 0], 8, yaw, np.full(240, 10.))
+        self.assertTrue(result['passed'])
+        self.assertAlmostEqual(result['idle_head']['pitch_bias_deg'], 10.)
+        self.assertAlmostEqual(result['idle_head']['yaw_abs_p95_deg'], 10.)
+
     def test_stable_bias_and_large_alternating_deviation_each_fail(self):
-        fixed_bias = self.score('stand', [0, 0, 0], 8, np.zeros(240), np.full(240, 6.))
+        fixed_bias = self.score('stand', [0, 0, 0], 8, np.zeros(240), np.full(240, 11.))
         self.assertTrue(fixed_bias['steady']['passed'])
         self.assertFalse(fixed_bias['passed'])
-        self.assertAlmostEqual(fixed_bias['idle_head']['pitch_bias_deg'], 6.)
-        oscillation = self.score('stand', [0, 0, 0], 8, 10. * (-1.)**np.arange(240))
+        self.assertAlmostEqual(fixed_bias['idle_head']['pitch_bias_deg'], 11.)
+        oscillation = self.score('stand', [0, 0, 0], 8, 11. * (-1.)**np.arange(240))
         self.assertFalse(oscillation['passed'])
         self.assertAlmostEqual(oscillation['idle_head']['yaw_bias_deg'], 0.)
-        self.assertAlmostEqual(oscillation['idle_head']['yaw_abs_p95_deg'], 10.)
+        self.assertAlmostEqual(oscillation['idle_head']['yaw_abs_p95_deg'], 11.)
 
     def test_short_turn_stop_stays_inconclusive(self):
         result = self.score('stand_end', [0, 0, .6], 4, np.zeros(120))
         self.assertEqual(result['idle_head']['status'], 'insufficient_duration')
         self.assertFalse(result['passed'])
 
-    def test_v3_limits_the_head_gate_to_four_scenarios(self):
-        bad_yaw = np.full(240, 12.)
-        cases = suite(protocol=CURRENT_PROTOCOL, idle_head=True)
-        self.assertEqual([label for label, _, _ in cases if label in IDLE_HEAD_GATE_SEGMENTS],
-                         ['stand', 'stop_after_walk', 'stop_after_pivot_left', 'stand_end'])
-        for label in IDLE_HEAD_GATE_SEGMENTS:
+    def test_v3_records_head_yaw_and_pitch_without_gating(self):
+        yaw = np.full(240, 12.)
+        pitch = 16. * (-1.)**np.arange(240)
+        self.assertEqual(specification(True, CURRENT_PROTOCOL)['idle_head']['required_segments'], ())
+        for label in ('stand', 'stop', 'stop_after_walk', 'stop_after_pivot_left', 'stand_end'):
             with self.subTest(label=label):
-                result = self.score(label, [0, 0, 0], 8, bad_yaw, protocol=CURRENT_PROTOCOL)
-                self.assertTrue(result['idle_head']['required'])
+                result = self.score(label, [0, 0, 0], 8, yaw, pitch, protocol=CURRENT_PROTOCOL)
                 self.assertEqual(result['body_status'], 'passed')
-                self.assertFalse(result['passed'])
-        result = self.score('stop', [0, 0, 0], 8, bad_yaw, protocol=CURRENT_PROTOCOL)
-        self.assertTrue(result['passed'])
-        self.assertFalse(result['idle_head']['required'])
-        self.assertAlmostEqual(result['idle_head']['yaw_bias_deg'], 12.)
-        self.assertEqual(result['idle_head']['status'], 'failed')
-        self.assertFalse(self.score('stop', [0, 0, 0], 8, bad_yaw)['passed'])
-        self.assertFalse(self.score('stop', [0, 0, 0], 8, bad_yaw, protocol=CURRENT_PROTOCOL, falls=1)['passed'])
+                self.assertTrue(result['passed'])
+                self.assertFalse(result['idle_head']['required'])
+                self.assertEqual(result['idle_head']['status'], 'recorded')
+                self.assertAlmostEqual(result['idle_head']['yaw_bias_deg'], 12.)
+                self.assertAlmostEqual(result['idle_head']['pitch_abs_p95_deg'], 16.)
+        self.assertFalse(self.score('stop', [0, 0, 0], 8, yaw)['passed'])
+        self.assertFalse(self.score('stop', [0, 0, 0], 8, yaw, protocol=CURRENT_PROTOCOL, falls=1)['passed'])
+
+    def test_v3_scores_body_with_missing_or_nonfinite_head_data(self):
+        for yaw in (None, np.zeros(239), np.full(240, np.nan)):
+            result = self.score('stand', [0, 0, 0], 8, yaw, protocol=CURRENT_PROTOCOL)
+            self.assertTrue(result['passed'])
+            self.assertEqual(result['idle_head']['status'], 'unavailable')
 
     def test_official_suites_cover_start_walk_stop_and_turn_stop(self):
-        for lite in (False, True):
-            result = suite(lite=lite, protocol='response_steady_v2', idle_head=True)
+        for protocol in (PROTOCOL, CURRENT_PROTOCOL):
+            result = suite(protocol=protocol, idle_head=True)
             self.assertEqual(result[0][0], 'stand')
             self.assertEqual([row[0] for row in result[-2:]], ['pivot_right', 'stand_end'])
             labels = [row[0] for row in result]
             self.assertEqual(labels[labels.index('stop_after_walk') - 1], 'walk_before_stop')
-            if not lite:
-                self.assertEqual(labels[labels.index('stop_after_pivot_left') - 1], 'pivot_left')
+            self.assertEqual(labels[labels.index('stop_after_pivot_left') - 1], 'pivot_left')
 
 
 if __name__ == '__main__':

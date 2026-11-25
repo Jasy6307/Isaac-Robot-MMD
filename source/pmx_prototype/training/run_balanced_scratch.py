@@ -33,10 +33,12 @@ def acceptance_durations(config):
     protocol=config['unified_acceptance_protocol']
     idle_head=config.get('unified_idle_head_acceptance',protocol in RESPONSE_STEADY_PROTOCOLS)
     backward_walk=config.get('unified_eval_backward_walk',False)
-    low_speed_seconds=LOW_SPEED_SECONDS if protocol==CURRENT_PROTOCOL else 0
+    low_speed_seconds=LOW_SPEED_SECONDS if protocol==CURRENT_PROTOCOL and config.get('unified_eval_low_speed',False) else 0
     return dict(
-        complete_suite_seconds=sum(seconds for _,seconds,_ in suite(protocol=protocol,idle_head=idle_head,backward_walk=backward_walk))+low_speed_seconds,
-        lightweight_suite_seconds=sum(seconds for _,seconds,_ in suite(lite=True,protocol=protocol,idle_head=idle_head,backward_walk=backward_walk)))
+        complete_suite_seconds=sum(seconds for _,seconds,_ in suite(
+            protocol=protocol,idle_head=idle_head,backward_walk=backward_walk,
+            stand_seconds=config.get('unified_eval_stand_hold_seconds'),
+            stop_timing=config.get('unified_eval_stop_timing')))+low_speed_seconds)
 
 
 def execute(stage,args,run=None):
@@ -52,63 +54,78 @@ def execute(stage,args,run=None):
     return time.perf_counter()-started
 
 
-def learn(run,iterations,checkpoint=None,*,integrated_low_speed=False):
+def learn(run,iterations,checkpoint=None,*,latest_protocol=False):
     config=OUT/('continuation_config.json' if checkpoint else 'config.json')
     arguments=[SOURCE/'train_anon_locomotion.py','--mode','train','--headless','--num-envs',str(NUM_ENVS),
         '--iterations',str(iterations),'--seed','42','--run-dir',run,'--experiment-output',OUT/'acceptance',
-        '--scratch-target','latest_unified','--acceptance-interval','500','--scratch-full-interval','1000',
+        '--scratch-target','latest_unified',
         '--config-override',config]
     arguments+=['--scratch-continuation','--checkpoint',checkpoint] if checkpoint else ['--from-scratch']
     if RUN_TO_MAXIMUM:
         arguments.append('--scratch-continue-after-pass')
-        if not integrated_low_speed:
+        if not latest_protocol:
             arguments.append('--scratch-low-speed-after-full-pass')
     return execute('train_'+run.name,arguments,run)
 
 
-def main():
+def main(config=None):
     if (OUT/'experiment_plan.json').exists() or RUN.exists():raise RuntimeError('Fresh experiment output already exists')
     OUT.mkdir(parents=True,exist_ok=True)
-    config=read(RECIPE)
+    if config is None:
+        config=read(RECIPE)
     durations=acceptance_durations(config)
+    from anon_scratch_validation import DEFAULT_ACCEPTANCE_INTERVAL
     from locomotion_acceptance import CURRENT_PROTOCOL,RESPONSE_STEADY_PROTOCOLS
     protocol=config['unified_acceptance_protocol']
     assert protocol in RESPONSE_STEADY_PROTOCOLS
-    integrated=protocol==CURRENT_PROTOCOL
+    latest=protocol==CURRENT_PROTOCOL
+    integrated=latest and config.get('unified_eval_low_speed',False)
     assert not any(config.get(k) for k in ['train_retention_weight','train_retention_teacher_checkpoint','train_teacher_anchor_path'])
     write(OUT/'config.json',config)
     continuation=dict(config);continuation.pop('train_leg_std',None)
     write(OUT/'continuation_config.json',continuation)
     files=['train_anon_locomotion.py','training/anon_scratch_validation.py','training/low_speed_commands.py',
         'training/locomotion_acceptance.py','training/command_plan.py','training/anon_imitation_env.py',
-        'motion/unified_walk_run_reference.py','diagnostics/evaluate_unified_walk_run.py',
+        'motion/unified_walk_run_reference.py','diagnostics/evaluate_unified_walk_run.py','diagnostics/evaluate_parallel_walk_run.py',
         'diagnostics/anon_acceptance_video.py','diagnostics/record_gait_diagnostic.py']
     hashes={name:hashlib.sha256((SOURCE/name).read_bytes()).hexdigest() for name in files}
     plan=dict(started_from_random_weights=True,pretrained_checkpoint=None,external_teacher=None,num_envs=NUM_ENVS,seed=42,
-        maximum_iterations=MAXIMUM,screen_interval=500,full_interval=1000,steps_per_env_per_iteration=48,
+        maximum_iterations=MAXIMUM,full_interval=DEFAULT_ACCEPTANCE_INTERVAL,steps_per_env_per_iteration=48,
         recipe=str(RECIPE),recipe_sha256=hashlib.sha256(RECIPE.read_bytes()).hexdigest(),source_hashes=hashes,
+        asset=config.get('asset'),body_mass_profile=config.get('body_mass_profile'),
         acceptance_protocol=protocol,**durations,
         full_gate='Complete response/steady-state suite, zero falls, slip reduction and speed retention.',
         low_speed_check=('Part of full acceptance. Four starting phase/heading pairs at each speed endpoint, zero falls.'
-                         if integrated else 'Separate six-speed recovery check across 16 initial phase/heading states. Zero falls.'),
-        milestone_rule='Record first complete-gate pass separately from first complete+low-speed-check pass. A screen never grants acceptance.',
+                         if integrated else (None if latest else
+                         'Separate six-speed recovery check across 16 initial phase/heading states. Zero falls.')),
+        milestone_rule='Record the first complete-gate pass and the result of any required supplemental checks.',
         stop_rule=(f'Train through iteration {MAXIMUM}, even if acceptance passes earlier.' if RUN_TO_MAXIMUM
-                   else f'Stop at the first complete and low-speed pass, or iteration {MAXIMUM}.'),
+                   else f'Stop at the first acceptance pass, or iteration {MAXIMUM}.'),
         time_rule='Actual training-loop wall time including shared GPU contention; excludes initialization and all acceptance. Report acceptance and wall time separately.',
         shared_gpu_authorized=True)
     if BEFORE is not None:
         plan['cumulative_training_seconds_before']=BEFORE
     write(OUT/'experiment_plan.json',plan)
-    launched=time.perf_counter();run=RUN;extra_seconds=0.;attempts=[];accepted=False
+    launched=time.perf_counter();run=RUN;extra_seconds=0.;attempts=[];accepted=False;stopped=False
     video_summaries=[]
-    learn(run,MAXIMUM,integrated_low_speed=integrated)
+    learn(run,MAXIMUM,latest_protocol=latest)
     for continuation_index in range(20):
-        timing=read(run/'training_time.json');history=read(OUT/'acceptance/history.json');last=history[-1]
+        timing=read(run/'training_time.json')
+        history_path=OUT/'acceptance/history.json'
+        history=read(history_path) if history_path.is_file() else []
+        last=history[-1] if history else None
         video_summary=run/'acceptance_videos.json'
         if video_summary.is_file():video_summaries.append(video_summary)
         completed=timing['completed_iterations']
-        if integrated or RUN_TO_MAXIMUM:
-            if (RUN_TO_MAXIMUM and completed!=MAXIMUM) or not last.get('low_speed'):
+        if (run/'stop.request').is_file():
+            stopped=True
+            accepted=bool(last and last['completed_iterations']==completed and last.get('combined_passed',last['passed']))
+            break
+        if last is None:
+            raise RuntimeError(f'Training ended at iteration {completed} without a complete acceptance report')
+        if latest or RUN_TO_MAXIMUM:
+            if ((RUN_TO_MAXIMUM and completed!=MAXIMUM) or not last.get('full_report') or
+                    ((integrated or not latest) and not last.get('low_speed'))):
                 raise RuntimeError(f'Run stopped at iteration {completed} without completing the fixed-budget validation')
             for row in history:
                 low=row.get('low_speed')
@@ -117,7 +134,7 @@ def main():
                         training_seconds=row['active_training_seconds'],full_passed=row['passed'],
                         low_speed_falls=low['falls'],low_speed_passed=low['passed'],report=low.get('report',row['report'])))
             write(OUT/'supplemental_history.json',attempts)
-            accepted=last['combined_passed']
+            accepted=last.get('combined_passed',last['passed'])
             break
         if last['passed']:
             work=OUT/f'low_speed_{completed:06d}';models=OUT/f'models_{completed:06d}.json'
@@ -148,7 +165,7 @@ def main():
     if BEFORE is not None:
         result['cumulative_training_seconds']=BEFORE+timing['experiment_training_seconds']
     write(OUT/'result.json',result)
-    write(OUT/'controller_status.json',dict(stage='complete',training=False,accepted=accepted,
+    write(OUT/'controller_status.json',dict(stage='stopped' if stopped else 'complete',training=False,accepted=accepted,
         **{k:result[k] for k in ['completed_iterations','training_seconds','acceptance_seconds','cumulative_training_seconds','checkpoint'] if k in result}))
 
 

@@ -15,6 +15,7 @@ p.add_argument('--output',type=Path,required=True)
 p.add_argument('--audio',type=Path)
 p.add_argument('--ffmpeg',required=True)
 p.add_argument('--look',choices=LOOK_CHOICES,default=DEFAULT_LOOK)
+p.add_argument('--dlss-quality', action='store_true', help='Fix DLSS to Quality for matched captures')
 p.add_argument('--frames',type=int,default=0)
 p.add_argument('--capture-frames',type=int,nargs='*',default=[])
 p.add_argument('--width',type=int,default=720)
@@ -26,6 +27,7 @@ cache_sha=hashlib.sha256(a.cache.read_bytes()).hexdigest()
 from isaacsim import SimulationApp
 app=SimulationApp({'headless':True,'width':a.width,'height':a.height,'renderer':'RaytracedLighting','anti_aliasing':3,'extra_args':['--/app/asyncRendering=false']})
 import numpy as np
+import carb.settings
 import omni.usd,omni.timeline
 from pxr import Usd,UsdGeom,UsdSkel
 from PIL import Image
@@ -59,6 +61,12 @@ try:
     assert fingerprint(ground)==ground_before and camera_framing(camera)==camera_before
     viewport=get_active_viewport();viewport.camera_path='/World/Camera';viewport.set_texture_resolution((a.width,a.height))
     for _ in range(75):app.update()
+    settings = carb.settings.get_settings()
+    if a.dlss_quality:
+        settings.set_int('/rtx/post/dlss/execMode', 2)
+        for _ in range(10):app.update()
+        if settings.get('/rtx/post/dlss/execMode') != 2:
+            raise RuntimeError('Could not activate DLSS Quality')
     stage.GetRootLayer().Export(str(a.output/'scene.usda'))
     command=[a.ffmpeg,'-y','-v','error','-f','rawvideo','-pix_fmt','rgb24','-s',f'{a.width}x{a.height}','-r','30','-i','pipe:0']
     if a.audio:command+=['-i',str(a.audio.resolve()),'-map','0:v:0','-map','1:a:0','-c:a','aac','-b:a','192k','-af',f'volume=.25,apad=whole_dur={count/30}']
@@ -95,6 +103,12 @@ try:
     from source.pmx_prototype import appearance_defaults as defaults
     report=dict(status='complete',frames=count,fps=30,source_first_frame=0,physics_hz=original_report['physics_hz'],physics_steps_recomputed=0,cache_reused=True,cache_sha256=cache_sha,look=a.look,appearance_parameters=dict(environment_scale=defaults.ENVIRONMENT_SCALE,bangs_shadow_level=defaults.BANGS_SHADOW_LEVEL,cel_brightness_scale=defaults.CEL_BRIGHTNESS_SCALE,face_shaping=defaults.FACE_SHAPING),ground_unchanged=True,camera_unchanged=True,pose_samples_exact=verified,semantic_mapping=appearance.semantic_mapping if appearance else None,bangs_shadow_enabled=shadow is not None,bangs_shadow_updates=shadow.updates if shadow else 0,mean_render_ms=1000*float(np.mean(costs)),wall_seconds=time.monotonic()-started)
     report['resolution']=[a.width,a.height]
+    if appearance is not None:
+        report['toon_style'] = defaults.TOON_STYLE
+        report['colored_shadows'] = True
+        report['fabric_shadow_darken'] = defaults.FABRIC_SHADOW_DARKEN
+    report['renderer'] = settings.get('/rtx/rendermode')
+    report['dlss_exec_mode'] = settings.get('/rtx/post/dlss/execMode')
     (a.output/'render_report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
     print('CACHED_RENDER_PASS',json.dumps(report,ensure_ascii=False),flush=True)
 except Exception:

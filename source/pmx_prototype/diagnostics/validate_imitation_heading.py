@@ -10,14 +10,14 @@ from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 
 import json
 from pathlib import Path
-from isaacsim import SimulationApp
-app=SimulationApp({'headless':True,'fast_shutdown':True})
+from isaaclab.app import AppLauncher
+app=AppLauncher(dict(headless=True,device='cuda:0')).app
 import torch
-from anon_imitation_env import AnonImitationEnv
+from anon_environment import create_environment
 ROOT=PROJECT_ROOT;env=None;result=0
 try:
     cfg=json.loads((ROOT/'logs/rsl_rl/anon_locomotion/v6_steering_steady/env_config.json').read_text())
-    env=AnonImitationEnv(4,42,app,True,cfg)
+    env=create_environment(4,42,app,True,cfg)
     env.phase[:]=.3;env.clip_ids[:]=0;env.previous_clip_ids[:]=0;env.blend_age[:]=1
     env.commands[:]=env.motion.commands[0]
     env.reference_heading[:]=torch.tensor([0.,.7,1.7,-2.4],device=env.device)

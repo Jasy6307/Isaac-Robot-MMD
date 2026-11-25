@@ -1,7 +1,7 @@
-"""GPU PhysX vector environment for Anon's velocity-conditioned residual PPO.
+"""State and control logic for Anon's velocity-conditioned residual PPO.
 
 Commands are (forward=-body Y, left=body X, CCW yaw), in m/s and rad/s.
-Only resets write the floating root; policy actions drive twelve leg joints.
+Policy actions drive joint targets. Isaac Lab advances the simulation.
 """
 
 import sys as _sys
@@ -17,13 +17,9 @@ from pathlib import Path
 import numpy as np
 import torch
 from tensordict import TensorDict
-from pxr import Gf, Usd, UsdGeom, UsdPhysics, PhysxSchema
-import omni.usd
-import omni.physx
-import omni.physics.tensors as tensors
-from isaacsim.core.cloner import GridCloner
 from natural_walk_reference import UPPER_NAMES, upper_reference, cadence
 from anon_config_compat import clean_legacy_config
+from reference_asset_builder import resolve_body_asset
 
 ROOT = PROJECT_ROOT
 
@@ -35,8 +31,7 @@ def quat_rotate_inverse(q, v):
 
 
 class AnonLocomotionEnv:
-    def __init__(self, num_envs=2048, seed=42, app=None, evaluation=False, config=None, shared_physics=None):
-        prepared_keys=set(self.__dict__)
+    def __init__(self, num_envs=2048, seed=42, app=None, evaluation=False, config=None):
         self.cfg = dict(asset=str(ROOT/'output/anon_physical/anon_physical.usda'),
                         physics_hz=120, decimation=4, episode_seconds=12., max_speed=.4,
                         max_yaw=.6, residual_scale=.18, gait_hz=1.25, swing_height=.045,
@@ -44,12 +39,7 @@ class AnonLocomotionEnv:
         if config: self.cfg.update(config)
         self.cfg=clean_legacy_config(self.cfg)
         self.full_body = self.cfg.get('full_body_reference', False)
-        if self.full_body:
-            if self.cfg.get('articulated_wrists'):
-                from build_anon_v4 import ensure_asset
-            else:
-                from build_anon_v3 import ensure_asset
-            self.cfg['asset'] = str(ensure_asset())
+        self.cfg['asset'] = str(resolve_body_asset(ROOT, self.cfg))
         self.num_envs, self.num_actions = num_envs, (31 if self.cfg.get('articulated_wrists') else 25) if self.full_body else 12
         self.app, self.evaluation = app, evaluation
         self.device = self.cfg.get('simulation_device','cuda:0')
@@ -60,77 +50,7 @@ class AnonLocomotionEnv:
         self.dt = self.cfg['decimation']/self.cfg['physics_hz']
         self.max_episode_length = round(self.cfg['episode_seconds']/self.dt)
         self.iteration, self.physics_time, self.steps = 0, 0., 0
-        if shared_physics is not None:
-            from anon_policy_catalog import physics_signature
-            if not evaluation or num_envs!=1 or not shared_physics.evaluation or shared_physics.num_envs!=1:
-                raise ValueError('Shared physics is restricted to single-character evaluation')
-            if physics_signature(self.cfg)!=physics_signature(shared_physics.cfg):
-                raise ValueError('Policy scene settings are incompatible with the running scene')
-            cfg=self.cfg
-            for key,value in shared_physics._shared_physics_template.items():
-                setattr(self,key,value.clone() if isinstance(value,torch.Tensor) else value)
-            self.cfg=cfg
-            self._owns_physics=False
-            return
-        torch.manual_seed(seed); np.random.seed(seed)
-        context = omni.usd.get_context(); context.new_stage()
-        stage = self.stage = context.get_stage()
-        UsdGeom.SetStageUpAxis(stage, 'Z'); UsdGeom.SetStageMetersPerUnit(stage, 1.)
-        UsdGeom.Xform.Define(stage, '/World')
-        stage.SetDefaultPrim(stage.GetPrimAtPath('/World'))
-        scene = UsdPhysics.Scene.Define(stage, '/World/Physics')
-        scene.CreateGravityDirectionAttr(Gf.Vec3f(0, 0, -1)); scene.CreateGravityMagnitudeAttr(9.81)
-        px = PhysxSchema.PhysxSceneAPI.Apply(scene.GetPrim())
-        px.CreateEnableGPUDynamicsAttr(self.device != 'cpu'); px.CreateBroadphaseTypeAttr('MBP' if self.device == 'cpu' else 'GPU')
-        px.CreateTimeStepsPerSecondAttr(self.cfg['physics_hz'])
-        # One-character playback does not need the contact buffers reserved for
-        # 8192 clones. Capacity changes do not change solver/contact parameters.
-        small=num_envs<=16
-        px.CreateGpuMaxRigidContactCountAttr(2**16 if small else 2**23)
-        px.CreateGpuMaxRigidPatchCountAttr(2**14 if small else 2**19)
-        px.CreateGpuFoundLostPairsCapacityAttr(2**16 if small else 2**23)
-        px.CreateGpuFoundLostAggregatePairsCapacityAttr(2**14 if small else 2**22)
-        px.CreateGpuTotalAggregatePairsCapacityAttr(2**16 if small else 2**23)
-        floor = UsdGeom.Cube.Define(stage, '/World/Ground')
-        floor.CreateSizeAttr(1.)
-        floor.AddTranslateOp().Set(Gf.Vec3d(0, 0, -.05))
-        floor.AddScaleOp().Set(Gf.Vec3f(1000, 1000, .1))
-        UsdPhysics.CollisionAPI.Apply(floor.GetPrim())
-        floor.CreateDisplayColorAttr([(.22, .25, .28)])
-        cloner = self.cloner = GridCloner(spacing=4.)
-        cloner.define_base_env('/World/envs')
-        paths = cloner.generate_paths('/World/envs/env', num_envs)
-        UsdGeom.Xform.Define(stage, paths[0])
-        robot_path = paths[0]+'/Robot'
-        prim = stage.DefinePrim(robot_path)
-        prim.GetReferences().AddReference(self.cfg['asset'])
-        if self.cfg.get('upper_drive_scale'):
-            for item in Usd.PrimRange(prim):
-                if any(key in item.GetName() for key in ['waist','shoulder','elbow','neck','forearm','wrist']):
-                    drive=UsdPhysics.DriveAPI.Get(item,'angular')
-                    if drive and drive.GetStiffnessAttr().Get() is not None:
-                        drive.GetStiffnessAttr().Set(drive.GetStiffnessAttr().Get()*self.cfg['upper_drive_scale'])
-                        drive.GetDampingAttr().Set(drive.GetDampingAttr().Get()*self.cfg.get('upper_damping_scale',1.))
-        # Keep learning lightweight; a separate renderer replays actual trajectories.
-        if self.cfg.get('measure_ground_contact',False):
-            for side in ['left','right']:
-                body_prim=stage.GetPrimAtPath(robot_path+'/Bodies/'+side+'_ankle_roll')
-                PhysxSchema.PhysxContactReportAPI.Apply(body_prim).CreateThresholdAttr(0.)
-        stage.GetPrimAtPath(robot_path+'/Visual').SetActive(False)
-        stage.GetPrimAtPath(robot_path+'/LivePose').SetActive(False)
-        self.origins_np = cloner.clone(paths[0], paths, replicate_physics=True, enable_env_ids=True)
-        import carb
-        from omni.physx.bindings._physx import SETTING_UPDATE_TO_USD
-        carb.settings.get_settings().set(SETTING_UPDATE_TO_USD, False)
-        carb.settings.get_settings().set('/physics/suppressReadback', self.device != 'cpu')
-        self.interface = omni.physx.get_physx_simulation_interface()
-        self.interface.attach_stage(context.get_stage_id())
-        self._simulate()
-        self.view = tensors.create_simulation_view('torch', context.get_stage_id(), backend='physx')
-        self.robot = self.view.create_articulation_view('/World/envs/env_*/Robot')
-        if self.cfg.get('measure_ground_contact',False):
-            patterns=['/World/envs/env_0/Robot/Bodies/'+side+'_ankle_roll' for side in ['left','right']]
-            self.ground_contact_view=self.view.create_rigid_contact_view(patterns,[['/World/Ground'],['/World/Ground']],max_contact_data_count=2048)
+        self._create_physics(num_envs, seed)
         assert self.robot.count == num_envs and not self.robot.shared_metatype.fixed_base
         self.names = list(self.robot.shared_metatype.dof_names)
         self.links = list(self.robot.shared_metatype.link_names)
@@ -149,7 +69,7 @@ class AnonLocomotionEnv:
         self.ids = torch.arange(num_envs, dtype=torch.int32, device=self.device)
         # Cloner order and tensor order need not match. Use observed root positions.
         self.initial_root = self.robot.get_root_transforms().clone()
-        self.origins = self.initial_root[:, :3].clone(); self.origins[:, 2] = 0
+        self.origins = self._environment_origins(self.initial_root)
         self.initial_root[:, 2] -= self.cfg['crouch']
         self.zero_vel = torch.zeros((num_envs, 6), device=self.device)
         self.zero_qvel = torch.zeros((num_envs, self.num_dofs), device=self.device)
@@ -195,18 +115,15 @@ class AnonLocomotionEnv:
             self.upper_scale = torch.tensor([.07, .05, .05, .05, .05]+[.10, .08, .08, .08]*2, device=self.device)
         self.reset(self.ids)
         self.refresh()
-        if evaluation and num_envs==1:
-            # Capture base state only: subclass motion banks/phase buffers must
-            # remain independent. Tensor state is cloned for every controller.
-            self._shared_physics_template={k:v for k,v in self.__dict__.items() if k not in prepared_keys}
-        self._owns_physics=True
         print(f'ANON_ENV_READY envs={num_envs} device={self.robot.get_dof_positions().device} actions={self.num_actions} dofs={self.num_dofs}', flush=True)
 
-    def _simulate(self):
-        dt = 1/self.cfg['physics_hz']
-        self.interface.simulate(dt, self.physics_time)
-        self.interface.fetch_results()
-        self.physics_time += dt
+    def _environment_origins(self, initial_root):
+        origins = initial_root[:, :3].clone()
+        origins[:, 2] = 0
+        return origins
+
+    def _create_physics(self, num_envs, seed):
+        raise NotImplementedError('The Isaac Lab scene provides the articulation view')
 
     def reference(self, phase, commands):
         speed = torch.linalg.vector_norm(commands[:, :2], dim=-1)
@@ -301,13 +218,19 @@ class AnonLocomotionEnv:
         if self.device == 'cuda:0':
             self.view.update_articulations_kinematic()
 
-    def refresh(self):
-        self.root = self.robot.get_root_transforms().clone()
-        self.root_vel = self.robot.get_root_velocities().clone()
+    def refresh(self, *, root_from_links=False):
+        if not root_from_links:
+            self.root = self.robot.get_root_transforms().clone()
+            self.root_vel = self.robot.get_root_velocities().clone()
         self.q = self.robot.get_dof_positions().clone()
         self.qd = self.robot.get_dof_velocities().clone()
         self.poses = self.robot.get_link_transforms().clone()
         self.link_vel = self.robot.get_link_velocities().clone()
+        if root_from_links:
+            # Slot zero is the root link. The link tensors already provide its
+            # transform and COM velocity in the same frames as the root getters.
+            self.root = self.poses[:, 0].clone()
+            self.root_vel = self.link_vel[:, 0].clone()
         quat = self.root[:, 3:]
         self.vel_b = quat_rotate_inverse(quat, self.root_vel[:, :3])
         self.omega_b = quat_rotate_inverse(quat, self.root_vel[:, 3:])
@@ -330,7 +253,7 @@ class AnonLocomotionEnv:
                              self.qd[:, self.upper_ids]*.05, self.actions[:, 12:]], dim=-1)
         return TensorDict({'policy': obs.clamp(-20, 20)}, batch_size=[self.num_envs], device=self.device)
 
-    def step(self, actions):
+    def _prepare_step(self, actions):
         previous_qd = self.qd[:,self.leg_ids].clone()
         previous_feet = self.poses[:,self.foot_ids].clone()
         self.previous_actions.copy_(self.actions)
@@ -368,10 +291,22 @@ class AnonLocomotionEnv:
                 self.target[:, self.names.index(side+'_shoulder_pitch_joint')] = swing
                 self.target[:, self.names.index(side+'_elbow_flex_joint')] = -sign*(.12+.10*gain*torch.abs(forward)/.4)
         self.target = torch.maximum(torch.minimum(self.target, self.limits[:, 1]-.015), self.limits[:, 0]+.015)
+        return previous_qd, previous_feet, moving, gait_commands
+
+    def _apply_step_targets(self):
         self.robot.set_dof_position_targets(self.target, self.ids)
-        for _ in range(self.cfg['decimation']): self._simulate()
+
+    def _begin_substeps(self):
+        pass
+
+    def _record_substep(self):
+        pass
+
+    def _evaluate_step(self, context):
+        previous_qd, previous_feet, moving, gait_commands = context
         self.refresh()
-        self.steps += 1; self.episode_length_buf += 1; self.command_age += self.dt
+        self.steps += 1
+        self.command_age += self.dt
         error = (self.logical_vel[:, :2]-self.commands[:, :2]).square().sum(-1)
         yaw_error = (self.logical_vel[:, 2]-self.commands[:, 2]).square()
         height = self.root[:, 2]
@@ -455,14 +390,18 @@ class AnonLocomotionEnv:
             extras['log']['Style/upper_velocity_error'] = extras_style[1]
         if self.evaluation:
             self.recorded_state = (self.poses.clone(), self.q.clone(), self.logical_vel.clone(), self.phase.clone())
-        ids = self._automatic_reset_ids(done)
-        if len(ids):
+        return reward, done, extras
+
+    def _reset_step(self, ids, extras):
+        if 'log' in extras:
             extras['log']['Episode/seconds'] = self.episode_length_buf[ids].float().mean()*self.dt
             extras['log']['Episode/return'] = self.episode_returns[ids].mean()
-            self.reset(ids)
+        self.reset(ids)
+
+    def _complete_step(self, context, ids, reset_reference=None):
         if not self.evaluation:
             self.sample_commands((self.command_age > 4.).nonzero(as_tuple=False).flatten())
-        return self.get_observations(), reward, done, extras
+        return self.get_observations()
 
     def _episode_outcome(self, fallen):
         """Manual previews still detect falls and have no episode time limit."""
@@ -475,9 +414,6 @@ class AnonLocomotionEnv:
         if self.evaluation and self.cfg.get('runtime_manual_reset_only', False):
             return self.ids[:0]
         return done.nonzero(as_tuple=False).flatten()
-
-    def close(self):
-        if getattr(self,'_owns_physics',True):self.interface.detach_stage()
 
     def reference_step(self):
         """Kinematic reference preview only. Never used for policy rollouts."""

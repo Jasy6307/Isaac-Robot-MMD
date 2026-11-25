@@ -18,8 +18,8 @@ from reference_asset_builder import ensure_reference_asset
 ROOT = PROJECT_ROOT
 
 
-def ensure_asset():
-    return ensure_reference_asset(ROOT, version=4)
+def ensure_asset(mass_profile=None):
+    return ensure_reference_asset(ROOT, version=4, mass_profile=mass_profile)
 
 
 if __name__ == '__main__':

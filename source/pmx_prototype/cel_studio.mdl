@@ -1,0 +1,84 @@
+mdl 1.7;
+import ::df::*;
+import ::math::*;
+import ::state::*;
+import ::tex::*;
+import ::scene::*;
+
+float shadow_luminance(color c) = math::dot(float3(c), float3(0.2126, 0.7152, 0.0722));
+
+// Exchange some chroma in the shadow band at the original linear luminance.
+color colored_shadow(color paint, color pigment, uniform int palette, float shadow) = let {
+    float3 rgb = float3(pigment);
+    float peak = math::max(rgb.x, math::max(rgb.y, rgb.z));
+    float range = peak - math::min(rgb.x, math::min(rgb.y, rgb.z));
+    float warmth = math::smoothstep(-0.04, 0.18, (rgb.x - rgb.y) / math::max(peak, 0.001));
+    float blue = math::smoothstep(0.05, 0.35, (rgb.z - (rgb.x + rgb.y) * 0.5) / math::max(peak, 0.001));
+    float pale = (1.0 - math::smoothstep(0.10, 0.48, range / math::max(peak, 0.001)))
+                 * math::smoothstep(0.10, 0.55, peak);
+    color target = palette == 1 ? math::lerp(color(0.34, 0.71, 0.92), color(0.92, 0.28, 0.78), warmth)
+                 : palette == 2 ? math::lerp(color(0.57, 0.70, 1.0), color(0.36, 0.30, 1.0), blue)
+                 : color(1.0, 0.50, 0.44);
+    float strength = palette == 1 ? 0.46 : palette == 2 ? math::max(0.48 * blue, 0.40 * pale) : 0.14;
+    color at_original_luminance = target * (shadow_luminance(paint) / shadow_luminance(target));
+} in math::lerp(paint, at_original_luminance, shadow * strength);
+
+// Painted shadow bands. The hair accent is a color band without a specular lobe.
+export material cel_studio(
+    uniform texture_2d albedo = texture_2d(),
+    uniform color base_color = color(1.0),
+    uniform float opacity = 1.0,
+    uniform float brightness = 0.51,
+    uniform float threshold = 0.26,
+    uniform float edge_width = 0.03,
+    uniform float shadow_level = 0.66,
+    uniform color shadow_tint = color(0.88, 0.91, 1.0),
+    uniform bool face_shaping = false,
+    uniform bool receive_bangs = false,
+    uniform float bangs_shadow_level = 0.65,
+    uniform float hair_light = 0.0,
+    uniform float rim_light = 0.0,
+    uniform float matte_fill = 0.0,
+    uniform bool simple_band = false,
+    uniform int shadow_palette = 0,
+    uniform float fabric_shadow_darken = 0.0
+) = let {
+    float3 uv = state::texture_coordinate(0);
+    float4 rgba = tex::texture_isvalid(albedo)
+        ? tex::lookup_float4(albedo, float2(uv.x, uv.y)) : float4(1.0);
+    color pigment = color(rgba.x, rgba.y, rgba.z) * base_color;
+    float3 n = math::normalize(state::transform_normal(
+        state::coordinate_internal, state::coordinate_world, state::normal()));
+    float3 key = math::normalize(face_shaping ? float3(-0.46, -0.77, 0.48)
+        : simple_band ? float3(-0.35, -0.65, 0.68) : float3(-0.46, -0.65, 0.61));
+    float facing = math::dot(n, key);
+    float light = simple_band ? (facing >= threshold ? 1.0 : 0.0)
+        : math::smoothstep(threshold - edge_width, threshold + edge_width, facing);
+    float half_tone = simple_band ? 0.0 : math::smoothstep(threshold - 0.29, threshold - 0.23, facing);
+    float shade = math::lerp(shadow_level + 0.09 * half_tone, 1.0, light);
+    float occluded = receive_bangs ? scene::data_lookup_float("bang_shadow", 0.0) : 0.0;
+    float mask = math::smoothstep(0.22, 0.74, occluded);
+    float final_shade = math::lerp(shade, math::min(shade, bangs_shadow_level), mask);
+    float tint_weight = math::max(1.0 - light, mask) * (1.0 - 0.25 * half_tone);
+    color base_paint = pigment * math::lerp(color(1.0), shadow_tint, tint_weight) * final_shade;
+    color paint = shadow_palette == 0 ? base_paint : colored_shadow(base_paint, pigment, shadow_palette, tint_weight);
+    // Deep shade takes the full adjustment; the intervening band takes half.
+    float fabric_shade = 1.0 - fabric_shadow_darken * (1.0 - light) * (1.0 - 0.5 * half_tone);
+
+    float h = math::dot(n, math::normalize(float3(-0.28, -0.64, 0.71)));
+    float ribbon = math::smoothstep(0.56, 0.62, h) * (1.0 - math::smoothstep(0.79, 0.85, h))
+                 * math::smoothstep(0.10, 0.34, n.z);
+    float edge = math::smoothstep(0.64, 0.91, 1.0 - math::abs(n.y))
+               * math::smoothstep(0.16, 0.58, -0.58*n.x + 0.82*n.z);
+    color accents = pigment * (hair_light * ribbon * color(1.0, 0.80, 0.89)
+                    + rim_light * edge * color(0.90, 0.94, 1.0));
+    material_surface shaded = material_surface(
+        scattering: df::diffuse_reflection_bsdf(tint: pigment * matte_fill, roughness: 0.6),
+        emission: material_emission(
+            emission: df::diffuse_edf(), intensity: (paint * fabric_shade + accents) * (brightness * 3561.31)
+        )
+    );
+} in material(
+    thin_walled: true, surface: shaded, backface: shaded,
+    geometry: material_geometry(cutout_opacity: rgba.w * opacity)
+);

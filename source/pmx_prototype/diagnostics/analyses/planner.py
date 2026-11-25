@@ -34,14 +34,14 @@ def build_compare_command_plans(workspace, legacy_argv=None):
         sys.path.insert(0, str(SOURCE / 'training'))
         from continue_sampling_pivot import regression
         for name, delta in variants.items():
-            config = dict(unified_eval_lite=True, unified_record_controller=True, **delta)
+            config = dict(unified_record_controller=True, **delta)
             write(OUT / (name + '_config.json'), config)
             durations[name] = execute(name, [SOURCE / 'train_anon_locomotion.py', '--mode', 'eval', '--headless', '--num-envs', '1', '--checkpoint', CHECKPOINT, '--output', OUT / name, '--config-override', OUT / (name + '_config.json')])
             report = read(OUT / name / 'report.json')
             reports[name] = report
             targets = {s['label']: s for s in report['segments'] if s['label'] in ('run_diagonal_135', 'reverse_turn')}
             checks = regression(reports['baseline'], report)
-            rows[name] = dict(delta=delta, total_falls=report['total_falls'], screen_passed=report['passed_lite_gate'], passed_segments=sum((s['passed'] for s in report['segments'])), targets=targets, regression=checks, no_regression=all((s['passed'] for s in checks)))
+            rows[name] = dict(delta=delta, total_falls=report['total_falls'], full_passed=report['passed_unified_gate'], passed_segments=sum((s['passed'] for s in report['segments'])), targets=targets, regression=checks, no_regression=all((s['passed'] for s in checks)))
             write(OUT / 'result.json', dict(plan=plan, rows=rows, durations=durations, outcome='running'))
         candidates = [name for name in variants if name != 'baseline' and rows[name]['no_regression'] and (rows[name]['total_falls'] == 0) and all((s['passed'] for s in rows[name]['targets'].values()))]
         winner = None
@@ -52,13 +52,11 @@ def build_compare_command_plans(workspace, legacy_argv=None):
             probe = read(OUT / 'candidate_pivots/report.json')
             rows[winner]['pivot_probe'] = probe
             if sum((s['total_falls'] for s in probe['models']['candidate'])) == 0:
-                write(OUT / 'full_config.json', dict(unified_record_controller=True, **variants[winner]))
-                durations['candidate_full'] = execute('candidate_full', [SOURCE / 'train_anon_locomotion.py', '--mode', 'eval', '--headless', '--num-envs', '1', '--checkpoint', CHECKPOINT, '--output', OUT / 'candidate_full', '--config-override', OUT / 'full_config.json'])
-                full = read(OUT / 'candidate_full/report.json')
+                full = reports[winner]
                 old = {s['label']: s for s in read(ROOT / 'output/anon_locomotion/unified_walk_run/full8_final_cpu/report.json')['segments']}
                 slip = all((s['mean_speed'] >= old[s['label']]['mean_speed'] * 0.95 and s['stance_slip_geometry_m_s'] <= old[s['label']]['stance_slip_geometry_m_s'] * 0.8 for s in full['segments'] if s['label'] in ['run_backward', 'run_left', 'run_right']))
                 rows[winner]['full_passed'] = bool(full['passed_unified_gate'] and full['total_falls'] == 0 and slip)
-                rows[winner]['full_report'] = str(OUT / 'candidate_full/report.json')
+                rows[winner]['full_report'] = str(OUT / winner / 'report.json')
         assert hashlib.sha256(CHECKPOINT.read_bytes()).hexdigest() == before_hash
         write(OUT / 'result.json', dict(plan=plan, rows=rows, durations=durations, winner=winner, training=False, checkpoint_unchanged=True, wall_seconds=time.perf_counter() - start, outcome='complete'))
         write(OUT / 'status.json', dict(stage='complete', training=False))
@@ -80,7 +78,6 @@ def build_compare_split_command_plans(workspace, legacy_argv=None):
     SOURCE = Path(REPO_ROOT) / 'source/pmx_prototype'
     OUT = workspace.directory(ROOT / 'output/anon_locomotion/split_command_tests_20261117')
     CHECKPOINT = ROOT / 'logs/rsl_rl/anon_locomotion/retention_strength_20261116_original/policy_final.pt'
-    PREVIOUS = ROOT / 'output/anon_locomotion/command_plan_tests_20261116'
 
     def evaluate(name, config):
         write(OUT / (name + '_config.json'), config)
@@ -124,37 +121,36 @@ def build_compare_split_command_plans(workspace, legacy_argv=None):
         sha = hashlib.sha256(CHECKPOINT.read_bytes()).hexdigest()
         variants = {'baseline': {}, 'split_120': dict(command_plan_mode='split', command_speedup_limit=1.2, command_direction_change_limit=1.2, command_braking_limit=0.6), 'split_090': dict(command_plan_mode='split', command_speedup_limit=0.9, command_direction_change_limit=0.9, command_braking_limit=0.6)}
         brakes = [('stand', 4, [0, 0, 0]), ('run_forward', 8, [1.2, 0, 0]), ('stop', 5, [0, 0, 0]), ('run_backward', 8, [-1.2, 0, 0]), ('stop', 5, [0, 0, 0]), ('run_turn_left', 8, [1.1, 0, 0.6]), ('stop', 5, [0, 0, 0]), ('run_turn_right', 8, [1.1, 0, -0.6]), ('stop', 5, [0, 0, 0]), ('reverse_turn', 8, [-0.9, 0, 0.6]), ('stop', 5, [0, 0, 0]), ('stand_end', 4, [0, 0, 0])]
-        plan = dict(training=False, checkpoint=str(CHECKPOINT), checkpoint_sha256=sha, variants=variants, brake_cases=brakes, unchanged='Actor, normalizers, reference blending, physics, rewards, yaw planner and all original acceptance thresholds.', promotion='No default/eval UI changes; experimental opt-in configuration only.', selection='Both target switches pass; zero falls; no regression versus fixed-actor baseline in all non-pivot lite cases and all brake cases. Then zero falls in 64 pivot probes, original full gate and slip/speed gate, plus stop/backward regression checks.', cumulative_training_seconds=51378.49378980009)
+        plan = dict(training=False, checkpoint=str(CHECKPOINT), checkpoint_sha256=sha, variants=variants, brake_cases=brakes, unchanged='Actor, normalizers, reference blending, physics, rewards, yaw planner and all original acceptance thresholds.', promotion='No default/eval UI changes; experimental opt-in configuration only.', selection='Both target switches pass without falls or regression in the complete suite and braking diagnostics. Require zero falls in pivot probes and passing slip, speed and stop/backward checks.', cumulative_training_seconds=51378.49378980009)
         write(OUT / 'plan.json', plan)
         reports = {}
         brake_reports = {}
         rows = {}
         durations = {}
         for name, delta in variants.items():
-            report, seconds = evaluate(name + '_lite', dict(unified_eval_lite=True, unified_record_controller=True, **delta))
+            report, seconds = evaluate(name + '_full', dict(unified_record_controller=True, **delta))
             reports[name] = report
-            durations[name + '_lite'] = seconds
+            durations[name + '_full'] = seconds
             brake, seconds = evaluate(name + '_brakes', dict(unified_eval_cases=brakes, unified_record_controller=True, **delta))
             brake_reports[name] = brake
             durations[name + '_brakes'] = seconds
             targets = {s['label']: s for s in report['segments'] if s['label'] in ['run_diagonal_135', 'reverse_turn']}
             checks = regression(reports['baseline'], report)
             brake_checks = regression(brake_reports['baseline'], brake)
-            rows[name] = dict(targets=targets, response=timing(name + '_lite'), lite_passed=report['passed_lite_gate'], lite_passed_segments=sum((s['passed'] for s in report['segments'])), lite_falls=report['total_falls'], lite_regression=checks, brakes_passed=all((s['passed'] for s in brake['segments'])), brakes_falls=brake['total_falls'], brake_regression=brake_checks)
+            rows[name] = dict(targets=targets, response=timing(name + '_full'), full_passed=report['passed_unified_gate'], full_passed_segments=sum((s['passed'] for s in report['segments'])), full_falls=report['total_falls'], full_regression=checks, brakes_passed=all((s['passed'] for s in brake['segments'])), brakes_falls=brake['total_falls'], brake_regression=brake_checks)
             rows[name]['eligible'] = bool(name != 'baseline' and report['total_falls'] == 0 and (brake['total_falls'] == 0) and all((s['passed'] for s in targets.values())) and all((s['passed'] for s in checks)) and all((s['passed'] for s in brake_checks)) and rows[name]['brakes_passed'])
-            write(OUT / 'result.json', dict(plan=plan, rows=rows, durations=durations, outcome='screening', training=False))
+            write(OUT / 'result.json', dict(plan=plan, rows=rows, durations=durations, outcome='validating', training=False))
         candidates = sorted([n for n in variants if rows[n]['eligible']], key=lambda n: sum((s['velocity_error'] for s in rows[n]['targets'].values())))
         winner = None
-        baseline_full = read(PREVIOUS / 'baseline_full/report.json')
+        baseline_full = reports['baseline']
         for name in candidates:
             write(OUT / 'pivot_models.json', dict(candidate=str(CHECKPOINT)))
-            durations[name + '_pivots'] = execute(name + '_pivots', [SOURCE / 'diagnostics/diagnose_pivot_failure.py', '--models', OUT / 'pivot_models.json', '--output', OUT / (name + '_pivots'), '--config-override', OUT / (name + '_lite_config.json')])
+            durations[name + '_pivots'] = execute(name + '_pivots', [SOURCE / 'diagnostics/diagnose_pivot_failure.py', '--models', OUT / 'pivot_models.json', '--output', OUT / (name + '_pivots'), '--config-override', OUT / (name + '_full_config.json')])
             pivots = read(OUT / (name + '_pivots/report.json'))
             rows[name]['pivot_probe'] = pivots
             if sum((s['total_falls'] for s in pivots['models']['candidate'])) != 0:
                 continue
-            full, seconds = evaluate(name + '_full', dict(unified_record_controller=True, **variants[name]))
-            durations[name + '_full'] = seconds
+            full = reports[name]
             assert full['evaluator_sha256'] == baseline_full['evaluator_sha256']
             rows[name]['full_checks'] = full_checks(full, baseline_full)
             write(OUT / 'result.json', dict(plan=plan, rows=rows, durations=durations, outcome='full_validation', training=False))

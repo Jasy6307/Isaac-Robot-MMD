@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -12,7 +13,7 @@ sys.path.insert(0,str(SOURCE))
 import source_layout
 from unified_walk_run_reference import sample_commands
 from command_plan import command_increment
-from locomotion_acceptance import score_segment,summarize
+from locomotion_acceptance import CURRENT_PROTOCOL,score_segment,specification,summarize
 
 FIXTURES=Path(__file__).parent/'fixtures'
 
@@ -84,6 +85,32 @@ class SamplingTests(unittest.TestCase):
         torch.manual_seed(42);sample_commands(b,ids,True)
         self.assertTrue(torch.equal(a.commands[protected],b.commands[protected]))
 
+    def test_backward_starts_replace_only_selected_low_speed_stop_lanes(self):
+        cfg = load_config()
+        control = env(cfg, n=8192)
+        treatment = env(dict(cfg, unified_backward_start_env_fraction=.03), n=8192)
+        ids = torch.arange(control.num_envs)
+        selected = (ids % 100 >= 80) & (ids % 100 < 83)
+        self.assertEqual(int(selected.sum()), 246)
+        for step, reset in enumerate((True, False, False, False)):
+            torch.manual_seed(42 + step)
+            sample_commands(control, ids, reset)
+            torch.manual_seed(42 + step)
+            sample_commands(treatment, ids, reset)
+            for field in ('commands', 'continuous_ref_commands', 'unified_command_hold'):
+                torch.testing.assert_close(getattr(control, field)[~selected],
+                                           getattr(treatment, field)[~selected], rtol=0, atol=0)
+            command = treatment.commands[selected]
+            hold = treatment.unified_command_hold[selected]
+            if step % 2 == 0:
+                self.assertTrue((command == 0).all())
+                self.assertTrue(((hold >= 3.) & (hold < 4.)).all())
+            else:
+                self.assertTrue((command[:, 1:] == 0).all())
+                self.assertTrue(((command[:, 0] >= -.45) & (command[:, 0] <= -.30)).all())
+                self.assertGreater(int((command[:, 0] == -.4).sum()), 75)
+                self.assertTrue(((hold >= 6.) & (hold < 8.)).all())
+
     def test_overallocated_pools_rejected(self):
         cfg=load_config();cfg['unified_low_speed_env_fraction']=.4
         e=env(cfg)
@@ -98,6 +125,37 @@ class SamplingTests(unittest.TestCase):
         self.assertTrue((e.commands[fast,2].abs()>.4).any())
         self.assertTrue((e.continuous_ref_commands[fast,2].abs()<=.4+1e-6).all())
         self.assertTrue(torch.equal(e.continuous_ref_commands[slow],e.commands[slow]))
+
+    def test_backward_and_diagonal_sampling_respects_planar_cap(self):
+        cfg=load_config()
+        speed_cap=.859
+        original=env(cfg,n=8192)
+        limited=env(dict(cfg,unified_backward_diagonal_speed_cap=speed_cap),n=8192)
+        ids=torch.arange(limited.num_envs)
+        for reset in (True,False):
+            with self.subTest(reset=reset):
+                torch.manual_seed(42);sample_commands(original,ids,reset)
+                torch.manual_seed(42);sample_commands(limited,ids,reset)
+                old_xy=original.commands[:,:2]
+                new_xy=limited.commands[:,:2]
+                forward,lateral=old_xy.unbind(-1)
+                axis_forward=(forward>1e-4)&(lateral.abs()<=1e-4)
+                axis_side=(forward.abs()<=1e-4)&(lateral.abs()>1e-4)
+                backwards=forward < -1e-4
+                diagonals=(forward.abs()>1e-4)&(lateral.abs()>1e-4)
+                speed=old_xy.norm(dim=-1)
+                capped=(backwards|diagonals)&(speed>speed_cap)
+                self.assertTrue(capped.any())
+                angle=torch.atan2(lateral,forward).abs().rad2deg()
+                self.assertTrue((capped&(angle>25.)&(angle<35.)).any())
+                torch.testing.assert_close(new_xy[capped],old_xy[capped]*(speed_cap/speed[capped])[:,None])
+                self.assertTrue(torch.equal(new_xy[~capped],old_xy[~capped]))
+                self.assertGreater(float(new_xy[axis_forward].norm(dim=-1).max()),1.17)
+                self.assertAlmostEqual(float(new_xy[axis_side].norm(dim=-1).max()),1.2,places=6)
+                self.assertTrue(torch.equal(limited.commands[:,2],original.commands[:,2]))
+                self.assertTrue(torch.equal(limited.unified_command_hold,original.unified_command_hold))
+                if reset:
+                    self.assertTrue(torch.equal(limited.continuous_ref_commands[:,:2],new_xy))
 
 
 class AcceptanceTests(unittest.TestCase):
@@ -148,7 +206,7 @@ class AcceptanceTests(unittest.TestCase):
         result=self.score('run_right',[0,1.2,0],[0,-1.2,0],5)
         self.assertEqual(result['status'],'insufficient_duration')
         summary=summarize([{'response_steady':result}])
-        self.assertFalse(summary['passed']);self.assertTrue(summary['promising'])
+        self.assertFalse(summary['passed']);self.assertEqual(summary['inconclusive_segments'],1)
 
     def test_variable_lag_is_bounded(self):
         t=np.arange(360)*self.dt
@@ -165,6 +223,69 @@ class AcceptanceTests(unittest.TestCase):
         self.assertTrue(result['passed'])
         self.assertLess(result['steady']['yaw_error'],.001)
         self.assertEqual(result['steady']['yaw_limit'],.2)
+
+    def test_fixed_yaw_confirmation_budget_keeps_linear_deadline_and_steady_start(self):
+        self.cfg['unified_acceptance_protocol']=CURRENT_PROTOCOL
+        target=[1.1,0.,-.4]
+        actual=np.broadcast_to(target,(240,3))
+        cases=((.1,.98,2.08333,2.,'passed'),
+               (2.,2.45,2.1,3.5,'passed'),
+               (2.,2.45,2.11667,3.5,'failed'))
+        self.assertEqual(specification()['yaw_response_deadline_seconds'],2.1)
+        for planning,linear,yaw,linear_deadline,expected in cases:
+            with self.subTest(yaw=yaw), patch('locomotion_acceptance.gait_period',return_value=1.), \
+                    patch('locomotion_acceptance.planning_time',return_value=planning), \
+                    patch('locomotion_acceptance._response',side_effect=(linear,yaw)):
+                result=self.score('run_turn_right',[0.,0.,0.],target,8,actual)
+                self.assertEqual(result['status'],expected)
+                self.assertEqual(result['yaw_response_deadline_seconds'],2.1)
+                self.assertEqual(result['response_deadline_seconds'],linear_deadline)
+                self.assertEqual(result['steady']['start_seconds'],linear_deadline)
+                self.assertTrue(result['steady']['passed'])
+
+    def test_current_stop_yaw_confirmation_budget(self):
+        self.cfg['unified_acceptance_protocol']=CURRENT_PROTOCOL
+        spec=specification(protocol=CURRENT_PROTOCOL)
+        self.assertEqual(spec['stop_yaw_response_deadline_seconds'],3.0)
+        actual=np.zeros((240,3))
+        cases=(('stop',3.0,3.0,'passed'),
+               ('stop',3.0,3.03333,'failed'),
+               ('stop_after_walk',3.0,2.9,'passed'),
+               ('stop_after_pivot_left',3.0,2.9,'passed'),
+               ('stand_end',3.0,2.9,'passed'),
+               ('stand',2.1,2.9,'failed'))
+        with patch('locomotion_acceptance.planning_time',return_value=1.0):
+            for label,budget,yaw,expected in cases:
+                with self.subTest(label=label,yaw=yaw), patch('locomotion_acceptance._response',side_effect=(1.5,yaw)):
+                    result=self.score(label,[0.,0.,.6],[0.,0.,0.],8,actual)
+                    self.assertEqual(result['yaw_response_deadline_seconds'],budget)
+                    self.assertEqual(result['status'],expected)
+
+    def test_missing_yaw_confirmation_uses_its_own_observation_budget(self):
+        with patch('locomotion_acceptance.gait_period',return_value=1.), \
+                patch('locomotion_acceptance.planning_time',return_value=2.):
+            for seconds,expected in ((3.,'insufficient_duration'),(3.2,'failed')):
+                with self.subTest(seconds=seconds), patch('locomotion_acceptance._response',side_effect=(2.,None)):
+                    result=self.score('stop',[.3,0.,.3],[0.,0.,0.],seconds)
+                    self.assertEqual(result['response_status'],expected)
+
+    def test_backward_walk_linear_tolerance_is_four_control_frames(self):
+        self.cfg['unified_acceptance_protocol']=CURRENT_PROTOCOL
+        self.assertEqual(specification(protocol=CURRENT_PROTOCOL)['walk_backward_linear_response_tolerance_frames'],4)
+        actual=np.broadcast_to([-.4,0.,0.],(240,3))
+        cases=(('walk_backward',3.+4*self.dt,3.+4*self.dt,'passed'),
+               ('walk_backward',3.+5*self.dt,3.+4*self.dt,'failed'),
+               ('walk',3.+self.dt,3.,'failed'))
+        for label,response,budget,expected in cases:
+            with self.subTest(label=label,response=response), patch('locomotion_acceptance.gait_period',return_value=1.), \
+                    patch('locomotion_acceptance.planning_time',return_value=1.5), \
+                    patch('locomotion_acceptance._response',side_effect=(response,1.5)):
+                result=self.score(label,[0.,0.,0.],[-.4,0.,0.],8,actual)
+                self.assertEqual(result['status'],expected)
+                self.assertEqual(result['response_deadline_seconds'],3.)
+                self.assertEqual(result.get('linear_response_deadline_seconds',result['response_deadline_seconds']),budget)
+                self.assertEqual(result['steady']['start_seconds'],3.)
+                self.assertEqual(result['yaw_response_deadline_seconds'],2.1)
 
 
 if __name__=='__main__':unittest.main()

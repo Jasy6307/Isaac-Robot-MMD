@@ -28,14 +28,16 @@ class FullMotionReference:
         self.idle=torch.tensor(d['idle'],device=device)
         self.count=d['q'].shape[1] if self.bank else len(d['q'])
 
-    def sample(self,phase,clip_ids=None):
+    def sample(self,phase,clip_ids=None,*,fields=None):
         x=(phase%1)*self.count;a=x.long()%self.count;b=(a+1)%self.count;f=x-a
         result={}
         if clip_ids is None:clip_ids=torch.zeros(len(phase),device=phase.device,dtype=torch.long)
-        for key,value in self.data.items():
+        for key in self.data if fields is None else fields:
+            value=self.data[key]
             va,vb=(value[clip_ids,a],value[clip_ids,b]) if self.bank else (value[a],value[b])
             weight=f.reshape((len(f),)+(1,)*(va.ndim-1))
             if key=='rotations':vb=torch.where(((va*vb).sum(-1)<0)[...,None],-vb,vb)
             result[key]=va*(1-weight)+vb*weight
-        result['rotations']=torch.nn.functional.normalize(result['rotations'],dim=-1)
+        if 'rotations' in result:
+            result['rotations']=torch.nn.functional.normalize(result['rotations'],dim=-1)
         return result

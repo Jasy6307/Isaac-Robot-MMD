@@ -81,8 +81,8 @@ def main():
     run=file.parent;active=read(OUT/'active_process.json')
     assert active['stage']==run.name,'Expected the current learner at the boundary'
     stop_own_controller(controller['pid'])
-    # The callback publishes iteration5999 before its6000-iteration screen.
-    # This marker is consumed after that screen and before any next update.
+    # The callback publishes iteration5999 before its6000-iteration acceptance.
+    # This marker is consumed after acceptance and before any next update.
     (run/'stop.request').touch()
     experiment.write(OUT/'controller_status.json',dict(stage='stopping_at_user_limit',maximum_iterations=LIMIT,run_dir=str(run)))
     wait_exit(active['pid'])
@@ -95,7 +95,7 @@ def main():
     full_seconds=0.
     report_path=Path(previous['full_report']) if reuse else work/'unified/report.json'
     if not reuse:
-        config=work/'full_config.json';experiment.write(config,dict(unified_eval_lite=False,unified_record_controller=True))
+        config=work/'full_config.json';experiment.write(config,dict(unified_record_controller=True))
         code,full_seconds=experiment.launch('limit6000_full',[experiment.SOURCE/'train_anon_locomotion.py',
             '--mode','eval','--headless','--num-envs','1','--checkpoint',checkpoint,'--output',work/'unified','--config-override',config])
         if code:raise RuntimeError('6000 complete acceptance failed to execute; inspect log')
@@ -115,10 +115,10 @@ def main():
     full_passed=official and all(s['passed'] for s in slip.values())
     history=experiment.read(OUT/'acceptance/history.json')
     record=dict(completed_iterations=LIMIT,active_training_seconds=timing['experiment_training_seconds'],checkpoint=str(checkpoint),
-        acceptance_kind='full',full_evaluated=True,official_passed=official,lite_passed=False,lite_pass_streak=0,
+        acceptance_kind='full',full_evaluated=True,official_passed=official,
         slip_checks=slip,slip_passed=all(s['passed'] for s in slip.values()),total_falls=report['total_falls'],passed=full_passed,
         evaluation_seconds_cumulative=timing['acceptance_seconds']+full_seconds,report=str(report_path),
-        full_report=str(report_path),lite_report=None,forced_by_user_iteration_limit=not reuse)
+        full_report=str(report_path),forced_by_user_iteration_limit=not reuse)
     if not reuse:history.append(record);experiment.write(OUT/'acceptance/history.json',history)
     experiment.write(OUT/'acceptance/experiment_status.json',dict(phase='limit_full_acceptance',**record))
     attempts=read(OUT/'extra_history.json') or [];extra_seconds=0.;accepted=False

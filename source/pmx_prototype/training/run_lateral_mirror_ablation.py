@@ -127,8 +127,7 @@ def main():
         assert config['train_audit_resume_identity'] and config['train_preserve_optimizer_learning_rate']
         assert not config.get('train_leg_std') and not config.get('train_reset_optimizer') and not config.get('amp_reset_discriminator')
         write(OUT/(name+'_config.json'),config);configs[name]={k:config[k] for k in flags}
-    write(OUT/'full_config.json',dict(unified_acceptance_protocol='response_steady_v2',unified_eval_lite=False,
-        unified_eval_short=False,unified_record_controller=True))
+    write(OUT/'full_config.json',dict(unified_acceptance_protocol='response_steady_v2',unified_record_controller=True))
     frozen=['train_anon_locomotion.py','training/anon_imitation_env.py','training/anon_locomotion_env.py',
         'training/lateral_symmetry.py','training/amp_motion_prior.py','training/command_plan.py','training/locomotion_acceptance.py',
         'motion/unified_walk_run_reference.py','diagnostics/evaluate_unified_walk_run.py','diagnostics/probe_lateral_symmetry.py']

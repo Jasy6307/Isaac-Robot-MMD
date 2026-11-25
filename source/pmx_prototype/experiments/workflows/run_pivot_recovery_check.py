@@ -57,11 +57,10 @@ def main():
     totals={key:sum(item['total_falls'] for item in rows) for key,rows in probes.items()}
     result['pivot_falls']=totals
     result['pivot_gate']=totals['candidate']==0 and totals['candidate']<totals['baseline']
-    write(OUT/'lite_config.json',dict(unified_eval_lite=True))
-    for key,checkpoint in [('baseline',BASE),('candidate',candidate)]:
-        durations[key+'_lite']=execute(key+'_lite',[SOURCE/'train_anon_locomotion.py','--mode','eval','--headless',
-            '--checkpoint',checkpoint,'--num-envs','1','--output',OUT/(key+'_lite'),'--config-override',OUT/'lite_config.json'])
-    old=read(OUT/'baseline_lite/report.json');new=read(OUT/'candidate_lite/report.json')
+    for key,checkpoint in [('baseline_full',BASE),('full',candidate)]:
+        durations[key]=execute(key,[SOURCE/'train_anon_locomotion.py','--mode','eval','--headless',
+            '--checkpoint',checkpoint,'--num-envs','1','--output',OUT/key])
+    old=read(OUT/'baseline_full/report.json');new=read(OUT/'full/report.json')
     regression=[]
     for a,b in zip(old['segments'],new['segments']):
         assert a['label']==b['label']
@@ -78,12 +77,10 @@ def main():
     result['regression_gate']=all(item['passed'] for item in regression)
     write(OUT/'result.json',result)
     if not (result['pivot_gate'] and result['regression_gate']):
-        result['outcome']='short_check_failed_no_further_training'
+        result['outcome']='pivot_or_regression_check_failed_no_further_training'
         write(OUT/'result.json',result);write(OUT/'status.json',dict(stage=result['outcome'],result=str(OUT/'result.json')))
         return
-    durations['full_acceptance']=execute('full',[SOURCE/'train_anon_locomotion.py','--mode','eval','--headless',
-        '--checkpoint',candidate,'--num-envs','1','--output',OUT/'full'])
-    full=read(OUT/'full/report.json')
+    full=new
     original=read(ROOT/'output/anon_locomotion/unified_walk_run/full8_final_cpu/report.json')
     by_label={row['label']:row for row in original['segments']}
     checks=[]

@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from source_layout import PROJECT_ROOT,config_path
+from secondary_profiles import SECONDARY_MODES,apply_secondary_mode
 import argparse,json,time,gc,os
 startup_started=time.perf_counter();startup_phases={}
 
@@ -11,6 +12,7 @@ p.add_argument('--usd',required=True,type=Path);p.add_argument('--pmx',required=
 p.add_argument('--rig-data',type=Path);p.add_argument('--secondary-profile',type=config_path)
 p.add_argument('--physics-threads',type=int,default=16)
 p.add_argument('--skirt-edge-stride',type=int,choices=[1,2,3],default=1)
+p.add_argument('--secondary-mode',choices=SECONDARY_MODES,default='full')
 p.add_argument('--render-fps',type=int,default=30);p.add_argument('--quality',default='cloth')
 p.add_argument('--address');p.add_argument('--authkey');p.add_argument('--output',required=True,type=Path)
 p.add_argument('--steps',type=int,default=240);p.add_argument('--runtime-audit',action='store_true')
@@ -36,6 +38,7 @@ try:
     context=omni.usd.get_context();context.new_stage();stage=context.get_stage()
     UsdGeom.SetStageUpAxis(stage,'Z');UsdGeom.SetStageMetersPerUnit(stage,1.)
     motion=BodyMotion(a.usd,a.pmx,rig_data=a.rig_data,secondary_profile=a.secondary_profile)
+    motion.rig_settings=apply_secondary_mode(motion.rig_settings,a.secondary_mode)
     motion.rig_settings['preview_skirt_edge_stride']=a.skirt_edge_stride
     UsdSkel.Root.Define(stage,'/World/Character').GetPrim().GetReferences().AddReference(str(a.usd.resolve()))
     anim=UsdSkel.Animation.Get(stage,'/World/Character/Animation');anim.CreateJointsAttr(motion.joints)
@@ -71,8 +74,12 @@ try:
         secondary_physics_enabled=True,backend='native omni.physx CPU worker',
         worker_renderer='MinimalRendering (no viewport updates)',
         startup_settle_steps=settle_steps,startup_settle_seconds=settle_steps/physics.physics_hz,startup_phases=startup_phases,
-        solver_position_iterations=255 if motion.rig_settings.get('skirt_max_stretch') else 96 if a.quality=='cloth' else 40 if a.quality=='hair' else 24,
-        solver_velocity_iterations=16 if a.quality=='cloth' else 8 if a.quality=='hair' else 4,worker_prefetch_frames=1)
+        secondary_mode=a.secondary_mode,
+        solver_position_iterations=motion.rig_settings.get('native_solver_position_iterations',
+            255 if motion.rig_settings.get('skirt_max_stretch') else 96 if a.quality=='cloth' else 40 if physics.hair_quality else 24),
+        solver_velocity_iterations=motion.rig_settings.get('native_solver_velocity_iterations',
+            16 if a.quality=='cloth' else 8 if physics.hair_quality else 4),
+        hair_constraint_solver=motion.rig_settings.get('hair_constraint_solver'),worker_prefetch_frames=1)
     if a.address:
         from anon_policy_transport import connect_worker
         connection=connect_worker(a.address,a.authkey)
@@ -113,7 +120,7 @@ try:
             baked_anim.GetTranslationsAttr().Set(Vt.Vec3fArray.FromNumpy(p0.astype(np.float32)),seq)
             baked_anim.GetRotationsAttr().Set(Vt.QuatfArray.FromNumpy(q0.astype(np.float32)),seq)
         seq+=1
-    if a.runtime_audit:np.savez_compressed(a.output/'runtime_audit.npz',p=audit_p,q=audit_q,particles=audit_particles)
+    if a.runtime_audit:np.savez_compressed(a.output/'runtime_audit.npz',p=audit_p,q=audit_q,particles=audit_particles,frame_work_ms=costs)
     if baked:baked.SetStartTimeCode(0);baked.SetEndTimeCode(seq-1);baked.GetRootLayer().Save()
     report=dict(metadata,status='complete',frames=seq,render_frames=seq,physics_steps=total_steps,warmup_physics_steps=settle_steps*(loops+1),loops=loops,
         mean_work_ms=float(np.mean(costs[30:] or costs)),p95_work_ms=float(np.percentile(costs[30:] or costs,95)),

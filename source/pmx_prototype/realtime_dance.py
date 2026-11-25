@@ -93,20 +93,22 @@ try:
     floor.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
     floor.CreateSubdivisionSchemeAttr('none')
     floor.CreateDisplayColorAttr([(.18, .21, .26)])
-    from character_appearance import apply_bright_character_look
-    if args.look!='original':
-        apply_bright_character_look(stage)
-    environment=UsdLux.DomeLight.Get(stage,'/World/Light')
-    environment.GetIntensityAttr().Set(float(environment.GetIntensityAttr().Get())*args.environment_scale)
-    bangs_shadow=None
-    if args.look==DEFAULT_LOOK:
-        from character_appearance import apply_cel_look
-        apply_cel_look(stage,brightness_scale=args.cel_brightness_scale,face_shaping=args.face_shaping)
-        from bangs_shadow import BangsShadow
-        try:
-            bangs_shadow=BangsShadow(stage,shadow_level=args.bangs_shadow_level)
-        except ValueError as error:
-            print(f"[Appearance] Bangs occlusion unavailable: {error}",flush=True)
+    solver.advance(0)
+    from character_appearance import DefaultCharacterLook, apply_bright_character_look
+    bangs_shadow = None
+    if args.look == DEFAULT_LOOK:
+        # Bind the skinning query after publishing the first local pose.
+        rotations.Set(Vt.QuatfArray.FromNumpy(solver.pose_q.astype(np.float32)))
+        translations.Set(Vt.Vec3fArray.FromNumpy(solver.pose_p.astype(np.float32)))
+        appearance = DefaultCharacterLook(
+            stage, environment_scale=args.environment_scale, brightness_scale=args.cel_brightness_scale,
+            face_shaping=args.face_shaping, bangs_shadow_level=args.bangs_shadow_level)
+        bangs_shadow = appearance.bangs
+    else:
+        if args.look == 'soft-pbr':
+            apply_bright_character_look(stage)
+        environment = UsdLux.DomeLight.Get(stage,'/World/Light').GetIntensityAttr()
+        environment.Set(float(environment.Get()) * args.environment_scale)
     camera = UsdGeom.Camera.Define(stage, '/World/Camera')
     camera.CreateFocalLengthAttr(50)
     set_camera_view(eye=(2.8, -6.3, 2.35), target=(0, -.25, .95), camera_prim_path='/World/Camera')
@@ -124,7 +126,6 @@ try:
         if bangs_shadow is not None:
             bangs_shadow.update(frame)
 
-    solver.advance(0)
     publish(solver.pose_p, solver.pose_q, 0)
     if rotations.GetNumTimeSamples() or translations.GetNumTimeSamples():
         raise RuntimeError('Live pose did not hide referenced animation samples')

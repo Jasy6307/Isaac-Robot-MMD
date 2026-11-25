@@ -19,9 +19,11 @@ Girls 整段三列及片段五列统一走 `sim_main.py --mode compare-g1-pmx`�
 | PMX 转换、VMD 烘焙、资产查看 | `convert_pmx.py`、`load_vmd.py`、`view_character.py` |
 | 舞蹈实时预览 | `tools/preview_dance.py`（角色舞蹈标准入口），`physx_dance.py`（原生 PhysX）、`realtime_dance.py` / `realtime_xpbd.py`（XPBD） |
 | 录像与缓存重录 | `record_physx_video.py`、`record_cached_secondary.py`、`record_mutsumi_references.py` |
-| 统一外观 | `appearance_defaults.py` → `character_appearance.py`；`character_semantics.py`、`bangs_shadow.py`、`mmd_cel.mdl` |
+| 统一外观 | `appearance_defaults.py` → `character_appearance.py`；`character_semantics.py`、`bangs_shadow.py`、`cel_studio.mdl` |
 | 头发、裙摆物理 | `secondary_profiles.py`、`configs/physics/secondary_default.json` → `physx_secondary.py`；XPBD 实现在 `secondary_motion.py` |
-| 策略训练与播放 | `train_anon_locomotion.py`、`play_anon_policy.py`、`inspect_anon_policy.py`；详见 `ANON_LOCOMOTION.md` |
+| 策略训练与播放 | `train_anon_lab.py`（Isaac Lab Direct）、`train_anon_locomotion.py`（可选后端）、`play_anon_policy.py`、`inspect_anon_policy.py`；详见 `ANON_LOCOMOTION.md` |
+| 单人／多人物行走验证 | 统一入口 `inspect_anon_policy.py` 默认单人；加 `--characters 4` 控制 1 人、其余 3 人随机行走，可切换控制对象。Lab Direct＋CPU，人物互碰默认关闭，保留独立发裙物理；实时预览默认 60 FPS 姿态插值，策略 30Hz、物理 120Hz；多人内部实现在 `runtime/anon_crowd_viewer.py`；详见 `ANON_LOCOMOTION.md` |
+| 发裙物理档位 | 统一行走验证默认 `light`（light1），单人／多人均生效；可显式选择 `full`、`light2` 或更低预算的 `light3`。多人加 `--mixed-secondary` 时受控者默认 light、背景 light3，随控制对象自动交接；加 `--controlled-secondary-mode light2` 可调整前台。保留 120Hz、节点与碰撞覆盖。四人混合模式本机一分钟实测前台 light／light2 分别为 Solved 29.22／29.88Hz，均约 60 FPS 插值显示；对照与限制见 `ANON_LOCOMOTION.md` |
 | 物理角色构建 | `physical_character.py`、`build_anon_v3.py`（25 DOF）、`build_anon_v4.py`（31 DOF）；详见 `PHYSICAL_CHARACTER.md` |
 | 动作参考与处理 | `*_reference.py`、`build_*motion*.py`、`retarget_100style.py` 及平衡、平滑、审计脚本 |
 | 验证 | `test_*.py` 为单元测试；`check_*.py`、`validate_*.py` 多数需要 Isaac Sim、资产或音频设备 |
@@ -59,21 +61,23 @@ python source/pmx_prototype/pmx.py tools package_anon_policy --help
 
 统一测试入口：`python run_tests.py --suite cpu --area pmx`；需要本机角色、动作或策略文件的测试用 `--suite assets --area pmx`。依赖与报告说明见 [测试指南](../../TESTING.md)。旧的 `python -m unittest discover -s source/pmx_prototype/tests` 仍可用，但会尝试执行整个目录，不按依赖分层筛选。
 
-## 默认角色外观：第 8 版最新微调版（2026-11-13）
+## 默认角色外观：mmd-toon（cel-studio，2026-11-25）
 
-用户确认：爱音及其他二次元角色的实时预览、录像默认使用此版本，取代以前的提亮 PBR 默认。地面保留场景原版材质、显示与反射。
+共享 `mmd-toon` 使用已确认的 cel-studio 外观、分材质阴影配色和衣料明暗分阶。预览、策略展示与新录像沿用原参数名。地面保留场景原版材质、显示与反射。
 
 | 设置 | 默认值 |
 | --- | --- |
-| look | `mmd-toon`（独立第 8 版，默认） |
+| look | `mmd-toon`（cel-studio，默认） |
 | 环境光倍率 | `0.75`，Dome 强度 `412.5` |
-| 角色材质亮度倍率 | `0.88`，MDL brightness `0.5104` |
-| 刘海遮挡阴影 | 亮部的 `0.65` |
-| 脸部塑形 | 开启；侧向、下巴暗部 `0.75`，暖色 `(1, 0.96, 0.93)` |
+| 角色材质亮度倍率 | `0.88` 对应批准的分材质亮度，脸部 `0.537`、头发 `0.511`、上衣 `0.537`、裙子 `0.529` |
+| 刘海遮挡阴影 | 亮部的 `0.68`，边缘平滑 |
+| 脸部塑形 | 开启；暗部 `0.77`，暖色 `(1, 0.925, 0.89)` |
+| 阴影配色 | 按材质语义和贴图底色给头发、衣料和皮肤分配暗面色 |
+| 衣料明暗 | 衣料最深暗面的线性亮度降低 `7%`，中间暗面降低 `3.5%` |
 | 发丝描边 | 保留主发束细描边，剔除微小独立发丝的轮廓壳 |
 | 地面 | 原版；材质、反射参数不改，随环境照明自然变化 |
 
-参数来源统一为 `appearance_defaults.py`；实现位于 `character_appearance.py`、`mmd_cel.mdl` 和 `bangs_shadow.py`。基准样片是 `media/recordings/IRIS_OUT_look_comparison_20261113/08_latest.mp4`。
+参数统一在 `runtime/appearance_defaults.py`，由 `runtime/character_appearance.py`、`cel_studio.mdl` 和 `runtime/bangs_shadow.py` 实现。当前验收样片是 `media/recordings/DeepBlueTown_fabric_shadows_20261125/` 中爱音和睦前 30 秒三列对比的中列，左列是仅启用分材质阴影配色的版本，右列为 `lit-anime` 提亮版。
 
 ### 可用模式与入口
 
@@ -83,7 +87,7 @@ python source/pmx_prototype/pmx.py tools package_anon_policy --help
 | --- | --- |
 | `original` | 最初普通三维材质与照明，原版地面 |
 | `soft-pbr` | 提亮低反射 PBR 与脸部柔光，原版地面 |
-| `mmd-toon` | 默认精调赛璐璐，完整参数见上表，原版地面 |
+| `mmd-toon` | 默认 cel-studio 赛璐璐，完整参数见上表，原版地面 |
 
 `realtime_dance.py`、`record_physx_video.py`、`physx_dance.py` 支持这三个选项。策略预览/录像 `play_anon_policy.py`、轨迹录像 `record_anon_locomotion.py` 和资产查看 `view_character.py` 默认接入共享 `DefaultCharacterLook`。其他角色批录通过原生 PhysX 入口继承默认；不会自动覆盖已生成的视频。
 
@@ -103,7 +107,7 @@ python source\pmx_prototype\realtime_dance.py --usd "output\iris-out-audit\IRIS_
 
 共享组件支持不同角色根路径（默认 `/World/Character`，轨迹录像为 `/World/Anon/Visual`），不修改源 USD、贴图或物理参数。脸部材质识别 `face`、`顔`、`脸`；刘海识别 `前发`、`前髪`、`bang`、`fringe`。缺失时输出明确提示，保留赛璐璐与描边，不能认为投影已启用；新角色命名不同需适配这些语义。
 
-两段式受光明暗按固定主光方向与变形法线计算；刘海投影只计算刘海到脸部的几何遮挡，不是全场景统一的卡通阴影求解器。实际帧率与角色复杂度有关。以下历史章节保留原实验背景，涉及当前外观默认时以本节为准。
+cel-studio 保留清楚的主明暗分区，加入中间色、柔和脸部边界、哑光衣料和发束高光色带。角色部位按材质语义匹配；未识别的普通表面使用通用赛璐璐配置。刘海投影仍由实际变形几何计算。以下历史章节保留原实验背景，涉及当前外观默认时以本节为准。
 
 睦的分片 USD 通过 `character_semantics.py` 在渲染层适配：按头部蒙皮权重划分脸部材质，按前发骨骼识别刘海，并向可见脸部网格写入遮挡权重；保留眼睛原材质。发丝描边沿用原贴图透明度。适配不修改源模型网格、动作或物理参数。
 

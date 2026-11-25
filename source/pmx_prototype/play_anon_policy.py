@@ -16,13 +16,14 @@ import sys
 import time
 import uuid
 
+launch_started=time.perf_counter()
 ROOT=PROJECT_ROOT
 HERE=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT))
-from source.pmx_prototype.secondary_profiles import DEFAULT_SECONDARY_PROFILE,DEFAULT_SECONDARY_QUALITY,SKIRT_EDGE_STRIDES
-from anon_policy_catalog import PRESETS
+from source.pmx_prototype.secondary_profiles import DEFAULT_SECONDARY_PROFILE,DEFAULT_SECONDARY_QUALITY,SKIRT_EDGE_STRIDES,SECONDARY_MODES
+from anon_policy_catalog import DEFAULT_INSPECTOR_CHECKPOINT, PRESETS
 parser=argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--checkpoint',type=Path,default=PRESETS['walk'])
+parser.add_argument('--checkpoint',type=Path)
 parser.add_argument('--pmx',type=Path,default=ROOT/'media/千早爱音_by_小麦弥望/Anon Chihaya.pmx')
 parser.add_argument('--headless',action='store_true')
 parser.add_argument('--real-time',action='store_true',help='Use the viewer pacing clock in headless playback')
@@ -31,8 +32,11 @@ parser.add_argument('--interpolate-60',action='store_true',help='Use the dance v
 parser.add_argument('--steps',type=int,default=0,help='Finite 30 Hz steps; 0 keeps the interactive viewer open')
 parser.add_argument('--demo',action='store_true',help='Autonomous forward, reverse, sidestep, turn and stop sequence')
 parser.add_argument('--inspector',action='store_true',help='Visual keyboard inspector; WASD/QE, +/- speed, Space stop, R reset')
+parser.add_argument('--joint-monitor',action=argparse.BooleanOptionalAction,default=True,
+                    help='Read-only joint monitor in Policy Inspector (default: enabled)')
 parser.add_argument('--record-video',type=Path)
 parser.add_argument('--no-secondary-physics',action='store_true')
+parser.add_argument('--secondary-mode',choices=SECONDARY_MODES,default='full',help='Hair/skirt solve budget; full preserves the approved physics')
 parser.add_argument('--physics-detail',choices=SKIRT_EDGE_STRIDES,default='full',help='VMD preview skirt-edge collision proxy density; reduced and sparse change skirt contact coverage')
 parser.add_argument('--secondary-profile',type=config_path,default=DEFAULT_SECONDARY_PROFILE,help='JSON appearance physics settings')
 parser.add_argument('--quality',choices=['hair','cloth'],default=None)
@@ -41,13 +45,15 @@ parser.add_argument('--policy-config-override',type=config_path,help='Explicit c
 parser.add_argument('--appearance',choices=['default','bright-soft'],default='default',help='Use the shared default or explicitly lock the bright soft-light look')
 parser.add_argument('--video-width',type=int,default=1920)
 parser.add_argument('--video-height',type=int,default=1080)
-parser.add_argument('--anti-aliasing',type=int,choices=[0,1,2,3,4],default=1,help='Isaac modes: 1 native-resolution TAA; 3 DLSS')
+parser.add_argument('--anti-aliasing',type=int,choices=[0,1,2,3,4],default=3,help='Isaac modes: 1 TAA; 3 DLSS (default); 4 DLAA in RTX Real-Time 2.0')
+parser.add_argument('--dlss-mode',choices=['performance','balanced','quality','auto'],default='quality',help='DLSS resolution preset (default: quality)')
 parser.add_argument('--output',type=Path,default=ROOT/'output/anon_locomotion/live_secondary')
 parser.add_argument('--body-device',choices=['cpu','cuda:0'],default='cuda:0',help='Body physics and policy inference device; secondary physics stays on CPU')
 parser.add_argument('--transport',choices=['memory','files'],default='memory')
 parser.add_argument('--legacy-compute',action='store_true',help='A/B check: retain redundant training diagnostics and substep pose reconstruction')
 parser.add_argument('--reference-hair-compute',action='store_true',help='A/B check: use the previous hair solve and chain-velocity calculation, preserving all physics parameters')
 parser.add_argument('--secondary-worker',action='store_true',help='Run secondary simulation in a separate process')
+parser.add_argument('--serial-startup',action='store_true',help='Diagnostic comparison: start Kit processes sequentially')
 parser.add_argument('--physics-threads',type=int,help='CPU PhysX worker threads; 0 runs synchronously')
 parser.add_argument('--frontend-task-threads',type=int,help='Limit Kit task threads in the viewer; independent of PhysX threads')
 parser.add_argument('--worker-physics-threads',type=int,default=0,help='The single-body inference worker needs no parallel PhysX task pool')
@@ -55,8 +61,10 @@ parser.add_argument('--benchmark-warmup',type=int,default=30,help='Frames exclud
 parser.add_argument('--runtime-audit',action='store_true',help='Save body and rendered skeleton arrays for behavior equivalence checks')
 parser.add_argument('--async-render',action='store_true',help='Overlap live rendering with simulation; recording remains synchronous')
 parser.add_argument('--save-preview',action='store_true',help='Save one final viewport image after the measured loop')
-parser.add_argument('--control-script',type=Path,help='Reproducible switch/command events: JSON list of frame, switch_to, command, reset')
+parser.add_argument('--control-script',type=Path,help='Reproducible command and reset events: JSON list of frame, command, reset')
 args=parser.parse_args()
+if args.secondary_mode!='full' and (args.no_secondary_physics or args.legacy_secondary_physics):
+    parser.error('Light modes cannot be combined with disabled or legacy secondary physics')
 if args.interpolate_60 and args.render_fps==30:
     parser.error('--interpolate-60 requires a 60 FPS display')
 args.render_fps=args.render_fps or (60 if args.interpolate_60 else 30)
@@ -69,14 +77,15 @@ if args.frontend_task_threads is not None and args.frontend_task_threads<1:
     parser.error('--frontend-task-threads must be positive')
 accelerated_hair=not (args.legacy_compute or args.reference_hair_compute)
 if args.inspector and (args.headless or args.demo):parser.error('--inspector needs a visible window and cannot be combined with --demo')
+if args.checkpoint is None:
+    args.checkpoint = DEFAULT_INSPECTOR_CHECKPOINT if args.inspector else PRESETS['walk']
 args.quality=args.quality or ('hair' if args.legacy_secondary_physics else DEFAULT_SECONDARY_QUALITY)
 W,H=args.video_width,args.video_height
 if W%2 or H%2:parser.error('Video dimensions must be even')
 args.checkpoint=args.checkpoint.resolve(); args.output=args.output.resolve()
 script_events={int(event['frame']):event for event in json.loads(args.control_script.read_text(encoding='utf-8'))} if args.control_script else {}
-script_switches=any(event.get('switch_to') for event in script_events.values())
-if args.inspector and script_switches:
-    parser.error('Policy Inspector uses a fixed checkpoint and manual resets')
+if any(event.get('switch_to') for event in script_events.values()):
+    parser.error('Live checkpoint switching was removed. Run the control script separately for each checkpoint.')
 policy_config=json.loads((args.checkpoint.parent/'env_config.json').read_text(encoding='utf-8'))
 if args.policy_config_override:policy_config.update(json.loads(args.policy_config_override.read_text(encoding='utf-8')))
 from anon_config_compat import clean_legacy_config
@@ -88,19 +97,51 @@ worker_log=(args.output/'policy_worker.log').open('w',encoding='utf-8')
 worker=None
 from anon_policy_transport import PolicyServer
 channel=PolicyServer(ipc,args.transport)
-from isaacsim import SimulationApp
+from anon_startup_progress import StartupJournal,StartupWindow
+startup=StartupJournal(args.output,'viewer',started=launch_started)
+startup.mark('engine','Starting three independent runtimes in parallel' if args.secondary_worker and not args.serial_startup else '')
+worker_args=[sys.executable,'-u',str(resolve_source('anon_policy_worker.py')),'--checkpoint',str(args.checkpoint),'--ipc',str(ipc),'--body-device',args.body_device,*channel.worker_args]
+if args.legacy_compute:worker_args+=['--legacy-compute']
+worker_args+=['--physics-threads',str(args.worker_physics_threads)]
+if args.policy_config_override:worker_args+=['--config-override',str(args.policy_config_override.resolve())]
+if args.inspector:worker_args.append('--manual-reset-only')
+if args.inspector and args.joint_monitor:worker_args.append('--joint-telemetry')
+secondary_stream=None
 extra=['--/app/asyncRendering=false']
 if args.async_render and not args.record_video:
     extra=['--/app/asyncRendering=true','--/app/asyncRenderingLowLatency=true','--/app/omni.usd/asyncHandshake=true','--/omni/replicator/asyncRendering=true']
 if args.physics_threads is not None:extra.append(f'--/persistent/physics/numThreads={args.physics_threads}')
 renderer_options={} if args.frontend_task_threads is None else {'limit_cpu_threads':args.frontend_task_threads}
-app=SimulationApp({'headless':args.headless,'width':W,'height':H,'renderer':'RaytracedLighting',
-                   'anti_aliasing':args.anti_aliasing,'extra_args':extra,**renderer_options})
+try:
+    if not args.serial_startup:
+        worker=subprocess.Popen(worker_args,stdout=worker_log,stderr=subprocess.STDOUT,creationflags=subprocess.CREATE_NO_WINDOW)
+        if args.secondary_worker and not args.no_secondary_physics:
+            from anon_secondary_stream import AnonSecondaryStream
+            secondary_stream=AnonSecondaryStream(args)
+    from isaacsim import SimulationApp
+    app=SimulationApp({'headless':args.headless,'width':W,'height':H,'renderer':'RaytracedLighting',
+                       'anti_aliasing':args.anti_aliasing,'extra_args':extra,**renderer_options})
+except BaseException:
+    startup.mark('failed','Frontend Kit initialization failed; see terminal log')
+    if secondary_stream:secondary_stream.close()
+    if worker and worker.poll() is None:worker.terminate();worker.wait(timeout=15)
+    channel.close();worker_log.close()
+    raise
+startup.mark('imports')
+import omni.ui as ui
+startup_window=StartupWindow(startup,visible=not args.headless)
+def startup_pump():
+    if not app.is_running():raise SystemExit(0)
+    startup_window.update()
+    app.update()
+def startup_stage(stage,detail=''):
+    startup.mark(stage,detail)
+    startup_window.update(force=True)
+    startup_pump()
 import numpy as np
 from scipy.spatial.transform import Rotation
 from PIL import Image,ImageDraw,ImageFont
 import omni.usd
-import omni.ui as ui
 from pxr import Gf,UsdGeom,UsdLux,UsdSkel,Vt
 from omni.kit.viewport.utility import get_active_viewport
 from physx_secondary import BodyMotion,PhysxSecondary
@@ -127,32 +168,28 @@ def receive(seq,timeout=120,on_wait=None):
         if value is not None:return value
         if on_wait is not None:on_wait()
         elif time.perf_counter()>=next_ui_update:
-            app.update(); next_ui_update=time.perf_counter()+.05
+            if seq==-1:startup_pump()
+            else:app.update()
+            next_ui_update=time.perf_counter()+.05
         time.sleep(.001)
     raise TimeoutError('Policy worker response timed out')
 
 
-physics=encoder=inspector=secondary_stream=None
-queued_switch='';switch_inflight=False
-def request_switch(preset):
-    global queued_switch,switch_inflight
-    queued_switch=preset;switch_inflight=True
+physics=encoder=inspector=None
 result=0
 try:
-    worker_args=[sys.executable,str(resolve_source('anon_policy_worker.py')),'--checkpoint',str(args.checkpoint),'--ipc',str(ipc),'--body-device',args.body_device,*channel.worker_args]
-    if args.legacy_compute:worker_args+=['--legacy-compute']
-    worker_args+=['--physics-threads',str(args.worker_physics_threads)]
-    if args.policy_config_override:worker_args+=['--config-override',str(args.policy_config_override.resolve())]
-    if args.inspector:worker_args.append('--manual-reset-only')
-    if script_switches:worker_args.append('--preload-presets')
-    hand_trace=[];command_trace=[];body_trace=[];skeleton_p=[];skeleton_q=[];policy_trace=[];switches=[];fall_events=[];identities=set()
-    worker=subprocess.Popen(worker_args,
-                            stdout=worker_log,stderr=subprocess.STDOUT,creationflags=subprocess.CREATE_NO_WINDOW)
+    hand_trace=[];command_trace=[];body_trace=[];skeleton_p=[];skeleton_q=[];policy_trace=[];fall_events=[];identities=set()
+    startup_stage('body')
+    if worker is None:
+        worker=subprocess.Popen(worker_args,stdout=worker_log,stderr=subprocess.STDOUT,creationflags=subprocess.CREATE_NO_WINDOW)
     state=receive(-1)
     active_policy=str(state['policy_id']);active_checkpoint=str(state['checkpoint'])
     catalog=json.loads(str(state['catalog_json']))
     policy_config=json.loads(str(state['config_json']))
+    startup_stage('assets')
     motion=LiveBodyMotion(ROOT/'output/pmx_prototype/character.usdc',args.pmx,secondary_profile=args.secondary_profile if not args.legacy_secondary_physics else None)
+    from secondary_profiles import apply_secondary_mode
+    motion.rig_settings=apply_secondary_mode(motion.rig_settings,args.secondary_mode)
     motion.rig_settings['max_node_distance_from_target_m']=2.
     motion.rig_settings['preview_skirt_edge_stride']=args.skirt_edge_stride
     manifest=json.loads((Path(policy_config['asset']).parent/'manifest.json').read_text(encoding='utf-8'))
@@ -170,6 +207,7 @@ try:
         q[children]=(inverse*Rotation.from_quat(wq[children])).as_quat()
         return p,q,wp,wq
     motion.live=body_pose(state['poses'])
+    startup_stage('scene')
     context=omni.usd.get_context(); context.new_stage(); stage=context.get_stage()
     UsdGeom.SetStageUpAxis(stage,'Z'); UsdGeom.SetStageMetersPerUnit(stage,1.)
     stage.DefinePrim('/World/Character').GetReferences().AddReference(str(ROOT/'output/pmx_prototype/character.usdc'))
@@ -195,7 +233,9 @@ try:
     ground.CreateDisplayColorAttr([(.24,.28,.32)])
     from character_appearance import DefaultCharacterLook,apply_bright_character_look
     import inspect,hashlib
-    look_source=inspect.getsource(apply_bright_character_look)
+    look_source = (b''.join(resolve_source(name).read_bytes() for name in
+                   ('appearance_defaults.py', 'character_appearance.py', 'cel_studio.mdl'))
+                   if args.appearance == 'default' else inspect.getsource(apply_bright_character_look).encode())
     appearance=None if args.appearance=='bright-soft' else DefaultCharacterLook(stage,state['poses'][pelvis,:3])
     face_softbox=apply_bright_character_look(stage,state['poses'][pelvis,:3]) if appearance is None else appearance.face_light
     secondary_source_hash=hashlib.sha256(Path(sys.modules[PhysxSecondary.__module__].__file__).read_bytes()).hexdigest()
@@ -203,17 +243,29 @@ try:
     camera.CreateHorizontalApertureAttr(36); camera.CreateVerticalApertureAttr(36*H/W)
     camera_op=camera.AddTransformOp()
     viewport=get_active_viewport(); viewport.camera_path='/World/Camera'; viewport.set_texture_resolution((W,H))
-    for _ in range(30): app.update()
+    startup_stage('warmup','Viewport 0/30 updates')
+    for viewport_step in range(30):
+        startup_pump()
+        if (viewport_step+1)%10==0:
+            startup.mark('warmup',f'Viewport {viewport_step+1}/30 updates')
+    # Kit's renderer initialization can override launch-time AA defaults.
+    # Apply the resolution preset after the first rendered viewport updates.
+    import carb.settings
+    render_settings=carb.settings.get_settings()
+    render_settings.set_int('/rtx/post/dlss/execMode',{'performance':0,'balanced':1,'quality':2,'auto':3}[args.dlss_mode])
     if physics:
         physics.start(context.get_stage_id())
-        for _ in range(physics.physics_hz):
+        for warmup_step in range(physics.physics_hz):
             physics.step(0,produce_pose=args.legacy_compute,diagnostics=args.legacy_compute,
                          compiled_hair=accelerated_hair,optimized_contacts=accelerated_hair)
+            if (warmup_step+1)%30==0:
+                startup_stage('warmup',f'Physics {warmup_step+1}/{physics.physics_hz} steps')
         physics.runtime_costs[:]=0;physics.runtime_calls=0
     models=[ui.SimpleFloatModel(0) for _ in range(3)]
     if args.inspector:
         from anon_inspector_ui import PolicyInspector
-        inspector=PolicyInspector(policy_config,args.output,catalog,active_policy,args.render_fps)
+        inspector=PolicyInspector(policy_config,args.output,catalog,active_policy,args.render_fps,
+                                  allow_acceptance=args.control_script is None,joint_monitor=args.joint_monitor)
     elif not args.headless:
         panel=ui.Window('Anon live policy | Hair and skirt PhysX',width=390,height=230)
         with panel.frame:
@@ -231,7 +283,11 @@ try:
         from anon_secondary_stream import AnonSecondaryStream
         secondary_started=time.perf_counter()
         print('ANON_SECONDARY_STARTING',flush=True)
-        secondary_stream=AnonSecondaryStream(args,state['poses'],manifest,links,app)
+        startup_stage('secondary')
+        if secondary_stream is None:
+            secondary_stream=AnonSecondaryStream(args,app=app,on_wait=startup_pump)
+        secondary_stream.app=app;secondary_stream.on_wait=startup_pump
+        secondary_stream.initialize(state['poses'],manifest,links)
         print(f'ANON_SECONDARY_READY seconds={time.perf_counter()-secondary_started:.2f}',flush=True)
     schedule=[(2,(0,0,0)),(6,(.35,0,0)),(2,(0,0,0)),(4,(-.25,0,0)),(4,(0,.3,0)),(4,(0,-.3,0)),
               (4,(.2,0,.6)),(4,(.2,0,-.6)),(4,(0,0,.6)),(3,(0,0,0))]
@@ -277,23 +333,26 @@ try:
         else:
             from continuous_command_suite import segments
             limit=round(sum(s for _,s in segments(True,pivots=policy_config.get('demo_pivots',False)))*30)
-    def choose_command(index):
+    def choose_request(index):
         global script_command,script_reset
         if index in script_events:
             event=script_events[index]
-            if event.get('switch_to'):
-                script_command=[0.,0.,0.];request_switch(event['switch_to'])
             if 'command' in event:script_command=event['command']
             script_reset=bool(event.get('reset',False))
-        cmd=script_command if args.control_script else inspector.command() if inspector else command_at(index/30) if args.demo else tuple(m.get_value_as_float() for m in models)
-        if switch_inflight:cmd=[0.,0.,0.]
+        if inspector and not args.control_script:
+            request=inspector.next_request()
+        else:
+            cmd=script_command if args.control_script else command_at(index/30) if args.demo else tuple(m.get_value_as_float() for m in models)
+            request=dict(command=cmd,reset=inspector.controls.consume_reset() if inspector else script_reset)
+        if request.get('acceptance_inputs'):
+            return request
+        cmd=request['command']
         cmd=np.array(cmd,dtype=float); cmd[:2]*=min(1.,policy_config.get('max_speed',.4)/max(np.linalg.norm(cmd[:2]),1e-6)); cmd[2]=np.clip(cmd[2],-policy_config.get('max_yaw',.6),policy_config.get('max_yaw',.6))
-        return cmd.tolist()
-    def send_command(seq,command):
-        global queued_switch,script_reset
-        data=dict(seq=seq,command=command,reset=inspector.controls.consume_reset() if inspector else script_reset)
-        if queued_switch:data['switch_to']=queued_switch;queued_switch=''
-        atomic_request(data);script_reset=False
+        request['command']=cmd.tolist()
+        return request
+    def send_request(seq,request):
+        global script_reset
+        atomic_request(dict(seq=seq,**request));script_reset=False
 
     face_op=UsdGeom.Xformable(face_softbox).GetOrderedXformOps()[0]
     camera_heading=0.
@@ -316,35 +375,25 @@ try:
         from anon_interpolated_display import InterpolatedDisplay
         display=InterpolatedDisplay(draw_interpolated)
     present_if_due=display.present_if_due if display else None
-    pending_command=choose_command(0)
-    send_command(0,pending_command)
+    startup_stage('first_frame')
+    pending_request=choose_request(0)
+    send_request(0,pending_request)
     prefetched_state=None
     while app.is_running() and (not limit or completed<limit):
-        tick=time.perf_counter(); cmd=pending_command
-        state=prefetched_state if prefetched_state is not None else receive(completed,30,present_if_due)
+        tick=time.perf_counter(); cmd=pending_request['command']
+        acceptance_inputs=pending_request.get('acceptance_inputs',False)
+        state=prefetched_state if prefetched_state is not None else receive(completed,30,startup_pump if completed==0 else present_if_due)
         prefetched_state=None
         if secondary_stream and completed==0:secondary_stream.send(completed,state,args.runtime_audit)
         identities.add((int(state['worker_pid']),int(state['physics_stage_id']),int(context.get_stage_id()),id(physics)))
-        if str(state['policy_id'])!=active_policy:
-            switches.append(dict(frame=completed,previous=active_policy,policy=str(state['policy_id']),generation=int(state['generation'])))
-            active_policy=str(state['policy_id']);active_checkpoint=str(state['checkpoint'])
-            policy_config=json.loads(str(state['config_json']))
-            switch_inflight=False
-            if inspector:inspector.apply_policy(policy_config,active_policy)
-        if str(state.get('switch_error','')):
-            switch_inflight=False
-            switches.append(dict(frame=completed,error=str(state['switch_error']),policy=active_policy))
-        if str(state.get('switch_complete','')):
-            switch_inflight=False
-            if inspector:inspector.apply_policy(policy_config,active_policy)
         policy_trace.append(active_policy)
         if 'command' in state:cmd=state['command'].tolist()
         policy_done=time.perf_counter()
         # The next policy step can overlap this frame's secondary physics/render.
         # The display still consumes every state in sequence; none are skipped.
         if not limit or completed+1<limit:
-            pending_command=choose_command(completed+1)
-            send_command(completed+1,pending_command)
+            pending_request=choose_request(completed+1)
+            send_request(completed+1,pending_request)
         current=state['poses']; falls+=int(state['done'])
         restart=bool(state['restart'])
         if bool(state['done']):fall_events.append(dict(frame=completed,policy=active_policy))
@@ -362,9 +411,9 @@ try:
             # Queue one pose while the worker is still solving this frame. This
             # lets it start the next solve as soon as it returns the current one.
             if not limit or completed+1<limit:
-                prefetched_state=receive(completed+1,30,present_if_due)
+                prefetched_state=receive(completed+1,30,startup_pump if completed==0 else present_if_due)
                 secondary_stream.send(completed+1,prefetched_state,args.runtime_audit)
-            secondary_state=secondary_stream.receive(completed,on_wait=present_if_due)
+            secondary_state=secondary_stream.receive(completed,on_wait=startup_pump if completed==0 else present_if_due)
             p,q=secondary_state['p'],secondary_state['q']
             if not display:publish(p,q)
             deviations['hair'].append(secondary_state['deviations'][0]);deviations['skirt'].append(secondary_state['deviations'][1])
@@ -398,7 +447,7 @@ try:
         else:
             aim_camera(current[pelvis,:3],camera_heading)
         if inspector:
-            inspector.update(state,falls,completed+1)
+            inspector.update(state,falls,completed+1,acceptance_inputs=acceptance_inputs)
         look_started=time.perf_counter()
         if not display and appearance is not None:appearance.update(completed)
         secondary_done=time.perf_counter()
@@ -411,6 +460,9 @@ try:
             if completed==0:
                 for _ in range(5):app.update()
         render_done=time.perf_counter()
+        if completed==0:
+            startup.mark('ready')
+            startup_window.close()
         if encoder:
             rgb=_capture_viewport_rgb()
             if rgb is None:raise RuntimeError('Viewport capture failed')
@@ -462,6 +514,9 @@ try:
                          delivered_frame_ms_p95=float(np.percentile(delivered_intervals,95)),
                          delivered_frame_ms_p99=float(np.percentile(delivered_intervals,99))) if len(delivered_intervals) else {}
     report=dict(method='Live PPO inference in isolated PhysX worker; native CPU PhysX secondary rigid-node simulation; no rollout input',
+                startup_seconds=startup.events[-1]['elapsed_seconds'],startup_mode='serial' if args.serial_startup else 'parallel',
+                body_environment_backend=policy_config['environment_backend'],
+                joint_monitor_enabled=bool(args.inspector and args.joint_monitor),
                 body_device=args.body_device,transport=args.transport,legacy_compute=args.legacy_compute,physics_threads=args.physics_threads,
                 frontend_task_threads=args.frontend_task_threads,
                 worker_physics_threads=args.worker_physics_threads,
@@ -475,14 +530,16 @@ try:
                 secondary_diagnostics_collected=args.legacy_compute,
                 frame_detail_ms=dict(zip(['secondary_and_skeleton','camera_and_ui','appearance'],np.mean(details[min(args.benchmark_warmup,max(0,len(details)-1)):],axis=0).tolist())),
                 character_appearance='bright_soft' if args.appearance=='bright-soft' else 'shared_default',
-                appearance_source_sha256=hashlib.sha256(look_source.encode()).hexdigest(),secondary_source_sha256=secondary_source_hash,
+                appearance_source_sha256=hashlib.sha256(look_source).hexdigest(),secondary_source_sha256=secondary_source_hash,
                 runtime_compensation_removed=True,
-                checkpoint=str(args.checkpoint),final_checkpoint=active_checkpoint,models=catalog,policy_switches=switches,
+                checkpoint=str(args.checkpoint),final_checkpoint=active_checkpoint,models=catalog,policy_switches=[],
                 fall_events=fall_events,
                 scene_identities=[list(identity) for identity in identities],
                 frames=completed,simulated_seconds=completed/30,falls=falls,
                 video_resolution=[W,H],video_crf=16,
                 anti_aliasing=args.anti_aliasing,
+                anti_aliasing_effective=render_settings.get('/rtx/post/aa/op'),
+                dlss_mode=args.dlss_mode,dlss_mode_effective=render_settings.get('/rtx/post/dlss/execMode'),
                 wall_seconds=time.perf_counter()-started,secondary_physics=physics is not None or secondary_stream is not None,
                 secondary_worker=secondary_stream is not None,
                 secondary_worker_task_threads=secondary_stream.metadata['task_threads'] if secondary_stream else None,
@@ -490,7 +547,7 @@ try:
                 inspector_mode=args.inspector,
                 inference_pipeline='One step ahead; every body state consumed in order',
                 secondary_steps=physics.steps if physics else (secondary_state['steps'] if secondary_stream else 0),quality=args.quality,
-                physics_detail=args.physics_detail,skirt_edge_stride=args.skirt_edge_stride,
+                physics_detail=args.physics_detail,skirt_edge_stride=args.skirt_edge_stride,secondary_mode=args.secondary_mode,
                 physics_hz=physics.physics_hz if physics else (secondary_stream.metadata['physics_hz'] if secondary_stream else None),
                 secondary_substeps_per_frame=physics.physics_hz//30 if physics else (secondary_stream.metadata['physics_hz']//30 if secondary_stream else 0),
                 dynamic_nodes=physics.dynamic_view.count if physics else (secondary_stream.metadata['dynamic_nodes'] if secondary_stream else 0),
@@ -516,7 +573,12 @@ try:
 except Exception:
     import traceback
     traceback.print_exc(); result=1
+    if startup.events[-1]['stage']!='ready':startup.mark('failed','See terminal and worker logs')
+except (SystemExit,KeyboardInterrupt):
+    if startup.events[-1]['stage']!='ready':startup.mark('cancelled','Preview closed during loading')
+    raise
 finally:
+    startup_window.close()
     if inspector:inspector.close()
     if encoder:encoder.kill();encoder.wait()
     if secondary_stream:secondary_stream.close()

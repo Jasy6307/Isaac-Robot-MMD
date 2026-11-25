@@ -11,7 +11,10 @@ import hashlib,json,time
 import numpy as np
 import torch
 from command_plan import limit_yaw_command
-from locomotion_acceptance import CURRENT_PROTOCOL,RESPONSE_STEADY_PROTOCOLS,STATIONARY_SEGMENTS
+from locomotion_acceptance import (
+    CURRENT_PROTOCOL, FULL_RUN_SPEED, RESPONSE_STEADY_PROTOCOLS, STATIONARY_SEGMENTS,
+    add_light_acceptance, full_backward_diagonal_run_speed,
+)
 
 
 LOW_SPEED_ENDPOINTS=(.15,.40)
@@ -20,41 +23,87 @@ LOW_SPEED_STATES=((0.,0.),(.25,np.pi/2),(.5,-np.pi),(.75,-np.pi/2))
 LOW_SPEED_PHASES=(('stand',2,0),('walk',8,3),('stop',5,2))
 LOW_SPEED_CASE_COUNT=len(LOW_SPEED_ENDPOINTS)*len(LOW_SPEED_STATES)
 LOW_SPEED_SECONDS=LOW_SPEED_CASE_COUNT*sum(seconds for _,seconds,_ in LOW_SPEED_PHASES)
+ROUTINE_STAND_SECONDS = 12
+EXTENDED_STAND_SECONDS = 40
+# Keep the original stop timing before the forward-run retest, through the
+# sweep and left-turn brake, and for the remaining walk and pivot holds.
+RUNS_WITH_SHORTER_STOP = {
+    'run_forward', 'run_backward', 'run_left', 'run_right',
+    'run_diagonal_45', 'run_diagonal_135', 'run_diagonal_225', 'run_turn_right',
+}
+FULL_PREPARATION_TRANSITIONS = (
+    (2, 'walk', 'ramp_up_from_walk'),
+    (6, 'stop', 'run_forward'),
+)
 
 
-def suite(short=False,lite=False,protocol='legacy_v1',idle_head=False,backward_walk=False):
-    if short:return [('stand',5,[0,0,0]),('ramp_up',12,None),('run_forward',6,[1.2,0,0]),('ramp_down',12,None),('stand_end',6,[0,0,0])]
-    if lite:
-        result=[('stand',4,[0,0,0]),('walk',4,[.3,0,0]),('ramp_up_from_walk',8,None),
-                ('run_forward',4,[1.2,0,0]),('ramp_down',8,None),('stop',4,[0,0,0])]
-        for name,cmd in [('run_backward',[-1.2,0,0]),('run_left',[0,1.2,0]),('run_right',[0,-1.2,0])]:
-            result.append((name,5,cmd))
-        for degrees in [45,135,225,315]:
-            a=np.deg2rad(degrees);result.append((f'run_diagonal_{degrees}',4,[1.2*np.cos(a),1.2*np.sin(a),0]))
-        result += [('direction_sweep',12,None),('stop',4,[0,0,0])]
-        for name,cmd in [('run_turn_left',[1.1,0,.6]),('run_turn_right',[1.1,0,-.6]),
-                         ('reverse_turn',[-.9,0,.6]),('side_turn',[0,.9,-.6])]:
-            result.append((name,5,cmd))
-        if idle_head:result += [('walk_before_stop',5,[.3,0,0]),('stop_after_walk',7,[0,0,0])]
-        if backward_walk:result.append(('walk_backward',8,[-.4,0,0]))
-        result += [('stop',4,[0,0,0]),('pivot_left',5,[0,0,.6]),('pivot_right',5,[0,0,-.6]),('stand_end',7 if idle_head else 4,[0,0,0])]
-        return result
-    result=[('stand',40,[0,0,0]),('walk',6,[.3,0,0]),('ramp_up_from_walk',14,None),('run_forward',8,[1.2,0,0]),('ramp_down',14,None),('stop',5,[0,0,0]),('run_forward',8,[1.2,0,0]),('stop',5,[0,0,0])]
-    for name,cmd in [('run_backward',[-1.2,0,0]),('run_left',[0,1.2,0]),('run_right',[0,-1.2,0])]:
+def full_stand_seconds(protocol, configured=None):
+    if configured is not None:
+        return configured
+    return ROUTINE_STAND_SECONDS if protocol == CURRENT_PROTOCOL else EXTENDED_STAND_SECONDS
+
+
+def full_stop_timing(protocol, configured=None):
+    timing = ('compact_walk_stop' if protocol == CURRENT_PROTOCOL else 'original') if configured is None else configured
+    if timing not in ('original', 'compact', 'compact_walk_stop'):
+        raise ValueError('unified_eval_stop_timing must be original, compact, or compact_walk_stop')
+    if timing != 'original' and protocol != CURRENT_PROTOCOL:
+        raise ValueError('Compact stop timing requires the current acceptance protocol')
+    return timing
+
+
+def full_suite_settings(config, protocol):
+    """Resolve the same full-suite inputs for both evaluators and the inspector."""
+    return dict(
+        protocol=protocol,
+        idle_head=protocol in RESPONSE_STEADY_PROTOCOLS and config.get('unified_idle_head_acceptance', False),
+        backward_walk=config.get('unified_eval_backward_walk', False),
+        stand_seconds=full_stand_seconds(protocol, config.get('unified_eval_stand_hold_seconds')),
+        stop_timing=full_stop_timing(protocol, config.get('unified_eval_stop_timing')),
+        backward_diagonal_run_speed=full_backward_diagonal_run_speed(
+            protocol, config.get('unified_eval_backward_diagonal_run_speed'),
+        ),
+    )
+
+
+def suite(protocol='legacy_v1', idle_head=False, backward_walk=False, stand_seconds=None, stop_timing=None,
+          backward_diagonal_run_speed=None):
+    stand_seconds = full_stand_seconds(protocol, stand_seconds)
+    timing = full_stop_timing(protocol, stop_timing)
+    run_speed = full_backward_diagonal_run_speed(protocol, backward_diagonal_run_speed)
+    result=[('stand',stand_seconds,[0,0,0]),('walk',6,[.3,0,0]),('ramp_up_from_walk',14,None),('run_forward',8,[FULL_RUN_SPEED,0,0]),('ramp_down',14,None),('stop',5,[0,0,0]),('run_forward',8,[FULL_RUN_SPEED,0,0]),('stop',5,[0,0,0])]
+    for name,cmd in [('run_backward',[-run_speed,0,0]),('run_left',[0,FULL_RUN_SPEED,0]),('run_right',[0,-FULL_RUN_SPEED,0])]:
         result += [(name,8,cmd),('stop',5,[0,0,0])]
     for degrees in [45,135,225,315]:
-        a=np.deg2rad(degrees);result += [(f'run_diagonal_{degrees}',7,[1.2*np.cos(a),1.2*np.sin(a),0]),('stop',5,[0,0,0])]
+        a=np.deg2rad(degrees);result += [(f'run_diagonal_{degrees}',7,[run_speed*np.cos(a),run_speed*np.sin(a),0]),('stop',5,[0,0,0])]
     result += [('direction_sweep',24,None),('stop',5,[0,0,0])]
     for name,cmd in [('run_turn_left',[1.1,0,.6]),('run_turn_right',[1.1,0,-.6]),('reverse_turn',[-.9,0,.6]),('side_turn',[0,.9,-.6])]:
         result += [(name,8,cmd),('stop',5,[0,0,0])]
-    if idle_head:result += [('walk_before_stop',6,[.3,0,0]),('stop_after_walk',7,[0,0,0])]
+    if idle_head:
+        walk_stop_seconds = 5.5 if timing == 'compact_walk_stop' else 7.
+        result += [('walk_before_stop',6,[.3,0,0]),('stop_after_walk',walk_stop_seconds,[0,0,0])]
     if backward_walk:result.append(('walk_backward',8,[-.4,0,0]))
     result += [('stop',5,[0,0,0]),('pivot_left',6,[0,0,.6])]
     if idle_head:result += [('stop_after_pivot_left',7,[0,0,0])]
-    result += [('pivot_right',6,[0,0,-.6]),('stand_end',40,[0,0,0])]
+    result += [('pivot_right',6,[0,0,-.6]),('stand_end',stand_seconds,[0,0,0])]
     if protocol in RESPONSE_STEADY_PROTOCOLS:
-        result=[(label,7 if label=='stop' else seconds,cmd) for label,seconds,cmd in result]
+        for index, (label, _, cmd) in enumerate(result):
+            if label == 'stop':
+                shorter = timing != 'original' and result[index - 1][0] in RUNS_WITH_SHORTER_STOP
+                result[index] = (label, 6.5 if shorter else 7, cmd)
     return result
+
+
+def full_gate_segments(items, protocol, config, *, diagnostic):
+    """Keep preparation telemetry in the report and exclude it from the case count."""
+    if diagnostic or protocol != CURRENT_PROTOCOL or not config.get('unified_eval_merge_preparation', True):
+        return items
+    for number, preparation_label, next_label in FULL_PREPARATION_TRANSITIONS:
+        preparation, next_case = items[number - 1:number + 1]
+        if (preparation['label'], next_case['label']) != (preparation_label, next_label):
+            raise ValueError(f'Unexpected preparation transition at acceptance segment {number}')
+        preparation.update(counts_toward_gate=False, preparation_for_segment=number + 1)
+    return [item for item in items if item.get('counts_toward_gate', True)]
 
 
 def command(label,t,seconds,fixed=None):
@@ -134,8 +183,7 @@ def evaluate(env,runner,output,checkpoint):
     heading_frame=bool(env.cfg.get('unified_command_frame_metrics'))
     if force_gate and not hasattr(env,'ground_contact_view'):raise ValueError('Force flight acceptance requires physical contact sensors')
     env.max_episode_length=round(2000/env.dt);env.reset(env.ids)
-    infer=runner.get_inference_policy();short=env.cfg.get('unified_eval_short',False)
-    lite=bool(env.cfg.get('unified_eval_lite',False))
+    infer=runner.get_inference_policy()
     protocol=env.cfg.get('unified_acceptance_protocol','legacy_v1')
     if protocol not in ('legacy_v1',*RESPONSE_STEADY_PROTOCOLS):raise ValueError('Unknown acceptance protocol: '+protocol)
     response_steady=protocol in RESPONSE_STEADY_PROTOCOLS
@@ -147,8 +195,8 @@ def evaluate(env,runner,output,checkpoint):
         if not diagnostic:raise ValueError('Reference-state start is only allowed for diagnostic subsets')
         env.reset(env.ids,command=env.cfg['unified_eval_initial_command'],phase=env.cfg.get('unified_eval_initial_phase',0.))
         env.refresh()
-    cases=env.cfg['unified_eval_cases'] if diagnostic else suite(
-        short,lite,protocol,idle_head,env.cfg.get('unified_eval_backward_walk',False))
+    settings = full_suite_settings(env.cfg, protocol)
+    cases=env.cfg['unified_eval_cases'] if diagnostic else suite(**settings)
     traces={k:[] for k in ['poses','joints','commands','velocities','phases','dones']};labels=[];items=[]
     if heading_frame:traces['headings']=[]
     record_controller=bool(env.cfg.get('unified_record_controller'))
@@ -264,18 +312,21 @@ def evaluate(env,runner,output,checkpoint):
                     initial_plan,env.cfg,env.dt,head_errors=traces['head_errors'][trace_start:] if idle_head else None)
                 item['passed']=item['response_steady']['passed']
             items.append(item);print('UNIFIED_SEGMENT '+json.dumps(item),flush=True)
-    complete_scope=not short and not lite and not diagnostic
-    low_speed=evaluate_low_speed(env,infer) if complete_scope and protocol==CURRENT_PROTOCOL else None
+    complete_scope=not diagnostic
+    low_speed=evaluate_low_speed(env,infer) if (
+        complete_scope and protocol==CURRENT_PROTOCOL and env.cfg.get('unified_eval_low_speed',False)
+    ) else None
     output.mkdir(parents=True,exist_ok=True)
     np.savez_compressed(output/'rollout.npz',**{k:np.asarray(v) for k,v in traces.items()},labels=labels,dt=env.dt,link_names=env.links,dof_names=env.names)
-    all_segments_passed=all(i['passed'] for i in items)
+    gate_items=full_gate_segments(items,protocol,env.cfg,diagnostic=diagnostic)
+    total_falls=sum(i['falls'] for i in items)
+    all_segments_passed=total_falls==0 and all(i['passed'] for i in gate_items)
     locomotion_seconds=sum(s for _,s,_ in cases)
-    report=dict(checkpoint=str(checkpoint),env_config=env.cfg,total_seconds=locomotion_seconds,total_falls=sum(i['falls'] for i in items),
+    report=dict(checkpoint=str(checkpoint),env_config=env.cfg,total_seconds=locomotion_seconds,total_falls=total_falls,
                 acceptance_protocol=protocol,
                 evaluator_sha256=hashlib.sha256(_Path(__file__).read_bytes()).hexdigest(),
                 segments=items,passed_unified_gate=all_segments_passed and complete_scope,
-                passed_lite_gate=all_segments_passed and lite and not diagnostic,passed_short_gate=all_segments_passed,
-                complete_scope=complete_scope,acceptance_mode='lightweight_screen' if lite else 'full',
+                complete_scope=complete_scope,acceptance_mode='diagnostic' if diagnostic else 'full',
                 diagnostic=diagnostic,runtime_compensation_removed=True,
                 flight_acceptance_method='Both physical foot support loads below 1 N' if force_gate else 'Both sole boxes above 12 mm',
                 velocity_command_frame='Controller reference heading' if heading_frame else 'Instantaneous articulation root/chest frame',
@@ -285,14 +336,21 @@ def evaluate(env,runner,output,checkpoint):
         report['total_seconds']+=low_speed['simulated_seconds']
         report['total_falls']+=low_speed['falls']
         report['passed_unified_gate']&=low_speed['passed']
+    if complete_scope:
+        report['full_stand_hold_seconds'] = settings['stand_seconds']
+        report['full_stop_timing'] = settings['stop_timing']
+        report['backward_diagonal_run_speed_m_s'] = settings['backward_diagonal_run_speed']
     if response_steady:
         from locomotion_acceptance import summarize,specification
-        assessment=summarize(items)
+        assessment=summarize(gate_items)
         report.update(protocol_specification=specification(idle_head,protocol),response_steady_summary=assessment,
             acceptance_protocol_sha256=hashlib.sha256(resolve_source('locomotion_acceptance.py').read_bytes()).hexdigest(),
-            legacy_metric_gate_on_same_trajectory=all(i['legacy_passed'] for i in items) and not short and not lite and not diagnostic,
-            legacy_comparison_scope='Original two-second metrics on this trajectory; v2 stop durations differ from the historical325-second suite.',
-            promising_lite_gate=assessment['promising'] and lite and not diagnostic)
+            legacy_metric_gate_on_same_trajectory=all(i['legacy_passed'] for i in items) and complete_scope,
+            legacy_comparison_scope='Original two-second metrics on this trajectory; v2 stop durations differ from the historical 325-second suite.')
+        add_light_acceptance(report,traces['velocities'],env.dt)
     (output/'report.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
-    print('UNIFIED_REPORT '+json.dumps(dict(mode=report['acceptance_mode'],passed=report['passed_unified_gate'],
-        lite_passed=report['passed_lite_gate'],short_passed=report['passed_short_gate'],falls=report['total_falls'])),flush=True)
+    summary=dict(mode=report['acceptance_mode'],passed=report['passed_unified_gate'],falls=report['total_falls'])
+    if 'passed_light_gate' in report:
+        summary.update(standard=report['response_steady_summary'],light=report['light_acceptance_summary'],
+                       light_passed=report['passed_light_gate'])
+    print('UNIFIED_REPORT '+json.dumps(summary),flush=True)

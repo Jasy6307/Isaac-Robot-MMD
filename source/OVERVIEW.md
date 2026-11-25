@@ -33,7 +33,7 @@ flowchart LR
 | 功能 | 入口 | 配套说明 |
 | --- | --- | --- |
 | G1 回放、映射 UI、H5 导出 | [g1_vmd_0_replay.py](train_workflow/g1_vmd_0_replay.py) | [共享库导航](train_workflow/utils/README.md) |
-| G1 训练 | [g1_vmd_1_train.py](train_workflow/g1_vmd_1_train.py) | [Auto-Jump 工作流](train_workflow/AUTO_JUMP_TRAINING.md) |
+| G1 训练 | [g1_vmd_1_train.py](train_workflow/g1_vmd_1_train.py) | [G1 舞蹈跟踪](train_workflow/AUTO_JUMP_TRAINING.md) |
 | G1 策略验证与播放 | [g1_vmd_2_eval.py](train_workflow/g1_vmd_2_eval.py) | [部署包](train_workflow/DEPLOYMENT.md) |
 | VMD → H5 → 视频流水线 | [g1_vmd_pipeline.py](train_workflow/g1_vmd_pipeline.py) | [根 README](../README.md) |
 | PMX 转换、动作烘焙、资产查看 | [convert_pmx.py](pmx_prototype/convert_pmx.py)、[load_vmd.py](pmx_prototype/load_vmd.py)、[view_character.py](pmx_prototype/view_character.py) | [PMX 总览](pmx_prototype/README.md) |

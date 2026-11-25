@@ -119,11 +119,14 @@ def sample(motion,phase,commands,config,command_rate=None):
     return result
 
 
-def sample_vectorized(motion,phase,commands,config,command_rate=None):
+def sample_vectorized(motion,phase,commands,config,command_rate=None,*,joint_positions_only=False):
     """Identical reference math with the six clip reads in one tensor batch."""
     ids,weights,frequency=components(motion,commands,config)
     n,k=ids.shape;cycles=motion.gait_cycles[ids]
     phases=(phase[:,None]+motion.gait_offsets[ids])/cycles
+    if joint_positions_only:
+        joints=motion.sample(phases.flatten(),ids.flatten(),fields=('q',))['q'].reshape(n,k,-1)
+        return {'q': (weights[:,:,None]*joints).sum(1)}
     raw=motion.sample(phases.flatten(),ids.flatten())
     raw.pop('gait_sin',None);raw.pop('gait_cos',None)
     states={name:value.reshape((n,k)+value.shape[1:]) for name,value in raw.items()}
@@ -157,6 +160,11 @@ def sample_vectorized(motion,phase,commands,config,command_rate=None):
 
 def sample_commands(env,ids,on_reset=False):
     n=len(ids);device=env.device;cfg=env.cfg
+    speed_cap=None if env.evaluation else cfg.get('unified_backward_diagonal_speed_cap')
+    if speed_cap is not None:
+        speed_cap=float(speed_cap)
+        if not np.isfinite(speed_cap) or speed_cap<=0.:
+            raise ValueError('Backward and diagonal sampling speed cap must be finite and positive')
     progress=min(1.,max(0.,(getattr(env,'iteration',0)-cfg.get('unified_curriculum_start',0))/cfg.get('unified_curriculum_iterations',500)))
     maximum=cfg.get('unified_initial_max_speed',.4)+(cfg['max_speed']-cfg.get('unified_initial_max_speed',.4))*progress
     angle=torch.rand(n,device=device)*2*torch.pi;speed=torch.rand(n,device=device)*maximum
@@ -298,6 +306,16 @@ def sample_commands(env,ids,on_reset=False):
             apply_pivot_stop_pool(env, ids, previous_yaw, on_reset)
         if on_reset and cfg.get('unified_stand_reset_env_fraction', 0.):
             apply_standing_resets(env, ids)
+    if speed_cap is not None:
+        planar=env.commands[ids,:2]
+        forward,lateral=planar.unbind(-1)
+        # Compass and dedicated samples use sin/cos, which leave tiny residuals at the axes.
+        axis_tolerance=1e-4
+        restricted=(forward < -axis_tolerance)|((forward > axis_tolerance)&(lateral.abs() > axis_tolerance))
+        speed=planar.norm(dim=-1)
+        capped=restricted&(speed>speed_cap)
+        scale=torch.where(capped,speed_cap/speed.clamp_min(speed_cap),1.)
+        env.commands[ids,:2]=planar*scale[:,None]
     if on_reset:
         from command_plan import limit_yaw_command
         env.continuous_ref_commands[ids]=limit_yaw_command(env.commands[ids],cfg)

@@ -52,7 +52,7 @@ def cast_shadow_reference(points, triangles, direction):
     return result
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def cast_shadow(points, triangles, direction):
     """Same ray tests with per-triangle constants and conservative 2D bounds.
 

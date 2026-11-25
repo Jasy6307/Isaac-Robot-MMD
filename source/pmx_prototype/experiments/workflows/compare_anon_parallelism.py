@@ -28,8 +28,7 @@ def launch(run, output, config, envs, iterations, checkpoint=None, keep_budget=F
     command = [str(PYTHON), '-u', str(ENTRY), '--mode', 'train', '--headless', '--no-acceptance-video',
                '--num-envs', str(envs), '--iterations', str(iterations), '--seed', '42',
                '--run-dir', str(run), '--experiment-output', str(output),
-               '--scratch-target', 'latest_unified', '--acceptance-interval', str(750 if envs == 8192 else 500),
-               '--scratch-acceptance-mode', 'staged', '--scratch-full-interval', str(3750 if envs == 8192 else 2500),
+               '--scratch-target', 'latest_unified', '--acceptance-interval', str(3750 if envs == 8192 else 2500),
                '--config-override', str(config)]
     command += ['--scratch-continuation', '--checkpoint', str(checkpoint)] if checkpoint else ['--from-scratch']
     if keep_budget:

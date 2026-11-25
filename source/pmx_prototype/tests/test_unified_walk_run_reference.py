@@ -10,7 +10,7 @@ from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 import unittest
 from types import SimpleNamespace
 import torch
-from unified_walk_run_reference import components,sample,velocity_at_offset,sample_commands,heading_velocity
+from unified_walk_run_reference import components,sample,sample_vectorized,velocity_at_offset,sample_commands,heading_velocity
 from full_motion_reference import FullMotionReference
 
 class UnifiedReferenceTests(unittest.TestCase):
@@ -119,5 +119,8 @@ class UnifiedReferenceTests(unittest.TestCase):
         self.assertTrue(torch.allclose(corrected['qd'],numerical,atol=1e-5))
         vectorized=sample(m,phase,cmd,{'unified_reference_derivatives':True,'unified_vectorized_reference':True},rate)
         for key in corrected:self.assertTrue(torch.allclose(corrected[key],vectorized[key],atol=1e-5))
+        joints=sample_vectorized(m,phase,cmd,{'unified_reference_derivatives':True},rate,joint_positions_only=True)
+        self.assertEqual(set(joints),{'q'})
+        self.assertTrue(torch.equal(joints['q'],vectorized['q']))
 
 if __name__=='__main__':unittest.main()

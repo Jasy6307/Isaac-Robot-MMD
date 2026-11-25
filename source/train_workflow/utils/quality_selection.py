@@ -26,6 +26,7 @@ DEFAULT_LIMITS = dict(leg_p95=.30, height_p95=.12, tilt_p95=.35,
     excess_height_window=.10, excess_vz_window=.60,
     takeoff_offset_s=.20, landing_offset_s=.25)
 DEFAULT_SWING_LIMITS = dict(early_contact_s=.4, early_contact_fraction=.9)
+DEFAULT_SWING_CONTACT_SOLE_RANGE_M = (-.005, .010)
 # The generic global leg gate intentionally excludes jump phases.  Keep a
 # separate event gate so a rollout cannot pass solely because it stayed
 # upright while its jump legs diverged from the reference.
@@ -42,10 +43,27 @@ def reference_key(report):
     return hashlib.sha256(json.dumps(contract, sort_keys=True, allow_nan=False).encode()).hexdigest()
 
 
+def _reference_sole_heights(report):
+    heights = np.asarray(report.get("reference_sole_heights_m"), dtype="<f8")
+    if (heights.shape != (report.get("frames"), 2) or not len(heights) or
+            not np.isfinite(heights).all() or not math.isfinite(report.get("fps", 0.)) or report["fps"] <= 0):
+        raise ValueError("Swing contact tolerance requires finite reference sole heights and a source frame rate")
+    return heights
+
+
+def _default_swing_contact_tolerance(report):
+    heights = _reference_sole_heights(report)
+    return dict(sole_height_range_m=list(DEFAULT_SWING_CONTACT_SOLE_RANGE_M),
+                reference_sole_sha256=hashlib.sha256(heights.tobytes()).hexdigest())
+
+
 def generic_profile(report):
-    return dict(version=1, reference_key=reference_key(report), kind="generic_engineering",
-                limits=dict(DEFAULT_LIMITS), swing_limits=dict(DEFAULT_SWING_LIMITS),
-                windows={}, events={}, provenance=[])
+    profile = dict(version=1, reference_key=reference_key(report), kind="generic_engineering",
+                   limits=dict(DEFAULT_LIMITS), swing_limits=dict(DEFAULT_SWING_LIMITS),
+                   windows={}, events={}, provenance=[])
+    if "reference_sole_heights_m" in report:
+        profile["swing_contact_tolerance"] = _default_swing_contact_tolerance(report)
+    return profile
 
 
 def resolve_profile(report, path=None):
@@ -55,6 +73,9 @@ def resolve_profile(report, path=None):
     if path and not target.exists():
         raise FileNotFoundError(target)
     profile.setdefault("swing_limits", dict(DEFAULT_SWING_LIMITS))
+    # Keep explicitly selected and checkpoint-saved profiles reproducible.
+    if path is None and "reference_sole_heights_m" in report and "swing_contact_tolerance" not in profile:
+        profile["swing_contact_tolerance"] = _default_swing_contact_tolerance(report)
     return validate_profile(report,profile)
 
 
@@ -72,6 +93,16 @@ def validate_profile(report,profile):
             any(not isinstance(v, (int,float)) or not math.isfinite(v) or v<=0 for v in swing.values()) or
             swing.get("early_contact_fraction", .25)>1):
         raise ValueError("Invalid swing contact limits")
+    if "swing_contact_tolerance" in profile:
+        rule = profile["swing_contact_tolerance"]
+        band = rule.get("sole_height_range_m") if isinstance(rule, dict) else None
+        if (not isinstance(band, list) or len(band) != 2 or
+                any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in band) or
+                not band[0] <= 0. <= band[1]):
+            raise ValueError("Invalid swing contact sole height range")
+        heights = _reference_sole_heights(report)
+        if rule.get("reference_sole_sha256") != hashlib.sha256(heights.tobytes()).hexdigest():
+            raise ValueError("Swing contact tolerance differs from the reference sole geometry")
     return profile
 
 
@@ -119,12 +150,23 @@ def assess_trace(trace, report, profile, *, full=False):
     # Local sustained failures cannot hide in whole-dance averages. Height
     # collapse keeps 150 ms tolerance; contact tolerance comes from the profile.
     swing = get("swing_required") > .5
+    early_contact = get("swing_early_contact")
+    rule = profile.get("swing_contact_tolerance")
+    if rule is not None:
+        heights = _reference_sole_heights(report)
+        # Match swing_metrics' source-frame lookup, including its float32 clock.
+        frame = (t.astype(np.float32) * np.float32(report["fps"])).astype(np.int64)
+        soles = heights[np.clip(frame, 0, len(heights) - 1)]
+        low, high = rule["sole_height_range_m"]
+        near_ground = ((soles >= low) & (soles <= high)).all(axis=1)
+        metrics["swing_contact_tolerated_samples"] = int(np.count_nonzero(swing & (early_contact > .5) & near_ground))
+        early_contact = np.where(near_ground, 0., early_contact)
     swing_limits = dict(DEFAULT_SWING_LIMITS, **profile.get("swing_limits", {}))
     metrics["swing_samples"] = int(swing.sum())
     metrics["swing_error_p95_m"] = _p95(get("swing_error")[swing])
     for name, bad, limit in (
         ("swing_height_failure_s", swing & (get("swing_error") > .08), .15),
-        ("swing_early_contact_s", swing & (get("swing_early_contact") > .5), swing_limits["early_contact_s"]),
+        ("swing_early_contact_s", swing & (early_contact > .5), swing_limits["early_contact_s"]),
     ):
         value = _longest(bad, t, dt)
         metrics[name] = value
@@ -149,7 +191,7 @@ def assess_trace(trace, report, profile, *, full=False):
         selected_swing = inside & swing
         if selected_swing.sum() >= max(2, round(.2/dt)):
             row["swing_error_window_m"] = float(get("swing_error")[selected_swing].mean())
-            row["swing_early_contact_fraction"] = float(get("swing_early_contact")[selected_swing].mean())
+            row["swing_early_contact_fraction"] = float(early_contact[selected_swing].mean())
             check("swing_error_window_m", row["swing_error_window_m"], .06, float(start))
             check("swing_early_contact_fraction", row["swing_early_contact_fraction"], swing_limits["early_contact_fraction"], float(start))
         result["windows"].append(row)

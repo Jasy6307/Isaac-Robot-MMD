@@ -7,6 +7,8 @@ from isaaclab.utils import configclass
 
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlMLPModelCfg, RslRlPpoAlgorithmCfg
 
+from source.train_workflow.task_ids import G1_TRAIN_EXPERIMENT_NAME
+
 
 @configclass
 class G1VmdReplayPPORunnerCfg(RslRlOnPolicyRunnerCfg):
@@ -134,7 +136,7 @@ class G1VmdAutoJumpPPORunnerCfg(G1VmdTrainC1PPORunnerCfg):
 class G1VmdAutoJumpConditionalPPORunnerCfg(G1VmdAutoJumpPPORunnerCfg):
     def __post_init__(self):
         super().__post_init__()
-        self.experiment_name="g1_auto_jump_conditional"
+        self.experiment_name = G1_TRAIN_EXPERIMENT_NAME
         self.actor.class_name="source.train_workflow.utils.exact_phase_policy:ExactPhaseResidualPolicy"
         self.actor.freeze_base=False
         self.actor.freeze_normalization=False

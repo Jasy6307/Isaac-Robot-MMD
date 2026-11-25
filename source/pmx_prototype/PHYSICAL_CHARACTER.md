@@ -69,6 +69,20 @@ Isaac Sim 6.1 / PhysX CPU、240 Hz 下，三种模式全部通过：
 
 汇总见 `output/anon_physical/validation_summary.json`；每种模式保留对应报告、完整轨迹和截图。
 
+## 31 自由度身体质量对照
+
+在已有 31 自由度训练或评估配置中加入 `"body_mass_profile": "plagenhoef_female_v1"`，
+也可将 [plagenhoef_female_body_v1.json](configs/training/unified/plagenhoef_female_body_v1.json)
+作为 31 自由度 checkpoint 的 `--config-override`。训练保存的 `env_config.json` 会记录该配置及实际资产路径。
+
+这组参数按 [Plagenhoef 等的女性样本](https://courses.grainger.illinois.edu/me481/sp2021/Anthro1.pdf#page=3)
+和全身 50.64 kg 换算。保留辅助刚体质量，15 个主刚体采用配平后的新质量，例如每侧大腿主刚体为
+5.83 kg，加上两个髋部辅助刚体后为 5.95 kg。质心、惯量主轴和碰撞形状沿用 31 自由度基线，
+每个改动刚体的三个主惯量按自身新旧质量比缩放。
+
+资产写入 `output/anon_physical_v4_plagenhoef_female_v1/`。这是固定几何下的质量和惯量对照，
+采用了人体统计质量分配与原简化几何的惯量模型。
+
 ## 策略播放中的外观物理
 
 上述 v1 身体资产的验证仍只涵盖身体。现在可通过 `play_anon_policy.py` 加载 v5 策略，

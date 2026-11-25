@@ -13,7 +13,8 @@ import numpy as np
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
 from source.train_workflow.utils.quality_selection import (
-    TRACE_FIELDS,INDEX,generic_profile,assess_trace,calibrate_profile,QualitySelection,resolve_profile,continuous_coverage)
+    TRACE_FIELDS,INDEX,generic_profile,assess_trace,calibrate_profile,QualitySelection,resolve_profile,continuous_coverage,
+    validate_profile)
 from source.train_workflow.utils.auto_jump_training import _train_auto_impl,train_auto,first_probe_done
 
 
@@ -70,6 +71,46 @@ class GateTests(unittest.TestCase):
         self.trace[[69,79], INDEX["swing_early_contact"]] = 0
         r = assess_trace(self.trace, self.report, self.profile, full=True)
         self.assertIn("swing_early_contact_fraction", [f["check"] for f in r["failures"]])
+
+    def test_reference_sole_tolerance_covers_only_near_ground_contact(self):
+        report = dict(self.report, fps=30., frames=90, reference_sole_heights_m=[[0., .008]] * 90)
+        self.trace[60:90, INDEX["swing_required"]] = 1.
+        self.trace[60:90, INDEX["swing_early_contact"]] = 1.
+        original = self.trace.copy()
+        profile = generic_profile(report)
+        result = assess_trace(self.trace, report, profile, full=True)
+        self.assertTrue(result["passed"], result["failures"])
+        self.assertEqual(result["metrics"]["swing_contact_tolerated_samples"], 30)
+        self.assertEqual(result["metrics"]["swing_early_contact_s"], 0.)
+        np.testing.assert_array_equal(self.trace, original)
+
+        for sole_row in ([0., .011], [.02, .004], [-.006, .004]):
+            with self.subTest(sole_row=sole_row):
+                other = dict(report, reference_sole_heights_m=[sole_row] * 90)
+                checks = [f["check"] for f in assess_trace(self.trace, other, generic_profile(other), full=True)["failures"]]
+                self.assertIn("swing_early_contact_s", checks)
+                self.assertIn("swing_early_contact_fraction", checks)
+
+        self.trace[60:80, INDEX["swing_error"]] = .15
+        self.trace[31:36, INDEX["contact_left"]] = 1.
+        checks = [f["check"] for f in assess_trace(self.trace, report, profile, full=True)["failures"]]
+        self.assertIn("swing_height_failure_s", checks)
+        self.assertIn("missed_sustained_flight", checks)
+
+    def test_saved_legacy_profile_and_new_sole_geometry_binding(self):
+        reference = dict(self.report, fps=30., frames=90)
+        legacy = generic_profile(reference)
+        report = dict(reference, reference_sole_heights_m=[[.001, .002]] * 90)
+        self.assertEqual(validate_profile(report, legacy), legacy)
+        with tempfile.TemporaryDirectory(dir=ROOT/"output") as directory:
+            path = Path(directory) / "profile.json"
+            path.write_text(json.dumps(legacy), encoding="utf-8")
+            self.assertEqual(resolve_profile(report, path), legacy)
+        profile = resolve_profile(report)
+        self.assertEqual(profile["swing_contact_tolerance"]["sole_height_range_m"], [-.005, .010])
+        other = dict(report, reference_sole_heights_m=[[.002, .003]] * 90)
+        with self.assertRaisesRegex(ValueError, "reference sole geometry"):
+            validate_profile(other, profile)
 
     def test_reference_specific_visual_contact_tolerance_keeps_other_gates(self):
         profile=copy.deepcopy(self.profile)

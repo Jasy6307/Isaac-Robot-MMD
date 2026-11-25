@@ -1,0 +1,4 @@
+{
+  "environment_backend": "lab-direct",
+  "unified_eval_parallel_envs": 4
+}

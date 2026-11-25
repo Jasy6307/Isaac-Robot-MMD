@@ -9,7 +9,6 @@ Example
 .. code-block:: powershell
 
     python source/train_workflow/g1_vmd_2_eval.py `
-      --task Isaac-G1-Vmd-Train-C1-v0 `
       --dance IRIS_OUT `
       --window_frames 230 `
       --num_envs 16
@@ -27,8 +26,6 @@ Passing ``--dance`` limits this eval run to that dance; other motions are not lo
 
 from __future__ import annotations
 
-from source import sim_compat
-
 import argparse
 import glob
 import math
@@ -41,19 +38,21 @@ _WORKSPACE_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", ".."))
 if _WORKSPACE_ROOT not in sys.path:
     sys.path.insert(0, _WORKSPACE_ROOT)
 
+from source import sim_compat  # noqa: E402
+from source.train_workflow.task_ids import G1_TRAIN_TASK_ID, normalize_g1_train_task_id  # noqa: E402
+from source.train_workflow.utils.checkpoints import checkpoint_search_roots, resolve_training_checkpoint  # noqa: E402
 from source.train_workflow.utils.motion.resolve import (  # noqa: E402
     infer_dance_name_from_motion_path,
     normalize_dance_stem,
     resolve_dance_h5_by_name,
-    resolve_training_log_root,
 )
 from isaaclab.app import AppLauncher  # noqa: E402
 
 parser = argparse.ArgumentParser(description="Play a G1 dance tracking checkpoint.")
 parser.add_argument("--eval_motion_start", type=float, default=None,
-                    help="Multi/Auto-jump task: evaluate a 2.6s clip at this source time; default full motion.")
+                    help="Evaluate a 2.6s clip at this source time; default full motion.")
 parser.add_argument("--eval_motion_starts", type=float, nargs="+", default=None,
-                    help="Multi-jump task: cycle clips; repeat each seed across the clip list.")
+                    help="Cycle clips, repeating each seed across the clip list.")
 parser.add_argument("--jump_diagnostics", action="store_true",
                     help="Record physics-step jump telemetry and export CSV/NPZ/PNG per rollout.")
 parser.add_argument("--jump_diagnostics_dir", default="output/jump-diagnostics")
@@ -66,7 +65,9 @@ parser.add_argument("--deployment_bundle", type=str, default=None,
                     help="Load a trusted single-file deployment bundle without reading H5.")
 parser.add_argument("--export_deployment_bundle", type=str, default=None,
                     help="Export checkpoint, current reference and effective configs, then exit.")
-parser.add_argument("--task", type=str, default="Isaac-G1-Vmd-Train-C1-v0")
+parser.add_argument("--task", type=normalize_g1_train_task_id, choices=(G1_TRAIN_TASK_ID,),
+                    default=G1_TRAIN_TASK_ID,
+                    help="G1 dance tracking task (default). Deployment bundles use their embedded configuration.")
 parser.add_argument("--num_envs", type=int, default=16)
 parser.add_argument(
     "--live_anon",
@@ -106,7 +107,7 @@ parser.add_argument(
     "--checkpoint",
     type=str,
     default=None,
-    help="Explicit checkpoint .pt file. If omitted, the latest under logs/ is used.",
+    help="Checkpoint path, or a file name within --load_run or --checkpoint_dir.",
 )
 parser.add_argument("--load_run", type=str, default=None)
 parser.add_argument("--checkpoint_dir", type=str, default=None,
@@ -383,9 +384,8 @@ from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 
 import isaaclab.sim as sim_utils  # noqa: E402
 from isaaclab.assets import AssetBaseCfg  # noqa: E402
-from isaaclab.envs import ManagerBasedRLEnvCfg  # noqa: E402
+from isaaclab.envs import ManagerBasedRLEnv, ManagerBasedRLEnvCfg  # noqa: E402
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper  # noqa: E402
-from isaaclab_tasks.utils import get_checkpoint_path  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry, parse_env_cfg  # noqa: E402
 
 import source.my_task  # noqa: F401, E402
@@ -797,18 +797,13 @@ def _collect_available_dances() -> list[str]:
 
 
 def _list_policy_paths_for_dance(experiment_name: str, dance_name: str) -> list[str]:
-    root = resolve_training_log_root(experiment_name, dance_name)
     out: list[str] = []
-    if not os.path.isdir(root):
-        return out
-    for dirpath, _dirs, files in os.walk(root):
-        for name in files:
-            low = name.lower()
-            if not low.endswith(".pt"):
-                continue
-            if not (low.startswith("model_") or low == "model.pt"):
-                continue
-            out.append(os.path.abspath(os.path.join(dirpath, name)))
+    for root in checkpoint_search_roots(experiment_name, dance_name):
+        for dirpath, _dirs, files in os.walk(root):
+            for name in files:
+                low = name.lower()
+                if low.endswith(".pt") and (low.startswith("model_") or low == "model.pt"):
+                    out.append(os.path.abspath(os.path.join(dirpath, name)))
     out.sort(key=lambda p: os.path.getmtime(p), reverse=True)
     return out
 
@@ -836,31 +831,31 @@ def _collect_policy_entries(experiment_name: str, dance_names: list[str]) -> lis
     return entries
 
 
-def _resolve_latest_checkpoint_for_dance(
+def _resolve_checkpoint_for_dance(
     agent_cfg: RslRlOnPolicyRunnerCfg,
     dance_name: str,
+    *,
+    checkpoint: str | None = None,
 ) -> str:
-    log_root_path = resolve_training_log_root(agent_cfg.experiment_name, dance_name)
-    from source.train_workflow.utils.checkpoints import latest_checkpoint
-    if args_cli.checkpoint_dir:
-        return latest_checkpoint(args_cli.checkpoint_dir)
-    if args_cli.load_run:
-        candidate_dir = os.path.join(log_root_path, args_cli.load_run)
-        if os.path.isdir(candidate_dir):
-            return latest_checkpoint(candidate_dir)
-        # A requested run must never silently fall back to another run.
-        return os.path.abspath(get_checkpoint_path(log_root_path, args_cli.load_run, agent_cfg.load_checkpoint))
-    run_dir = args_cli.load_run if args_cli.load_run is not None else agent_cfg.load_run
+    if checkpoint and not (args_cli.load_run or args_cli.checkpoint_dir):
+        # Preserve the eval CLI's relative path interpretation without a run selector.
+        checkpoint = os.path.abspath(checkpoint)
     try:
-        return os.path.abspath(get_checkpoint_path(log_root_path, run_dir, agent_cfg.load_checkpoint))
-    except Exception:
-        cands = _list_policy_paths_for_dance(agent_cfg.experiment_name, dance_name)
-        if cands:
-            return cands[0]
-        raise ValueError(
-            "No checkpoint found for dance "
-            f"{dance_name!r} under {log_root_path}; train first or select a policy manually."
+        return resolve_training_checkpoint(
+            agent_cfg.experiment_name,
+            dance_name,
+            load_run=args_cli.load_run,
+            checkpoint=checkpoint,
+            checkpoint_dir=args_cli.checkpoint_dir,
+            run_pattern=agent_cfg.load_run,
+            checkpoint_pattern=agent_cfg.load_checkpoint,
         )
+    except FileNotFoundError:
+        if not (checkpoint or args_cli.load_run or args_cli.checkpoint_dir):
+            candidates = _list_policy_paths_for_dance(agent_cfg.experiment_name, dance_name)
+            if candidates:
+                return candidates[0]
+        raise
 
 
 class _PolicyPlaybackGate:
@@ -1396,22 +1391,21 @@ def main() -> None:
     elif args_cli.pd_profile is None:
         args_cli.pd_profile = "deploy"
 
-    env_cfg: ManagerBasedRLEnvCfg = (
-        _DEPLOYMENT_BUNDLE["env_cfg"] if _DEPLOYMENT_BUNDLE is not None
-        else parse_env_cfg(args_cli.task)
-    )
+    env_cfg: ManagerBasedRLEnvCfg
+    agent_cfg: RslRlOnPolicyRunnerCfg
+    if _DEPLOYMENT_BUNDLE is None:
+        env_cfg = parse_env_cfg(args_cli.task)
+        agent_cfg = sim_compat.prepare_rsl_rl_cfg(
+            load_cfg_from_registry(args_cli.task, "rsl_rl_cfg_entry_point")
+        )
+    else:
+        env_cfg = _DEPLOYMENT_BUNDLE["env_cfg"]
+        agent_cfg = _DEPLOYMENT_BUNDLE["agent_cfg"]
     # Timing overrides must precede motion-window resolution and env creation.
     if args_cli.physics_hz is not None:
         env_cfg.sim.dt = 1.0 / args_cli.physics_hz
     if args_cli.decimation is not None:
         env_cfg.decimation = args_cli.decimation
-    agent_cfg: RslRlOnPolicyRunnerCfg = load_cfg_from_registry(  # type: ignore[assignment]
-        args_cli.task, "rsl_rl_cfg_entry_point"
-    )
-    agent_cfg = sim_compat.prepare_rsl_rl_cfg(agent_cfg)
-    if _DEPLOYMENT_BUNDLE is not None:
-        agent_cfg = _DEPLOYMENT_BUNDLE["agent_cfg"]
-
     if _DEPLOYMENT_BUNDLE is not None:
         from source.my_task.motion_reference.motion_buffer import register_packaged_reference
         DANCE_NAME = _DEPLOYMENT_BUNDLE["dance"]
@@ -1479,8 +1473,9 @@ def main() -> None:
         f"control_hz = {control_hz_from_env_cfg(env_cfg):.1f}"
     )
 
-    log_root_path = resolve_training_log_root(agent_cfg.experiment_name, DANCE_NAME)
-    print(f"[INFO] Looking for checkpoints under: {log_root_path}")
+    if _DEPLOYMENT_BUNDLE is None:
+        roots = checkpoint_search_roots(agent_cfg.experiment_name, DANCE_NAME)
+        print(f"[INFO] Looking for checkpoints under: {', '.join(map(str, roots))}")
     print(f"[INFO] Dance: {DANCE_NAME}")
     resume_path = ""
     initial_policy_error = ""
@@ -1496,15 +1491,14 @@ def main() -> None:
             checkpoint_file.write(_DEPLOYMENT_BUNDLE["checkpoint"])
         selected_policy_key = resume_path
     elif args_cli.checkpoint:
-        checkpoint = args_cli.checkpoint
-        if args_cli.checkpoint_dir and not os.path.dirname(checkpoint):
-            checkpoint = os.path.join(args_cli.checkpoint_dir, checkpoint)
-        resume_path = os.path.abspath(checkpoint)
+        resume_path = _resolve_checkpoint_for_dance(
+            agent_cfg, DANCE_NAME or selected_dance, checkpoint=args_cli.checkpoint
+        )
         selected_policy_key = resume_path
     else:
         selected_policy_key = _POLICY_AUTO_KEY
         try:
-            resume_path = _resolve_latest_checkpoint_for_dance(agent_cfg, DANCE_NAME or selected_dance)
+            resume_path = _resolve_checkpoint_for_dance(agent_cfg, DANCE_NAME or selected_dance)
         except Exception as exc:
             initial_policy_error = str(exc)
             print(f"[WARN] {initial_policy_error}")
@@ -1520,7 +1514,11 @@ def main() -> None:
     else:
         print("[WARN] No runnable policy selected at startup; Play will stay disabled.")
 
-    env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
+    if _DEPLOYMENT_BUNDLE is None:
+        env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
+    else:
+        # Bundles carry both configs, including those from retired task IDs.
+        env = ManagerBasedRLEnv(cfg=env_cfg, render_mode=None)
     env_unwrapped = env.unwrapped
     if stage_background_loaded:
         _hide_default_ground_visuals(env_unwrapped)
@@ -1866,7 +1864,7 @@ def main() -> None:
         target_policy_path: str
         if target_policy_key == _POLICY_AUTO_KEY:
             try:
-                target_policy_path = _resolve_latest_checkpoint_for_dance(
+                target_policy_path = _resolve_checkpoint_for_dance(
                     agent_cfg,
                     DANCE_NAME or selected_dance,
                 )

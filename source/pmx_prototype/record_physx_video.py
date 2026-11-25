@@ -35,7 +35,7 @@ parser.add_argument('--bangs-shadow-level',type=float,default=None)
 parser.add_argument('--cel-brightness-scale',type=float,default=None)
 parser.add_argument('--face-shaping',action=argparse.BooleanOptionalAction,default=None)
 parser.add_argument('--look',choices=LOOK_CHOICES, default=DEFAULT_LOOK,
-                    help='Character recording appearance; default is approved look 08 with original floor.')
+                    help='Character recording appearance; mmd-toon uses the shared cel-studio look.')
 args=resolve_appearance_args(parser.parse_args())
 if not 0 <= args.environment_scale <= 2 or not 0 <= args.bangs_shadow_level <= 1 or not 0 < args.cel_brightness_scale <= 2:
     parser.error('Invalid appearance scale or shadow level')
@@ -109,21 +109,18 @@ try:
     floor.CreatePointsAttr([(-12,-12,-.025),(12,-12,-.025),(12,12,-.025),(-12,12,-.025)])
     floor.CreateFaceVertexCountsAttr([4]);floor.CreateFaceVertexIndicesAttr([0,1,2,3]);floor.CreateSubdivisionSchemeAttr('none')
     floor.CreateDisplayColorAttr([(.25,.28,.33)])
-    if args.look=='soft-pbr':
-        from character_appearance import apply_bright_character_look
-        apply_bright_character_look(stage,center)
+    from character_appearance import DefaultCharacterLook, apply_bright_character_look
     bangs_shadow=None
     if args.look==DEFAULT_LOOK:
-        from character_appearance import apply_bright_character_look,apply_cel_look
-        apply_bright_character_look(stage,center)
-        apply_cel_look(stage,brightness_scale=args.cel_brightness_scale,face_shaping=args.face_shaping)
-        from bangs_shadow import BangsShadow
-        try:
-            bangs_shadow=BangsShadow(stage,shadow_level=args.bangs_shadow_level)
-        except ValueError as error:
-            print(f"[Appearance] Bangs occlusion unavailable: {error}",flush=True)
-    environment=UsdLux.DomeLight.Get(stage,'/World/Light')
-    environment.GetIntensityAttr().Set(float(environment.GetIntensityAttr().Get())*args.environment_scale)
+        appearance = DefaultCharacterLook(
+            stage, center, environment_scale=args.environment_scale, brightness_scale=args.cel_brightness_scale,
+            face_shaping=args.face_shaping, bangs_shadow_level=args.bangs_shadow_level)
+        bangs_shadow = appearance.bangs
+    else:
+        if args.look == 'soft-pbr':
+            apply_bright_character_look(stage, center)
+        environment = UsdLux.DomeLight.Get(stage,'/World/Light').GetIntensityAttr()
+        environment.Set(float(environment.Get()) * args.environment_scale)
     cam=UsdGeom.Camera.Define(stage,'/World/Camera');cam.CreateFocalLengthAttr(50)
     cam.CreateHorizontalApertureAttr(20.955);cam.CreateVerticalApertureAttr(20.955*H/W)
     set_camera_view(eye=eye,target=center.tolist(),camera_prim_path='/World/Camera')

@@ -21,9 +21,10 @@ LEDGER=ROOT/'output/anon_locomotion/lateral_mirror_ablation_20261117_8192/pause_
 FILES=['train_anon_locomotion.py','training/anon_scratch_validation.py','training/low_speed_commands.py',
        'training/locomotion_acceptance.py','training/command_plan.py','training/anon_imitation_env.py',
        'training/anon_locomotion_env.py','training/lateral_symmetry.py','training/amp_motion_prior.py','training/idle_head_alignment.py',
+       'training/reference_asset_builder.py',
        'training/hand_skirt_clearance.py','diagnostics/anon_acceptance_video.py','diagnostics/record_gait_diagnostic.py',
        'motion/full_motion_reference.py','motion/unified_walk_run_reference.py',
-       'diagnostics/evaluate_unified_walk_run.py','diagnostics/probe_low_speed_tracking.py',
+       'diagnostics/evaluate_unified_walk_run.py','diagnostics/evaluate_parallel_walk_run.py','diagnostics/probe_low_speed_tracking.py',
        'training/run_balanced_scratch.py','training/prepare_mirror_scratch.py']
 
 
@@ -63,6 +64,8 @@ def configuration(recipe=RECIPE):
                 'train_reset_actor_head','train_reset_optimizer','train_normalization_rebase']:
         if config.get(key):raise ValueError('Unexpected pretrained/migration setting: '+key)
     if config.get('train_leg_std')!=.08:raise ValueError('Fresh exploration initialization must be explicit')
+    from reference_asset_builder import resolve_body_asset
+    config['asset']=str(resolve_body_asset(ROOT,config).resolve())
     return config
 
 
@@ -74,28 +77,31 @@ def prepare(output,run,recipe=RECIPE,ledger=LEDGER,run_to_maximum=False,maximum_
     config=configuration(recipe)
     from run_balanced_scratch import acceptance_durations
     durations=acceptance_durations(config)
+    from anon_scratch_validation import DEFAULT_ACCEPTANCE_INTERVAL
     from locomotion_acceptance import CURRENT_PROTOCOL
     protocol=config['unified_acceptance_protocol']
-    integrated=protocol==CURRENT_PROTOCOL
+    integrated=protocol==CURRENT_PROTOCOL and config.get('unified_eval_low_speed',False)
     assets={config['full_motion_path'],*config['amp_expert_paths']}
     if config.get('reference_provenance_path'):
         assets.add(config['reference_provenance_path'])
     assets.add(str(ROOT/'output/anon_locomotion/unified_walk_run/full8_final_cpu/report.json'))
-    asset=ROOT/'output/anon_physical_v4/anon_physical.usda'
-    assets.update(str(asset.parent/name) for name in ['anon_physical.usda','rig.usda','manifest.json'])
+    asset=Path(config['asset'])
+    assets.update(str(path) for path in (asset,asset.with_name('rig.usda'),asset.with_name('manifest.json')))
     plan=dict(status='prepared_waiting_user_start',training_started=False,
         prepared_at=datetime.now().astimezone().isoformat(),requires_explicit_start=True,
         started_from_random_weights=True,checkpoint=None,external_teacher=None,
         actor_critic_amp_optimizer_normalization='Random actor/critic/discriminator; empty optimizers and actor/critic observation statistics. AMP feature statistics come from mirrored mocap experts, never an old checkpoint; audit at launch.',
-        num_envs=8192,seed=42,maximum_iterations=maximum_iterations,screen_interval=500,full_interval=1000,
+        num_envs=8192,seed=42,maximum_iterations=maximum_iterations,full_interval=DEFAULT_ACCEPTANCE_INTERVAL,
         recipe=str(recipe),recipe_sha256=digest(recipe),run_dir=str(run),output=str(output),
+        asset=str(asset),body_mass_profile=config.get('body_mass_profile'),
         mirror_augmentation=True,amp_mirror_augmentation=True,weak_mirror_loss=False,
         augmentation_scope='PPO pure lateral full-running samples; AMP raw expert/replay mirrors and invariant style reward.',
         appearance_and_runtime='Existing31-DOF wrists/arms/clearance retained; no drive compensation.',
         acceptance_protocol=protocol,**durations,
         original_slip_reduction_required=.2,original_speed_retention_required=.95,zero_falls=True,
         low_speed_check=('Included in full acceptance. Four phase/heading pairs at both speed endpoints, zero falls.'
-                         if integrated else 'Separate six-speed recovery check across 16 initial phase/heading states, zero falls.'),
+                         if integrated else (None if protocol==CURRENT_PROTOCOL else
+                         'Separate six-speed recovery check across 16 initial phase/heading states, zero falls.')),
         run_to_maximum=run_to_maximum,
         stop_rule=(f'Run through iteration {maximum_iterations} and measure the first accepted checkpoint and the final checkpoint.'
                    if run_to_maximum else f'Stop at the first accepted checkpoint or iteration {maximum_iterations}.'),
@@ -120,7 +126,8 @@ def launch(output,run):
     if plan['output']!=str(output) or plan['run_dir']!=str(run):raise ValueError('Prepared paths differ')
     recipe=Path(plan['recipe'])
     ledger=Path(plan.get('training_ledger',LEDGER))
-    if digest(recipe)!=plan['recipe_sha256'] or configuration(recipe)!=read(output/'config.json'):
+    config=configuration(recipe)
+    if digest(recipe)!=plan['recipe_sha256'] or config!=read(output/'config.json'):
         raise ValueError('Prepared recipe changed; prepare again before starting')
     for name,expected in plan['source_hashes'].items():
         if digest(SOURCE/name)!=expected:raise ValueError('Prepared source changed: '+name)
@@ -134,9 +141,11 @@ def launch(output,run):
     controller.OUT=output;controller.RUN=run;controller.RECIPE=recipe
     controller.BEFORE=before;controller.MAXIMUM=plan['maximum_iterations'];controller.RUN_TO_MAXIMUM=plan.get('run_to_maximum',False)
     write(output/'controller_process.json',dict(pid=os.getpid(),started_at=datetime.now().astimezone().isoformat()))
-    controller.main()
+    controller.main(config=config)
     if any(digest(SOURCE/name)!=value for name,value in plan['source_hashes'].items()):
         raise RuntimeError('Prepared training sources changed during execution')
+    if any(digest(path)!=value for path,value in plan['input_hashes'].items()):
+        raise RuntimeError('Prepared training inputs changed during execution')
 
 
 def main(argv=None):

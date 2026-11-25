@@ -46,7 +46,8 @@ class PlaybackTests(unittest.TestCase):
         files=source_files(['preview_mutsumi.py'])
         for name in ['physx_dance.py','runtime/dance_secondary_stream.py','runtime/dance_secondary_worker.py','runtime/camera_bounds_cache.py','configs/playback/mutsumi_deepbluetown.json','configs/physics/secondary_default.json']:
             self.assertIn(name,files)
-        self.assertTrue(any(name.endswith('mmd_cel.mdl') for name in files))
+        self.assertIn('cel_studio.mdl', files)
+        self.assertNotIn('mmd_cel.mdl', files)
         self.assertIn('configs/playback/mutsumi_dances.json',files)
 
 

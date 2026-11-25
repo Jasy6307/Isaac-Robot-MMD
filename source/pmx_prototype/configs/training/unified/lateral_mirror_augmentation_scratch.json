@@ -12,7 +12,7 @@
   "curriculum_iterations": 700,
   "seed": 42,
   "full_body_reference": true,
-  "full_motion_path": "I:\\robot_isaac\\output\\anon_locomotion\\release_v7_unified_walk_run_slip_refine\\full_motion.npz",
+  "full_motion_path": "I:\\robot_isaac\\output\\anon_locomotion\\release_v7_unified_walk_run_idle_clearance\\full_motion.npz",
   "motion_stage": "unified_walk_run",
   "reference_kind": "complete_100STYLE_unified_directional_walk_run_v2",
   "imitation_residual_scale": 0.3,

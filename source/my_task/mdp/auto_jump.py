@@ -1,8 +1,9 @@
 """Generic phase rewards; no absolute dance time or reference-pose edits."""
 import torch
+from source import sim_compat
 from source.my_task.mdp import jump
 from source.my_task.mdp.rewards import joint_pos_tracking_exp
-from source.my_task.motion_reference import motion_steps
+from source.my_task.motion_reference import get_or_create_motion_buffer, motion_steps
 
 
 def _jump_gate(env, seconds):
@@ -18,8 +19,6 @@ def _jump_gate(env, seconds):
 
 
 def tracking_metrics(env, h5_path, window_seconds):
-    from source import sim_compat
-    from source.my_task.motion_reference import get_or_create_motion_buffer
     from source.my_task.mdp.root_reference import root_reference_quat_w
     from source.train_workflow.utils.motion_quality import up_vector_xyzw
     key = int(env.common_step_counter)
@@ -46,6 +45,20 @@ def tracking_metrics(env, h5_path, window_seconds):
         tilt_error_rad=torch.acos((up*ref_up).sum(-1).clamp(-1.,1.)),normal_weight=normal)
     env._auto_tracking_metrics=(key,result)
     return result
+
+
+def reference_height_below_minimum(env, minimum_height, asset_cfg):
+    """Keep the standing fall limit and allow bounded clearance for low poses."""
+    robot = env.scene[asset_cfg.name]
+    action = env.cfg.actions.joint_pos
+    reference = get_or_create_motion_buffer(env, action.motion_h5_path, action.motion_window_seconds,
+                                            asset_name=asset_cfg.name)
+    reference_z = robot.data.default_root_state.torch[:, 2] + reference.root_pos_delta(motion_steps(env))[:, 2]
+    margin = env.cfg.reference_reward_scales["root_position_m"][2]
+    threshold = (reference_z - margin).clamp(min=minimum_height - margin, max=minimum_height)
+    origins = sim_compat.as_torch(env.scene.sim.get_clone_plan().positions)
+    height = robot.data.root_pos_w.torch[:, 2] - origins[:, 2]
+    return height < threshold
 
 
 def tracking_tail(env, h5_path, window_seconds):

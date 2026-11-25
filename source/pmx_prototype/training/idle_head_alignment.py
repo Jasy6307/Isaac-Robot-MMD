@@ -12,10 +12,12 @@ LARGE_ERROR_START_DEG = 6.
 LARGE_ERROR_SCALE_DEG = 28.
 NECK_PITCH_DEAD_ZONE_DEG = 2.
 NECK_PITCH_ERROR_SCALE_DEG = 12.
+NECK_YAW_DEAD_ZONE_DEG = 3.
+NECK_YAW_ERROR_SCALE_DEG = 8.
 RECOVERY_RAMP_SECONDS = .35
 MOVING_GAIN = .15
-MEAN_BIAS_LIMIT_DEG = 4.
-P95_LIMIT_DEG = 8.
+MEAN_BIAS_LIMIT_DEG = 10.
+P95_LIMIT_DEG = 10.
 RECENTER_LIMIT_DEG = 6.
 RECENTER_HOLD_SECONDS = .5
 STOP_COMMAND_TOLERANCE = .01
@@ -49,21 +51,53 @@ def neck_pitch_level_target(chest_rotation, heading):
     return torch.where(torch.isfinite(local_vertical), pitch, float('nan'))
 
 
+def neck_yaw_forward_target(chest_rotation, heading):
+    """Project the commanded world forward direction into the chest frame."""
+    x, y, z, w = chest_rotation.unbind(-1)
+    forward_x, forward_y = heading.sin(), -heading.cos()
+    # Dot the commanded forward vector with the chest's local X and Y axes.
+    local_x = (1. - 2. * (y.square() + z.square())) * forward_x + 2. * (x * y + w * z) * forward_y
+    local_y = 2. * (x * y - w * z) * forward_x + (1. - 2. * (x.square() + z.square())) * forward_y
+    valid = torch.isfinite(local_x) & torch.isfinite(local_y) & (torch.hypot(local_x, local_y) > 1.e-6)
+    return torch.where(valid, torch.atan2(local_x, -local_y), float('nan'))
+
+
+def _in_place_turn(requested):
+    return (requested[..., :2].norm(dim=-1) < .03) & (requested[..., 2].abs() >= .05)
+
+
 def neck_pitch_stop_context(previous, requested, walk_speed_limit):
-    """Remember whether the last motion command was a straight walk or left pivot."""
+    """Remember whether the last motion command was a straight walk or an in-place turn."""
     forward, lateral, yaw = requested.unbind(-1)
     stopping = requested.abs().amax(dim=-1) < STOP_COMMAND_TOLERANCE
     forward_walk = (forward >= .05) & (forward <= walk_speed_limit)
     forward_walk &= (lateral.abs() < .03) & (yaw.abs() < .05)
-    left_pivot = (requested[..., :2].norm(dim=-1) < .03) & (yaw >= .05)
-    return torch.where(stopping, previous, forward_walk | left_pivot)
+    return torch.where(stopping, previous, forward_walk | _in_place_turn(requested))
+
+
+def neck_yaw_stop_context(previous, requested):
+    """Remember an in-place turn until the next nonzero request."""
+    stopping = requested.abs().amax(dim=-1) < STOP_COMMAND_TOLERANCE
+    return torch.where(stopping, previous, _in_place_turn(requested))
 
 
 def idle_neck_pitch_reward(neck_pitch, target, gain, weight):
     """Bounded joint-space correction using the existing stop gain."""
-    valid = (gain > 0.) & torch.isfinite(neck_pitch) & torch.isfinite(target)
-    excess = ((neck_pitch - target).abs() - math.radians(NECK_PITCH_DEAD_ZONE_DEG)).clamp_min(0.)
-    scaled_square = (excess / math.radians(NECK_PITCH_ERROR_SCALE_DEG)).square()
+    return _idle_neck_joint_reward(neck_pitch, target, gain, weight,
+                                   NECK_PITCH_DEAD_ZONE_DEG, NECK_PITCH_ERROR_SCALE_DEG)
+
+
+def idle_neck_yaw_reward(neck_yaw, target, gain, pivot_stop, weight):
+    """Correct yaw only when braking or standing after an in-place turn."""
+    gain = torch.where(pivot_stop, gain, 0.)
+    return _idle_neck_joint_reward(neck_yaw, target, gain, weight,
+                                   NECK_YAW_DEAD_ZONE_DEG, NECK_YAW_ERROR_SCALE_DEG)
+
+
+def _idle_neck_joint_reward(position, target, gain, weight, dead_zone_deg, error_scale_deg):
+    valid = (gain > 0.) & torch.isfinite(position) & torch.isfinite(target)
+    excess = ((position - target).abs() - math.radians(dead_zone_deg)).clamp_min(0.)
+    scaled_square = (excess / math.radians(error_scale_deg)).square()
     rate = -weight * gain * (1. - 1. / (1. + scaled_square))
     return torch.where(valid, rate, 0.)
 

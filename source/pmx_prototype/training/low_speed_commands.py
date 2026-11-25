@@ -15,6 +15,12 @@ def apply_low_speed_pools(env,ids,on_reset):
     cfg=env.cfg
     steady=round(100*cfg.get('unified_low_speed_env_fraction',0.))
     stopping=round(100*cfg.get('unified_low_stop_env_fraction',0.))
+    backward_fraction = float(cfg.get('unified_backward_start_env_fraction', 0.))
+    if not 0. <= backward_fraction <= 1.:
+        raise ValueError('Invalid backward-start environment fraction')
+    backward_count = round(100 * backward_fraction)
+    if backward_count > stopping:
+        raise ValueError('Backward-start lanes must fit inside the low-speed stop pool')
     if steady==0 and stopping==0:return  # No RNG or behavior change for old recipes.
     first=_low_speed_start(cfg)
     if min(first,steady,stopping)<0 or first+steady+stopping>100:
@@ -27,7 +33,8 @@ def apply_low_speed_pools(env,ids,on_reset):
     if not n:return
     lower=float(cfg.get('unified_low_speed_min',.15));upper=float(cfg.get('unified_low_speed_max',.4))
     if not 0<lower<upper<=cfg['max_speed']:raise ValueError('Invalid low-speed range')
-    speed=lower+torch.rand(n,device=env.device)*(upper-lower)
+    speed_draw=torch.rand(n,device=env.device)
+    speed=lower+speed_draw*(upper-lower)
     anchors=torch.tensor([.15,.2,.25,.3,.35,.4],device=env.device)
     anchors=anchors[(anchors>=lower)&(anchors<=upper)]
     if len(anchors):
@@ -44,6 +51,16 @@ def apply_low_speed_pools(env,ids,on_reset):
     stop_ids=ids[stop_mask]
     if on_reset:env.low_stop_stage[stop_ids]=torch.rand(len(stop_ids),device=env.device)<.5
     else:env.low_stop_stage[stop_ids]=~env.low_stop_stage[stop_ids]
+    if backward_count:
+        backward_mask = stop_mask & (bucket < first + steady + backward_count)
+        backward = backward_mask[selected]
+        if on_reset:
+            env.low_stop_stage[ids[backward_mask]] = True
+        # Reuse the draw and anchor half the starts at the acceptance speed.
+        draw = speed_draw[backward]
+        backward_speed = torch.where(draw < .5, .40, .30 + .30 * (draw - .5))
+        commands[backward] = 0.
+        commands[backward, 0] = -backward_speed.clamp_max(cfg['max_speed'])
     stationary=env.low_stop_stage[ids[selected]]&stop_mask[selected]
     commands[stationary]=0.
     env.commands[ids[selected]]=commands
@@ -52,8 +69,12 @@ def apply_low_speed_pools(env,ids,on_reset):
     stop_hold=float(cfg.get('unified_low_stop_hold_seconds',6.))
     stop_jitter=float(cfg.get('unified_low_stop_hold_jitter_seconds',2.))
     if min(walk_hold,stop_hold)<=0 or min(walk_jitter,stop_jitter)<0:raise ValueError('Invalid low-speed hold times')
-    duration=walk_hold+torch.rand(n,device=env.device)*walk_jitter
-    duration=torch.where(stationary,stop_hold+torch.rand(n,device=env.device)*stop_jitter,duration)
+    walk_draw=torch.rand(n,device=env.device)
+    stop_draw=torch.rand(n,device=env.device)
+    duration=torch.where(stationary,stop_hold+stop_draw*stop_jitter,walk_hold+walk_draw*walk_jitter)
+    if backward_count:
+        duration[backward] = torch.where(stationary[backward], 3. + stop_draw[backward],
+                                         6. + 2. * walk_draw[backward])
     env.unified_command_hold[ids[selected]]=duration
 
 

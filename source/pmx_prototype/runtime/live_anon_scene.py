@@ -8,6 +8,9 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from source.pmx_prototype.runtime.appearance_defaults import (
+    BANGS_SHADOW_LEVEL, CEL_BRIGHTNESS_SCALE, DEFAULT_LOOK, ENVIRONMENT_SCALE, FACE_SHAPING,
+)
 
 class LiveAnonScene:
     """Display the PMX PhysX cache alongside a live G1 policy rollout."""
@@ -18,22 +21,17 @@ class LiveAnonScene:
         *,
         pmx_usd: str | Path,
         offset_x: float = 1.9,
-        environment_scale: float = 0.75,
-        bangs_shadow_level: float = 0.65,
-        cel_brightness_scale: float = 0.88,
-        face_shaping: bool = True,
+        environment_scale: float = ENVIRONMENT_SCALE,
+        bangs_shadow_level: float = BANGS_SHADOW_LEVEL,
+        cel_brightness_scale: float = CEL_BRIGHTNESS_SCALE,
+        face_shaping: bool = FACE_SHAPING,
     ):
         import omni.ui as ui
         import omni.usd
         import numpy as np
         from omni.kit.viewport.utility import get_active_viewport
-        from pxr import Gf, Usd, UsdGeom, UsdLux, UsdSkel, Vt
-        from source.pmx_prototype.runtime.appearance_defaults import DEFAULT_LOOK
-        from source.pmx_prototype.runtime.character_appearance import (
-            apply_bright_character_look,
-            apply_cel_look,
-        )
-        from source.pmx_prototype.runtime.bangs_shadow import BangsShadow
+        from pxr import Gf, Usd, UsdGeom, UsdSkel, Vt
+        from source.pmx_prototype.runtime.character_appearance import DefaultCharacterLook
 
         self.np = np
         self.Vt = Vt
@@ -71,27 +69,14 @@ class LiveAnonScene:
             raise RuntimeError("Referenced Anon USD does not expose /World/Character/Animation")
         self.animation.CreateJointsAttr(self.cache_animation.GetJointsAttr().Get())
         self.animation.CreateScalesAttr(self.cache_animation.GetScalesAttr().Get())
+        self.animation.GetTranslationsAttr().Set(self.cache_translations.Get(self.start_frame))
+        self.animation.GetRotationsAttr().Set(self.cache_rotations.Get(self.start_frame))
 
         center = (self.offset_x, 0.0, 0.9)
-        apply_bright_character_look(stage, center, character_root="/World/Character")
-        apply_cel_look(
-            stage,
-            brightness_scale=cel_brightness_scale,
-            face_shaping=face_shaping,
-            character_root="/World/Character",
-        )
-        dome = UsdLux.DomeLight.Get(stage, "/World/Light")
-        if dome and dome.GetIntensityAttr():
-            dome.GetIntensityAttr().Set(550.0 * float(environment_scale))
-        try:
-            self.bangs_shadow = BangsShadow(
-                stage,
-                shadow_level=bangs_shadow_level,
-                character_root="/World/Character",
-            )
-        except ValueError as error:
-            self.bangs_shadow = None
-            print(f"[Appearance] Bangs occlusion unavailable: {error}", flush=True)
+        appearance = DefaultCharacterLook(
+            stage, center, environment_scale=environment_scale, brightness_scale=cel_brightness_scale,
+            face_shaping=face_shaping, bangs_shadow_level=bangs_shadow_level)
+        self.bangs_shadow = appearance.bangs
 
         camera = UsdGeom.Camera.Define(stage, "/World/LiveCompareCamera")
         camera.CreateFocalLengthAttr(50)

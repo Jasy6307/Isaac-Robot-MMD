@@ -1,4 +1,4 @@
-"""Shared character looks and approved cel look 08; preserve original ground."""
+"""Shared character looks with cel-studio bound to mmd-toon."""
 
 import sys as _sys
 from pathlib import Path as _Path
@@ -8,6 +8,10 @@ if str(_source_dir) not in _sys.path:
 from source_layout import PROJECT_ROOT, SOURCE_DIR, resolve_source
 
 from pxr import Gf, Sdf, UsdShade, UsdGeom, UsdLux
+from source.pmx_prototype.runtime.appearance_defaults import (
+    BANGS_SHADOW_LEVEL, CEL_BRIGHTNESS_SCALE, ENVIRONMENT_SCALE, FABRIC_SHADOW_DARKEN,
+    FABRIC_SHADOW_PALETTE, FACE_SHAPING, TOON_INK, cel_material,
+)
 
 
 def apply_bright_character_look(stage, center=(0., 0., 0.),character_root="/World/Character"):
@@ -140,8 +144,8 @@ def add_character_outline(stage, width=.002,character_root="/World/Character",me
     material=UsdShade.Material.Define(stage,ink_path)
     shader=UsdShade.Shader.Define(stage,ink_path+'/Surface')
     shader.CreateIdAttr('UsdPreviewSurface')
-    shader.CreateInput('diffuseColor',Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(.006,.004,.009))
-    shader.CreateInput('emissiveColor',Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(.006,.004,.009))
+    shader.CreateInput('diffuseColor',Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*TOON_INK))
+    shader.CreateInput('emissiveColor',Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*TOON_INK))
     shader.CreateInput('roughness',Sdf.ValueTypeNames.Float).Set(1.)
     shader.CreateInput('useSpecularWorkflow',Sdf.ValueTypeNames.Int).Set(1)
     shader.CreateInput('specularColor',Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.))
@@ -153,11 +157,12 @@ def add_character_outline(stage, width=.002,character_root="/World/Character",me
     carb.settings.get_settings().set_bool('/rtx/hydra/faceCulling/enabled',True)
 
 
-def apply_cel_look(stage,brightness_scale=1.,face_shaping=False,character_root="/World/Character"):
-    """Native MDL two-band shader; leave eyes, original ground and lights intact."""
-    from pathlib import Path
+def apply_cel_look(stage, brightness_scale=CEL_BRIGHTNESS_SCALE, face_shaping=FACE_SHAPING,
+                   character_root="/World/Character"):
+    """Bind the approved cel-studio shader using each material's role."""
     from pxr import Usd
-    mdl=str(resolve_source('mmd_cel.mdl').resolve())
+    mdl=str(resolve_source('cel_studio.mdl').resolve())
+    brightness_multiplier = brightness_scale / CEL_BRIGHTNESS_SCALE
     for prim in list(Usd.PrimRange(stage.GetPrimAtPath(character_root))):
         if not prim.IsA(UsdShade.Material):continue
         material=UsdShade.Material(prim)
@@ -169,7 +174,7 @@ def apply_cel_look(stage,brightness_scale=1.,face_shaping=False,character_root="
         cel=UsdShade.Shader.Define(stage,prim.GetPath().AppendChild('CelSurface'))
         cel.CreateImplementationSourceAttr(UsdShade.Tokens.sourceAsset)
         cel.SetSourceAsset(Sdf.AssetPath(mdl),'mdl')
-        cel.SetSourceAssetSubIdentifier('mmd_cel','mdl')
+        cel.SetSourceAssetSubIdentifier('cel_studio','mdl')
         cel.CreateOutput('out',Sdf.ValueTypeNames.Token)
         if source:
             tex=UsdShade.Shader(source[0].GetPrim())
@@ -179,32 +184,45 @@ def apply_cel_look(stage,brightness_scale=1.,face_shaping=False,character_root="
                 inp.Set(Sdf.AssetPath(asset.resolvedPath or asset.path))
                 inp.GetAttr().SetColorSpace('sRGB')
         is_face=any(word in name for word in ('face','顔','脸'))
-        cel.CreateInput('brightness',Sdf.ValueTypeNames.Float).Set(.58*brightness_scale)
-        cel.CreateInput('threshold',Sdf.ValueTypeNames.Float).Set((.45 if face_shaping else -.1) if is_face else .25)
-        cel.CreateInput('shadow_level',Sdf.ValueTypeNames.Float).Set((.75 if face_shaping else .82) if is_face else .64)
-        cel.CreateInput('face_shaping',Sdf.ValueTypeNames.Bool).Set(is_face and face_shaping)
-        cel.CreateInput('shadow_tint',Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(1.,.96,.93) if is_face and face_shaping else Gf.Vec3f(1.))
-        cel.CreateInput('opacity',Sdf.ValueTypeNames.Float).Set(float(surface.GetInput('opacity').Get() or 1.))
+        profile = cel_material(name, face_shaping)
+        opacity = surface.GetInput('opacity').Get()
+        values = dict(
+            brightness=profile.brightness * brightness_multiplier, threshold=profile.threshold,
+            edge_width=profile.edge_width, shadow_level=profile.shadow_level,
+            hair_light=profile.hair_light, rim_light=profile.rim_light, matte_fill=profile.matte_fill,
+            opacity=1.0 if opacity is None else float(opacity),
+        )
+        for input_name, value in values.items():
+            cel.CreateInput(input_name, Sdf.ValueTypeNames.Float).Set(value)
+        cel.CreateInput('face_shaping', Sdf.ValueTypeNames.Bool).Set(is_face and face_shaping)
+        cel.CreateInput('simple_band', Sdf.ValueTypeNames.Bool).Set(profile.simple_band)
+        cel.CreateInput('shadow_tint', Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*profile.shadow_tint))
+        if profile.shadow_palette:
+            cel.CreateInput('shadow_palette', Sdf.ValueTypeNames.Int).Set(profile.shadow_palette)
+        if profile.shadow_palette == FABRIC_SHADOW_PALETTE:
+            cel.CreateInput('fabric_shadow_darken', Sdf.ValueTypeNames.Float).Set(FABRIC_SHADOW_DARKEN)
         material.CreateSurfaceOutput('mdl').ConnectToSource(cel.ConnectableAPI(),'out')
     add_character_outline(stage,character_root=character_root)
 
 
 class DefaultCharacterLook:
-    """Apply approved look 08 without touching floor bindings or geometry."""
-    def __init__(self,stage,center=(0.,0.,0.),character_root='/World/Character'):
-        from source.pmx_prototype.appearance_defaults import ENVIRONMENT_SCALE,CEL_BRIGHTNESS_SCALE,FACE_SHAPING,BANGS_SHADOW_LEVEL
+    """Apply the shared mmd-toon look without editing floor bindings or geometry."""
+    def __init__(self, stage, center=(0., 0., 0.), character_root='/World/Character', *,
+                 environment_scale=ENVIRONMENT_SCALE, brightness_scale=CEL_BRIGHTNESS_SCALE,
+                 face_shaping=FACE_SHAPING, bangs_shadow_level=BANGS_SHADOW_LEVEL):
         from source.pmx_prototype.character_semantics import adapt_mutsumi_materials
         self.semantic_mapping=adapt_mutsumi_materials(stage,character_root)
         if self.semantic_mapping:print('[Appearance] '+str(self.semantic_mapping),flush=True)
         self.face_light=apply_bright_character_look(stage,center,character_root=character_root)
-        UsdLux.DomeLight.Get(stage,'/World/Light').GetIntensityAttr().Set(550*ENVIRONMENT_SCALE)
-        apply_cel_look(stage,brightness_scale=CEL_BRIGHTNESS_SCALE,face_shaping=FACE_SHAPING,character_root=character_root)
+        UsdLux.DomeLight.Get(stage,'/World/Light').GetIntensityAttr().Set(550*environment_scale)
+        apply_cel_look(stage, brightness_scale=brightness_scale, face_shaping=face_shaping,
+                       character_root=character_root)
         from source.pmx_prototype.bangs_shadow import BangsShadow
         self.bangs=None
         try:
-            self.bangs=BangsShadow(stage,shadow_level=BANGS_SHADOW_LEVEL,character_root=character_root)
+            self.bangs=BangsShadow(stage,shadow_level=bangs_shadow_level,character_root=character_root)
         except ValueError as error:
-            print(f'[Appearance] Look 08 active; bangs occlusion unavailable: {error}',flush=True)
+            print(f'[Appearance] mmd-toon active; bangs occlusion unavailable: {error}',flush=True)
 
     def update(self,frame,time_code=None):
         if self.bangs is not None:

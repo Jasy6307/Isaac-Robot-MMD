@@ -95,6 +95,8 @@ G1 链路围绕三个入口脚本组织（见下节），由环境注册、重�
 ## 核心脚本（三步工作流）
 
 日常从 `sim_main.py` 按顺序调用以下三个模式。原入口也可直接运行。
+训练、续训和验证默认使用 G1 舞蹈跟踪（`Isaac-G1-Dance-Tracking-v0`），`--task` 可以省略。训练回合由自动课程管理。
+新训练和续训写入 `logs/rsl_rl/g1_dance_tracking/<舞蹈>/<运行>/`。验证和续训也会查找原 `g1_auto_jump_conditional` 目录中的检查点。
 
 | 步骤 | 模式 | 原入口 | 作用 |
 | --- | --- | --- | --- |
@@ -173,7 +175,7 @@ Windows 快速验证和启动：
 .\run_isaac61.bat source\train_workflow\smoke_isaac61.py --viz kit --steps 0
 .\run_isaac61.bat source\train_workflow\smoke_isaac61.py --viz none --steps 60
 .\run_isaac61.bat source\train_workflow\g1_vmd_0_replay.py
-.\run_isaac61.bat source\train_workflow\g1_vmd_1_train.py --dance IRIS_OUT --window_frames 30 --num_envs 4 --max_iterations 1 --headless --episode_seconds 1 --experiment_suffix isaac61_smoke
+.\run_isaac61.bat source\train_workflow\g1_vmd_1_train.py --dance IRIS_OUT --window_frames 30 --num_envs 4 --max_iterations 1 --headless --run_note isaac61_smoke
 .\run_isaac61.bat source\train_workflow\g1_vmd_2_eval.py --dance IRIS_OUT --num_envs 1
 ```
 
@@ -202,19 +204,19 @@ Copy-Item source/train_workflow/dances_config.example.yaml source/train_workflow
 # 将 VMD/CSV/H5/WAV 放入 media/（见 media/README.md）
 ```
 
-使用 `isaac61` Conda 环境依次运行回放、极乐净土的 Auto-Jump-Conditional 训练和验证：
+在 `isaac61` Conda 环境中运行回放，然后训练和验证极乐净土的 G1 舞蹈跟踪策略。
 
 ```powershell
 python sim_main.py --mode g1-replay
-python sim_main.py --mode g1-train --task Isaac-G1-Vmd-Auto-Jump-Conditional-v0 --num_envs 2048 --viz none --dance ji_le_jing_tu --num_steps_per_env 48 --self_collisions --pd_profile deploy --auto_motion_feedback
-python sim_main.py --mode g1-eval --task Isaac-G1-Vmd-Auto-Jump-Conditional-v0 --num_envs 1 --dance ji_le_jing_tu
+python sim_main.py --mode g1-train --num_envs 2048 --viz none --dance ji_le_jing_tu --num_steps_per_env 48 --self_collisions --pd_profile deploy --auto_motion_feedback
+python sim_main.py --mode g1-eval --num_envs 1 --dance ji_le_jing_tu
 ```
 
-独立版也可以把 `sim_main.py --mode ...` 交给上节的 `run_isaac61.bat`。训练和验收配置见 [Auto-Jump 工作流](source/train_workflow/AUTO_JUMP_TRAINING.md)。
+独立版也可以把 `sim_main.py --mode ...` 交给上节的 `run_isaac61.bat`。训练和验收配置见 [G1 舞蹈跟踪](source/train_workflow/AUTO_JUMP_TRAINING.md)。
 
 ### 自动验收录像的 PMX 视频对照
 
-`Isaac-G1-Vmd-Auto-Jump-Conditional-v0` 的中期和最终验收录像支持与先前录制的 PMX MP4 同步对照。默认列表是 `source/train_workflow/validation_videos.json`，其中 `video` 是本地 MP4 路径（相对路径从仓库根目录解析），`start_seconds` 是视频中对应动作第 0 帧的秒数。空 `video` 表示只输出原验收录像。
+G1 舞蹈跟踪的中期和最终验收录像支持与先前录制的 PMX MP4 同步对照。默认列表是 `source/train_workflow/validation_videos.json`，其中 `video` 是本地 MP4 路径（相对路径从仓库根目录解析），`start_seconds` 是视频中对应动作第 0 帧的秒数。空 `video` 表示只输出原验收录像。
 
 Iris Out 已登记 `media/dance/IRIS_OUT/IRIS_OUT_pmx.mp4`。修正版 H5 会通过 `.motion.json` 的 `source_dance` / VMD / 音频来源匹配原舞蹈；精确 H5 名称的配置优先。其他舞蹈可在列表中填写各自的已验证视频。
 
@@ -259,8 +261,7 @@ cp pyrightconfig.example.json pyrightconfig.json
 ## 未来计划的工作:
 
 - [ ] **手部重定向优化**：更准确的重定向一致性
-- [ ] **C1 训练稳定性**：提升 `g1_vmd_1_train` 长序列VMD动作数据的跟踪质量和训练效率
-- [ ] **C2 实验任务**：完善课程C2的训练链路
+- [ ] **G1 训练稳定性**：提升 `g1_vmd_1_train` 长序列 VMD 动作数据的跟踪质量和训练效率
 - [ ] **VMD镜头数据**：镜头数据兼容
 - [ ] **VMD更多参数调整**：toe IK，表情，motion scale，部分关节锁定的动作执行等
 - [ ] **Sim2Sim**：更好的policy eval效率，完善sim2im部署UI界面

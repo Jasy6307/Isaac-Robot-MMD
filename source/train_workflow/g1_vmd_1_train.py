@@ -3,15 +3,14 @@
 
 """G1 dance tracking PPO trainer (Isaac Lab + RSL-RL).
 
-Defaults to the C1 floating-root residual task on
-``media/dance/you_are_important.h5``.
+Trains the G1 dance tracking task with an automatic curriculum and validation.
+Select a reference with ``--dance`` or ``--motion_h5``.
 
 Example
 -------
 .. code-block:: powershell
 
     python source/train_workflow/g1_vmd_1_train.py `
-      --task Isaac-G1-Vmd-Train-C1-v0 `
       --num_envs 2048 `
       --dance IRIS_OUT `
       --physics_hz 120 `
@@ -19,31 +18,30 @@ Example
       --window_frames 230 `
       --max_iterations 10000 `
       --run_note standard_30hz_half `
-      --random_motion_start `
-      --episode_length_curriculum `
-      --episode_length_curriculum_spec "0:3,5000:full" `
+      --auto_motion_feedback `
       --headless
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import sys
-from dataclasses import dataclass
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _WORKSPACE_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", ".."))
 if _WORKSPACE_ROOT not in sys.path:
     sys.path.insert(0, _WORKSPACE_ROOT)
 
+from source.train_workflow.task_ids import G1_TRAIN_TASK_ID, normalize_g1_train_task_id  # noqa: E402
 from source.train_workflow.utils.motion.resolve import (  # noqa: E402
     resolve_training_log_root,
     resolve_training_motion,
 )
 from source.train_workflow.utils.run_note import create_run_note, run_note_filename  # noqa: E402
-from source.train_workflow.utils.checkpoints import latest_checkpoint  # noqa: E402
+from source.train_workflow.utils.checkpoints import resolve_training_checkpoint  # noqa: E402
 from source.train_workflow.utils.validation_reference import (  # noqa: E402
     add_reference_video_arguments, reference_video_from_args,
 )
@@ -53,9 +51,10 @@ from source import sim_compat
 parser = argparse.ArgumentParser(description="Train G1 dance tracking PPO with RSL-RL.")
 parser.add_argument(
     "--task",
-    type=str,
-    default="Isaac-G1-Vmd-Train-C1-v0",
-    help="Registered Isaac Lab task ID.",
+    type=normalize_g1_train_task_id,
+    choices=(G1_TRAIN_TASK_ID,),
+    default=G1_TRAIN_TASK_ID,
+    help="G1 dance tracking task (default).",
 )
 parser.add_argument("--num_envs", type=int, default=512, help="Number of parallel envs.")
 parser.add_argument(
@@ -97,64 +96,10 @@ parser.add_argument(
     help="Override reference motion window length (control-step frame count).",
 )
 parser.add_argument(
-    "--episode_seconds",
-    type=float,
-    default=None,
-    help="Override episode length (seconds), independent from reference window.",
-)
-parser.add_argument(
-    "--episode_length_curriculum",
-    action="store_true",
-    default=False,
-    help="Enable automatic episode-length curriculum in one training run.",
-)
-parser.add_argument(
-    "--episode_length_curriculum_spec",
-    type=str,
-    default=None,
-    help=(
-        "Curriculum spec: start:sec (fixed length), start:full (frame 0 through motion "
-        "window plus post-hold; see --episode_full_hold_seconds), or start alone "
-        "(random motion start, play to window end). e.g. 0:3,5000:full"
-    ),
-)
-parser.add_argument(
     "--episode_full_hold_seconds",
     type=float,
     default=None,
-    help=(
-        "Seconds to hold the last reference frame after Auto-Jump full motion or a curriculum ``start:full`` "
-        "window (motion buffer clamps; policy keeps running). "
-        "Default: C1_FULL_WINDOW_HOLD_SECONDS (2.0)."
-    ),
-)
-parser.add_argument(
-    "--random_motion_start",
-    dest="random_motion_start",
-    action="store_true",
-    default=None,
-    help="Enable random motion start at reset (C1 random short-segment training).",
-)
-parser.add_argument(
-    "--auto_motion_start_weight",
-    action="store_true",
-    default=False,
-    help=(
-        "Enable weighted random motion-start sampling from H5 difficulty "
-        "(weights clamped to [1,3]). Effective only when random start is on."
-    ),
-)
-parser.add_argument(
-    "--auto_motion_start_weight_lookahead_seconds",
-    type=float,
-    default=3.0,
-    help="Future horizon (seconds) used by motion-start weight estimation.",
-)
-parser.add_argument(
-    "--auto_motion_start_weight_top_ratio",
-    type=float,
-    default=0.25,
-    help="Top ratio for high-weight range reporting in auto motion-start weights.",
+    help="Seconds to hold the last reference frame after the full motion (default: 2.0).",
 )
 parser.add_argument(
     "--residual_alpha",
@@ -174,12 +119,6 @@ parser.add_argument(
     dest="use_reference_residual",
     action="store_false",
     help="Disable reference residual action mode when supported by task action cfg.",
-)
-parser.add_argument(
-    "--no_random_motion_start",
-    dest="random_motion_start",
-    action="store_false",
-    help="Disable random motion start and always reset from frame 0.",
 )
 parser.add_argument(
     "--run_note",
@@ -224,7 +163,7 @@ parser.add_argument("--checkpoint", type=str, default=None, help="Checkpoint fil
 parser.add_argument("--checkpoint_dir", type=str, default=None,
                     help="Source run directory; omitted --checkpoint selects its latest .pt (requires --resume).")
 parser.add_argument("--auto_jump_interval", type=int, default=250,
-                    help="Auto-Jump task: shared PPO iteration interval for sampling updates and validation (positive; default 250).")
+                    help="Shared PPO iteration interval for sampling updates and validation (positive; default 250).")
 parser.add_argument("--auto_jump_probe_start_fraction", type=float, default=0.2,
                     help="Skip full validation and video until this fraction of the cumulative iteration budget. 0 keeps every probe.")
 parser.add_argument("--auto_jump_review", type=str, default=None, help="Reference-hash-bound support review JSON.")
@@ -297,6 +236,11 @@ if args_cli.video and args_cli.headless:
 
 try:
     MOTION_H5_PATH, DANCE_NAME = resolve_training_motion(args_cli.dance, args_cli.motion_h5)
+except (OSError, ValueError, TypeError) as error:
+    parser.error(str(error))
+if MOTION_H5_PATH is None:
+    parser.error("G1 dance tracking requires --dance or --motion_h5")
+try:
     args_cli.validation_reference = reference_video_from_args(args_cli, MOTION_H5_PATH)
 except (OSError, ValueError, TypeError) as error:
     parser.error(str(error))
@@ -314,6 +258,7 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 import gymnasium as gym  # noqa: E402
+import h5py  # noqa: E402
 import torch  # noqa: E402
 from datetime import datetime  # noqa: E402
 
@@ -324,227 +269,41 @@ from isaaclab.envs.utils.video_recorder_cfg import VideoRecorderCfg  # noqa: E40
 from isaaclab.utils.dict import print_dict  # noqa: E402
 from isaaclab.utils.io import dump_yaml  # noqa: E402
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper  # noqa: E402
-from isaaclab_tasks.utils import get_checkpoint_path  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry, parse_env_cfg  # noqa: E402
 
 import source.my_task  # noqa: F401, E402  -- register Isaac-G1-* tasks
 from source.my_task.g1_train_env_cfg import C1_FULL_WINDOW_HOLD_SECONDS  # noqa: E402
+from source.my_task.mdp.jump import validate_ground_contacts  # noqa: E402
 from source.my_task.robots.actuator_pd import (  # noqa: E402
     apply_pd_profile_to_scene_robot,
     log_pd_profile_summary,
 )
+from source.train_workflow.utils.auto_jump_training import prepare_auto_config, train_auto  # noqa: E402
 from source.train_workflow.utils.motion.window import (  # noqa: E402
     control_hz_from_env_cfg,
-    default_window_seconds_from_env_cfg,
     log_window_frames_override,
-    resolve_motion_window_seconds,
+    window_seconds_from_frames,
 )
 
 
-@dataclass(frozen=True)
-class EpisodeLengthStage:
-    start_iter: int
-    seconds: float | None = None
-    full_window: bool = False
+def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg, window_seconds: float) -> None:
+    """Use the same H5 and window for all reference consumers."""
+    for container in (env_cfg.observations.policy, env_cfg.rewards, env_cfg.events, env_cfg.terminations):
+        for name in dir(container):
+            params = getattr(getattr(container, name), "params", None)
+            if isinstance(params, dict):
+                if "h5_path" in params:
+                    params["h5_path"] = MOTION_H5_PATH
+                if "window_seconds" in params:
+                    params["window_seconds"] = window_seconds
 
-    @property
-    def start_to_end(self) -> bool:
-        return not self.full_window and self.seconds is None
-
-
-def _parse_episode_length_curriculum(spec: str) -> list[EpisodeLengthStage]:
-    stages: list[EpisodeLengthStage] = []
-    for chunk in spec.split(","):
-        item = chunk.strip()
-        if not item:
-            continue
-        parts = item.split(":")
-        if len(parts) == 1:
-            start_iter = int(parts[0])
-            if start_iter < 0:
-                raise ValueError(f"start_iter must be >= 0, got {start_iter}")
-            stages.append(EpisodeLengthStage(start_iter=start_iter))
-            continue
-        if len(parts) == 2:
-            start_iter = int(parts[0])
-            if start_iter < 0:
-                raise ValueError(f"start_iter must be >= 0, got {start_iter}")
-            if parts[1].strip().lower() == "full":
-                stages.append(EpisodeLengthStage(start_iter=start_iter, full_window=True))
-                continue
-            fixed_s = float(parts[1])
-            if fixed_s <= 0.0:
-                raise ValueError(f"Episode seconds must be > 0, got {fixed_s}")
-            stages.append(EpisodeLengthStage(start_iter=start_iter, seconds=fixed_s))
-            continue
-        raise ValueError(
-            f"Invalid curriculum chunk '{item}'. "
-            "Expected start:seconds (fixed), start:full (frame 0 through motion window), "
-            "or start alone (random motion start, play to window end)."
-        )
-    if not stages:
-        raise ValueError("Curriculum spec produced no stages.")
-    stages.sort(key=lambda s: s.start_iter)
-    if stages[0].start_iter != 0:
-        raise ValueError("Curriculum spec must start at iteration 0.")
-    for i in range(1, len(stages)):
-        if stages[i].start_iter == stages[i - 1].start_iter:
-            raise ValueError("Duplicate stage start_iter in curriculum spec.")
-    return stages
-
-
-def _curriculum_schedule(
-    stages: list[EpisodeLengthStage], total_iterations: int
-) -> list[tuple[EpisodeLengthStage, int]]:
-    total = int(total_iterations)
-    if total <= 0:
-        raise ValueError(f"total_iterations must be > 0, got {total_iterations}")
-    schedule: list[tuple[EpisodeLengthStage, int]] = []
-    for i, stage in enumerate(stages):
-        start = stage.start_iter
-        if start >= total:
-            break
-        next_start = stages[i + 1].start_iter if i + 1 < len(stages) else total
-        end = min(next_start, total)
-        count = end - start
-        if count > 0:
-            schedule.append((stage, count))
-    if not schedule:
-        raise ValueError("Curriculum schedule is empty for the requested total iterations.")
-    return schedule
-
-
-def _set_env_runtime_episode_seconds(env, seconds: float) -> None:
-    from source.my_task.mdp.episode_length import set_runtime_episode_length_seconds
-
-    set_runtime_episode_length_seconds(env.unwrapped, seconds)
-
-
-def _set_env_episode_duration(env, seconds: float) -> None:
-    """Set per-reset episode length using runtime timeout targets."""
-    _set_env_runtime_episode_seconds(env, seconds)
-    unwrapped = env.unwrapped
-    cfg = getattr(unwrapped, "cfg", None)
-    if cfg is not None and hasattr(cfg, "episode_length_s"):
-        cfg.episode_length_s = float(seconds)
-
-
-def _set_env_runtime_start_to_end_mode(
-    env, *, enabled: bool, end_seconds: float | None = None
-) -> None:
-    """Toggle runtime mode: random start, then run until motion-window end."""
-    unwrapped = env.unwrapped
-    setattr(unwrapped, "_g1_episode_random_start_to_end", bool(enabled))
-    if end_seconds is not None:
-        setattr(unwrapped, "_g1_episode_end_seconds", float(end_seconds))
-
-
-def _set_env_runtime_force_motion_start_zero(env, *, enabled: bool) -> None:
-    """Force motion reference to start at frame 0 on reset (curriculum ``start:full``)."""
-    setattr(env.unwrapped, "_g1_episode_force_motion_start_zero", bool(enabled))
-
-
-def _resolve_motion_window_seconds(env_cfg: ManagerBasedRLEnvCfg) -> float:
-    """Motion reference window length used as start-to-end episode end."""
-    ws = resolve_motion_window_seconds(env_cfg, window_frames=args_cli.window_frames)
-    if ws is not None:
-        return ws
-    return default_window_seconds_from_env_cfg(env_cfg)
-
-
-def _apply_motion_overrides(env_cfg: ManagerBasedRLEnvCfg) -> None:
-    """Patch env_cfg with reference-window/episode/random-start overrides."""
-    if (
-        MOTION_H5_PATH is None
-        and args_cli.window_frames is None
-        and args_cli.episode_seconds is None
-        and args_cli.random_motion_start is None
-        and args_cli.residual_alpha is None
-        and args_cli.use_reference_residual is None
-        and not args_cli.auto_motion_start_weight
-    ):
-        return
-
-    new_h5 = MOTION_H5_PATH
-    new_ws = resolve_motion_window_seconds(env_cfg, window_frames=args_cli.window_frames)
-    if new_ws is not None and args_cli.window_frames is not None:
-        log_window_frames_override(
-            int(args_cli.window_frames),
-            new_ws,
-            control_hz_from_env_cfg(env_cfg),
-        )
-    new_episode_s = args_cli.episode_seconds
-    new_random_start = args_cli.random_motion_start
-    new_residual_alpha = args_cli.residual_alpha
-    new_use_reference_residual = args_cli.use_reference_residual
-    new_auto_start_weight = bool(args_cli.auto_motion_start_weight)
-    new_auto_start_lookahead_s = float(args_cli.auto_motion_start_weight_lookahead_seconds)
-    new_auto_start_top_ratio = float(args_cli.auto_motion_start_weight_top_ratio)
-
-    if new_episode_s is not None:
-        env_cfg.episode_length_s = float(new_episode_s)
-    elif new_ws is not None:
-        env_cfg.episode_length_s = float(new_ws)
-
-    def _patch(params: dict) -> None:
-        if "h5_path" in params and new_h5 is not None:
-            params["h5_path"] = new_h5
-        if "window_seconds" in params and new_ws is not None:
-            params["window_seconds"] = float(new_ws)
-
-    # observations
-    pol = env_cfg.observations.policy
-    for term_name in dir(pol):
-        term = getattr(pol, term_name, None)
-        if term is not None and hasattr(term, "params") and isinstance(term.params, dict):
-            _patch(term.params)
-    # rewards
-    for term_name in vars(env_cfg.rewards):
-        term = getattr(env_cfg.rewards, term_name)
-        if hasattr(term, "params") and isinstance(term.params, dict):
-            _patch(term.params)
-    # events
-    for term_name in vars(env_cfg.events):
-        term = getattr(env_cfg.events, term_name)
-        if hasattr(term, "params") and isinstance(term.params, dict):
-            _patch(term.params)
-            if new_random_start is not None and "random_start" in term.params:
-                term.params["random_start"] = bool(new_random_start)
-            if "auto_motion_start_weight" in term.params:
-                term.params["auto_motion_start_weight"] = bool(new_auto_start_weight)
-            if "auto_motion_start_weight_lookahead_seconds" in term.params:
-                term.params["auto_motion_start_weight_lookahead_seconds"] = float(
-                    new_auto_start_lookahead_s
-                )
-            if "auto_motion_start_weight_top_ratio" in term.params:
-                term.params["auto_motion_start_weight_top_ratio"] = float(
-                    new_auto_start_top_ratio
-                )
-            if new_episode_s is not None and "segment_seconds" in term.params:
-                term.params["segment_seconds"] = float(new_episode_s)
-            elif new_ws is not None and "segment_seconds" in term.params:
-                term.params["segment_seconds"] = float(new_ws)
-    # terminations (C2 motion_end_with_hold_time_out must share motion h5/window)
-    terminations_cfg = getattr(env_cfg, "terminations", None)
-    if terminations_cfg is not None:
-        for term_name in vars(terminations_cfg):
-            term = getattr(terminations_cfg, term_name)
-            if hasattr(term, "params") and isinstance(term.params, dict):
-                _patch(term.params)
-    # C1 residual action (motion reference path)
-    joint_pos_action = getattr(env_cfg.actions, "joint_pos", None)
-    if joint_pos_action is not None:
-        if new_h5 is not None and hasattr(joint_pos_action, "motion_h5_path"):
-            joint_pos_action.motion_h5_path = new_h5
-        if new_ws is not None and hasattr(joint_pos_action, "motion_window_seconds"):
-            joint_pos_action.motion_window_seconds = float(new_ws)
-        if new_residual_alpha is not None and hasattr(joint_pos_action, "residual_alpha"):
-            joint_pos_action.residual_alpha = float(new_residual_alpha)
-        if (
-            new_use_reference_residual is not None
-            and hasattr(joint_pos_action, "use_reference_residual")
-        ):
-            joint_pos_action.use_reference_residual = bool(new_use_reference_residual)
+    action = env_cfg.actions.joint_pos
+    action.motion_h5_path = MOTION_H5_PATH
+    action.motion_window_seconds = window_seconds
+    if args_cli.residual_alpha is not None:
+        action.residual_alpha = args_cli.residual_alpha
+    if args_cli.use_reference_residual is not None:
+        action.use_reference_residual = args_cli.use_reference_residual
 
 
 def _apply_self_collision_override(env_cfg: ManagerBasedRLEnvCfg) -> None:
@@ -603,54 +362,51 @@ def main() -> None:
     )
     _apply_self_collision_override(env_cfg)
     log_pd_profile_summary(args_cli.pd_profile, o6_hands=True)
-    _apply_motion_overrides(env_cfg)
-    auto_report = None
-    if getattr(env_cfg, "auto_jump", False):
-        if MOTION_H5_PATH is None:
-            raise ValueError("Auto-Jump requires --dance or --motion_h5 to identify the reference")
-        if args_cli.episode_length_curriculum or args_cli.episode_seconds is not None or args_cli.random_motion_start is not None:
-            raise ValueError("Auto-Jump manages episode sampling and curriculum; omit manual episode/start overrides")
-        from source.train_workflow.utils.auto_jump_training import prepare_auto_config
-        # Without --window_frames, use the actual file duration, not the task's default reference.
-        if args_cli.window_frames is None:
-            import h5py
-            with h5py.File(MOTION_H5_PATH) as motion_file:
-                args_cli.window_frames = int(math.floor(len(motion_file["joint_pos_delta"]) /
-                    float(motion_file.attrs["fps"]) * control_hz_from_env_cfg(env_cfg) + 1e-6))
-            _apply_motion_overrides(env_cfg)
-        auto_report = prepare_auto_config(
-            env_cfg, MOTION_H5_PATH, _resolve_motion_window_seconds(env_cfg), args_cli.auto_jump_review,
-            hold_seconds=float(args_cli.episode_full_hold_seconds) if args_cli.episode_full_hold_seconds is not None else float(C1_FULL_WINDOW_HOLD_SECONDS),
-            tail_only=bool(args_cli.auto_jump_tail_only),
-            tail_start_seconds=args_cli.auto_jump_tail_start_seconds,
-        )
-        print(f"[AUTO HOLD] Motion {auto_report['duration_s']:.2f}s + last-frame hold {auto_report['end_hold_seconds']:.2f}s = full episode {auto_report['episode_duration_s']:.2f}s")
-        if args_cli.auto_jump_repair:
-            if not args_cli.resume or not auto_report["support_windows"]:
-                raise ValueError("Repair requires --resume and --auto_jump_review with support windows")
-            auto_report["repair_training"] = True
-            agent_cfg.num_steps_per_env = 30
-    if getattr(env_cfg, "jump_specialist", False):
-        if DANCE_NAME != "ji_le_jing_tu_collision_corrected_v7":
-            raise ValueError("Jump phase annotations require ji_le_jing_tu_collision_corrected_v7")
-        if args_cli.episode_length_curriculum:
-            raise ValueError("Jump specialist uses its fixed clip; full-motion curriculum is not compatible")
-        env_cfg.episode_length_s = float(getattr(env_cfg, "jump_training_episode_seconds", 2.6))
-        env_cfg.events.reset_robot_joints.params["segment_seconds"] = env_cfg.episode_length_s
+
+    control_hz = control_hz_from_env_cfg(env_cfg)
+    window_frames = args_cli.window_frames
+    if window_frames is None:
+        with h5py.File(MOTION_H5_PATH) as motion:
+            duration = len(motion["joint_pos_delta"]) / float(motion.attrs["fps"])
+        window_frames = math.floor(duration * control_hz + 1e-6)
+    window_seconds = window_seconds_from_frames(window_frames, control_hz)
+    log_window_frames_override(window_frames, window_seconds, control_hz)
+    _apply_motion_overrides(env_cfg, window_seconds)
+
+    hold_seconds = args_cli.episode_full_hold_seconds
+    if hold_seconds is None:
+        hold_seconds = C1_FULL_WINDOW_HOLD_SECONDS
+    auto_report = prepare_auto_config(
+        env_cfg,
+        MOTION_H5_PATH,
+        window_seconds,
+        args_cli.auto_jump_review,
+        hold_seconds=hold_seconds,
+        tail_only=args_cli.auto_jump_tail_only,
+        tail_start_seconds=args_cli.auto_jump_tail_start_seconds,
+    )
+    print(
+        f"[AUTO HOLD] Motion {auto_report['duration_s']:.2f}s + last-frame hold "
+        f"{auto_report['end_hold_seconds']:.2f}s = full episode {auto_report['episode_duration_s']:.2f}s"
+    )
+    if args_cli.auto_jump_repair:
+        if not args_cli.resume or not auto_report["support_windows"]:
+            raise ValueError("Repair requires --resume and --auto_jump_review with support windows")
+        auto_report["repair_training"] = True
+        agent_cfg.num_steps_per_env = 30
 
     if args_cli.max_iterations is not None:
         agent_cfg.max_iterations = int(args_cli.max_iterations)
     if args_cli.num_steps_per_env is not None:
         agent_cfg.num_steps_per_env = int(args_cli.num_steps_per_env)
     if args_cli.turn_smoothing:
-        if auto_report is None:raise ValueError("--turn_smoothing requires an Auto-Jump task")
         from source.my_task.mdp.turn_smoothing import configure
+
         configure(env_cfg)
     if args_cli.auto_motion_feedback:
-        if auto_report is None:raise ValueError("--auto_motion_feedback requires an Auto-Jump task")
-        env_cfg.auto_motion_feedback=True
-    if auto_report is not None and agent_cfg.max_iterations < 1:
-        raise ValueError("Auto-Jump requires at least one learning iteration")
+        env_cfg.auto_motion_feedback = True
+    if agent_cfg.max_iterations < 1:
+        raise ValueError("G1 dance tracking requires at least one learning iteration")
     batch_steps=int(env_cfg.scene.num_envs)*int(agent_cfg.num_steps_per_env)
     print(f"[PPO采样] 每环境每iter {agent_cfg.num_steps_per_env} 控制步 "
           f"({agent_cfg.num_steps_per_env/control_hz_from_env_cfg(env_cfg):.2f}s) | "
@@ -670,6 +426,17 @@ def main() -> None:
     if args_cli.experiment_suffix:
         exp_name = f"{exp_name}_{args_cli.experiment_suffix}"
         agent_cfg.experiment_name = exp_name
+    resume_path = None
+    if agent_cfg.resume:
+        resume_path = resolve_training_checkpoint(
+            exp_name,
+            DANCE_NAME,
+            load_run=args_cli.load_run,
+            checkpoint=args_cli.checkpoint,
+            checkpoint_dir=args_cli.checkpoint_dir,
+            run_pattern=agent_cfg.load_run,
+            checkpoint_pattern=agent_cfg.load_checkpoint,
+        )
     log_root_path = resolve_training_log_root(exp_name, DANCE_NAME)
     os.makedirs(log_root_path, exist_ok=True)
     run_stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -685,11 +452,9 @@ def main() -> None:
         print(f"[INFO] Run note: {note_path}")
 
     env_cfg.log_dir = log_dir
-    if auto_report is not None:
-        import json
-        os.makedirs(log_dir, exist_ok=True)
-        with open(os.path.join(log_dir, "auto_jump_candidates.json"), "w", encoding="utf-8") as report_file:
-            json.dump(auto_report, report_file, indent=2)
+    os.makedirs(log_dir, exist_ok=True)
+    with open(os.path.join(log_dir, "auto_jump_candidates.json"), "w", encoding="utf-8") as report_file:
+        json.dump(auto_report, report_file, indent=2)
     if isinstance(env_cfg, ManagerBasedRLEnvCfg):
         env_cfg.export_io_descriptors = False
         env_cfg.io_descriptors_output_dir = log_dir
@@ -706,41 +471,8 @@ def main() -> None:
             video_interval=video_interval, video_length=int(args_cli.video_length),
         )]
 
-    if agent_cfg.resume:
-        source_dir = args_cli.checkpoint_dir
-        if source_dir is None and args_cli.load_run:
-            candidate_dir = os.path.join(log_root_path, args_cli.load_run)
-            if os.path.isdir(candidate_dir):
-                source_dir = candidate_dir
-        if args_cli.checkpoint and os.path.dirname(args_cli.checkpoint):
-            # Explicit paths allow resuming old suffixed experiments into the base experiment.
-            resume_path = os.path.abspath(args_cli.checkpoint)
-            if not os.path.isfile(resume_path):
-                raise FileNotFoundError(f"Checkpoint not found: {resume_path}")
-        elif source_dir is not None:
-            if args_cli.checkpoint:
-                resume_path = os.path.abspath(os.path.join(source_dir, args_cli.checkpoint))
-                if not os.path.isfile(resume_path):
-                    raise FileNotFoundError(f"Checkpoint not found: {resume_path}")
-            else:
-                resume_path = latest_checkpoint(source_dir)
-        else:
-            resume_path = get_checkpoint_path(
-                log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint
-            )
-    else:
-        resume_path = None
-
-    if resume_path is not None and getattr(env_cfg,"auto_jump",False):
-        header = torch.load(resume_path,map_location="cpu",weights_only=False)
-        if any(name.startswith("jump_mlp.") for name in header["actor_state_dict"]):
-            env_cfg.auto_jump_exact_residual = True
-            agent_cfg.actor.class_name = "source.train_workflow.utils.exact_phase_policy:ExactPhaseResidualPolicy"
-        del header
-    env = gym.make(args_cli.task,cfg=env_cfg,render_mode="rgb_array" if args_cli.video else None)
-    if getattr(env_cfg,"jump_specialist",False) or getattr(env_cfg,"auto_jump",False):
-        from source.my_task.mdp.jump import validate_ground_contacts
-        validate_ground_contacts(env.unwrapped)
+    env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    validate_ground_contacts(env.unwrapped)
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
     runner = OnPolicyRunner(
@@ -750,96 +482,18 @@ def main() -> None:
     resume_infos = None
     if resume_path is not None:
         print(f"[INFO] Loading checkpoint: {resume_path}")
-        if getattr(env_cfg, "jump_specialist", False):
-            checkpoint_header = torch.load(resume_path, map_location="cpu", weights_only=False)
-            migrated = "optimizer_state_dict" not in checkpoint_header and bool(
-                (checkpoint_header.get("infos") or {}).get("migration")
+        if args_cli.auto_jump_repair:
+            resume_infos = runner.load(
+                resume_path,
+                load_cfg={"actor": True, "critic": True, "optimizer": False, "iteration": True},
             )
-            del checkpoint_header
-            if migrated:
-                runner.load(resume_path, load_cfg={"actor": True, "critic": True,
-                                                 "optimizer": False, "iteration": False})
-            else:
-                runner.load(resume_path)
         else:
-            if getattr(env_cfg, "auto_jump", False) and args_cli.auto_jump_repair:
-                resume_infos = runner.load(resume_path, load_cfg={"actor": True, "critic": True, "optimizer": False, "iteration": True})
-            else:
-                resume_infos = runner.load(resume_path)
+            resume_infos = runner.load(resume_path)
 
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
 
-    if auto_report is not None:
-        from source.train_workflow.utils.auto_jump_training import train_auto
-        train_auto(runner, env, env_cfg, agent_cfg, auto_report, log_dir, args_cli, resume_infos)
-    elif args_cli.episode_length_curriculum:
-        spec = args_cli.episode_length_curriculum_spec
-        if spec is None:
-            spec = "0:3,5000:full"
-        motion_window_seconds = _resolve_motion_window_seconds(env_cfg)
-        full_hold_seconds = (
-            float(args_cli.episode_full_hold_seconds)
-            if args_cli.episode_full_hold_seconds is not None
-            else float(C1_FULL_WINDOW_HOLD_SECONDS)
-        )
-        stages = _parse_episode_length_curriculum(spec)
-        schedule = _curriculum_schedule(stages, int(agent_cfg.max_iterations))
-        print(f"[INFO] Episode-length curriculum enabled: {spec}")
-        print(f"[INFO] Full-window stages use motion window: {motion_window_seconds:.2f}s")
-        print(
-            f"[INFO] Full-window hold after last frame: {full_hold_seconds:.2f}s "
-            f"(ref clamps; same as short-segment tail hold)"
-        )
-        print(
-            f"[INFO] Start-to-end-only stages (iter alone) play to window end "
-            f"with random motion start."
-        )
-        for stage, stage_iters in schedule:
-            if stage.full_window:
-                full_episode_s = motion_window_seconds + full_hold_seconds
-                _set_env_episode_duration(env, full_episode_s)
-                _set_env_runtime_start_to_end_mode(env, enabled=False)
-                _set_env_runtime_force_motion_start_zero(env, enabled=True)
-                print(
-                    f"[INFO] Curriculum stage start={stage.start_iter} "
-                    f"mode=full_window motion={motion_window_seconds:.2f}s "
-                    f"hold={full_hold_seconds:.2f}s total={full_episode_s:.2f}s "
-                    f"motion_start=frame0 iters={stage_iters}"
-                )
-            elif stage.start_to_end:
-                _set_env_runtime_episode_seconds(env, motion_window_seconds)
-                _set_env_runtime_start_to_end_mode(
-                    env,
-                    enabled=True,
-                    end_seconds=motion_window_seconds,
-                )
-                _set_env_runtime_force_motion_start_zero(env, enabled=False)
-                print(
-                    f"[INFO] Curriculum stage start={stage.start_iter} "
-                    f"mode=start_to_end end={motion_window_seconds:.2f}s "
-                    f"motion_start=random iters={stage_iters}"
-                )
-            else:
-                assert stage.seconds is not None
-                _set_env_runtime_episode_seconds(env, stage.seconds)
-                _set_env_runtime_start_to_end_mode(env, enabled=False)
-                _set_env_runtime_force_motion_start_zero(env, enabled=False)
-                print(
-                    f"[INFO] Curriculum stage start={stage.start_iter} "
-                    f"fixed={stage.seconds:.2f}s iters={stage_iters} start_to_end=off"
-                )
-            runner.learn(
-                num_learning_iterations=stage_iters, init_at_random_ep_len=not getattr(env_cfg, "jump_specialist", False)
-            )
-    else:
-        _set_env_runtime_start_to_end_mode(env, enabled=False)
-        _set_env_runtime_force_motion_start_zero(env, enabled=False)
-        if args_cli.episode_seconds is not None:
-            _set_env_runtime_episode_seconds(env, float(args_cli.episode_seconds))
-            print(f"[INFO] Runtime episode length set to {float(args_cli.episode_seconds):.2f}s")
-        runner.learn(num_learning_iterations=agent_cfg.max_iterations,
-                     init_at_random_ep_len=not getattr(env_cfg, "jump_specialist", False))
+    train_auto(runner, env, env_cfg, agent_cfg, auto_report, log_dir, args_cli, resume_infos)
     env.close()
 
 

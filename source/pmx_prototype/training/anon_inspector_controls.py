@@ -15,6 +15,17 @@ def keyboard_event_names(event):
     return getattr(event.input,'name',str(event.input)).split('.')[-1],kind
 
 
+def keys_for_command(command):
+    """Map forward, left and yaw requests to the corresponding key cards."""
+    keys = set()
+    for value, (positive, negative) in zip(command, (('W', 'S'), ('A', 'D'), ('Q', 'E'))):
+        if value > 1e-4:
+            keys.add(positive)
+        elif value < -1e-4:
+            keys.add(negative)
+    return frozenset(keys)
+
+
 class InspectorCommands:
     MOVEMENT={'W','A','S','D','Q','E'}
     PLUS={'EQUAL','NUMPAD_ADD','NUMPAD_EQUAL'}
@@ -22,8 +33,8 @@ class InspectorCommands:
 
     def __init__(self,config):
         self.fixed_forward=False;self.speed=.2;self.yaw_speed=.35
-        self.held=set();self.pulses=set();self.enabled=True;self.reset_pending=False;self.view=0
-        self.switching=False;self.walk_speed=.2;self.walk_yaw=.35
+        self.held=set();self.pulses=set();self.enabled=True;self.reset_pending=False;self.push_pending=False;self.view=0
+        self.walk_speed=.2;self.walk_yaw=.35
         self.configure(config)
 
     def configure(self,config):
@@ -33,7 +44,7 @@ class InspectorCommands:
         self.max_yaw=float(config.get('max_yaw',.6))
         self.speed=float(config.get('amp_forward_speed',.4)) if self.fixed_forward else min(self.walk_speed,self.max_speed)
         self.yaw_speed=min(self.walk_yaw,self.max_yaw)
-        self.stop();self.reset_pending=False
+        self.stop();self.reset_pending=False;self.push_pending=False
         self.notice=''
 
     def stop(self):
@@ -47,7 +58,7 @@ class InspectorCommands:
         tracked=key in self.MOVEMENT|self.PLUS|self.MINUS|{'SPACE','R','V'}
         if not tracked:return False
         if kind=='KEY_RELEASE':self.held.discard(key);return True
-        if self.switching or not self.enabled:return True
+        if not self.enabled:return True
         if key in self.MOVEMENT:
             if kind=='KEY_PRESS':
                 if self.fixed_forward and key!='W':
@@ -64,7 +75,7 @@ class InspectorCommands:
         return True
 
     def command(self,consume=True):
-        if self.switching or not self.enabled:return [0.,0.,0.]
+        if not self.enabled:return [0.,0.,0.]
         keys=self.held|self.pulses
         if consume:self.pulses.clear()
         if self.fixed_forward:return [self.speed if 'W' in keys else 0.,0.,0.]
@@ -76,8 +87,17 @@ class InspectorCommands:
 
     def request_reset(self):
         self.stop()
+        self.push_pending=False
         self.reset_pending=True
         self.notice='Reset requested.'
 
     def consume_reset(self):
         value=self.reset_pending;self.reset_pending=False;return value
+
+    def request_push(self):
+        self.reset_pending=False
+        self.push_pending=True
+        self.notice='Random balance push requested. Press R to reset after falling.'
+
+    def consume_push(self):
+        value=self.push_pending;self.push_pending=False;return value

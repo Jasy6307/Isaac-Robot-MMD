@@ -11,15 +11,17 @@ from source_layout import PROJECT_ROOT,resolve_source
 from anon_policy_transport import PolicyServer
 
 class AnonSecondaryStream:
-    def __init__(self,args,initial,manifest,links,app):
+    def __init__(self,args,initial=None,manifest=None,links=None,app=None,*,on_wait=None):
         self.output=args.output/'secondary_worker';self.output.mkdir(parents=True,exist_ok=True)
         self.channel=PolicyServer(self.output)
         self.log=(self.output/'worker.log').open('w',encoding='utf-8')
-        self.process=None;self.app=app
+        self.process=None;self.app=app;self.on_wait=on_wait
+        self.metadata=None
         cmd=[sys.executable,str(resolve_source('runtime/anon_secondary_worker.py')),'--pmx',str(args.pmx.resolve()),
              '--quality',args.quality,'--physics-threads',str(args.physics_threads if args.physics_threads is not None else 16),
              '--task-threads',os.environ.get('ANON_SECONDARY_TASK_THREADS','8'),
              '--skirt-edge-stride',str(args.skirt_edge_stride),
+             '--secondary-mode',getattr(args,'secondary_mode','full'),
              '--output',str(self.output.resolve()),*self.channel.worker_args]
         if args.secondary_profile and not args.legacy_secondary_physics:cmd+=['--profile',str(args.secondary_profile.resolve())]
         if args.reference_hair_compute:cmd+=['--reference-hair-compute']
@@ -27,18 +29,28 @@ class AnonSecondaryStream:
         try:
             self.process=subprocess.Popen(cmd,cwd=PROJECT_ROOT,stdout=self.log,stderr=subprocess.STDOUT,
                 creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-            deadline=time.perf_counter()+120
-            while self.channel.connection is None:
-                if self.process.poll() is not None:raise RuntimeError('Secondary worker failed; see '+str(self.output/'worker.log'))
-                if time.perf_counter()>deadline:raise TimeoutError('Secondary worker connection timed out')
-                app.update();time.sleep(.01)
-            self.channel.send(dict(poses=initial,manifest=manifest,links=links))
-            self.metadata=self.receive(-1,True)
+            if initial is not None:self.initialize(initial,manifest,links)
         except BaseException:
             self.close();raise
 
+    def initialize(self,initial,manifest,links):
+        """Send the unchanged initial pose after overlapping worker Kit startup."""
+        deadline=time.perf_counter()+120
+        while self.channel.connection is None:
+            if self.channel.error:raise self.channel.error
+            if self.process.poll() is not None:raise RuntimeError('Secondary worker failed; see '+str(self.output/'worker.log'))
+            if time.perf_counter()>deadline:raise TimeoutError('Secondary worker connection timed out')
+            if self.on_wait:self.on_wait()
+            else:self.app.update()
+            time.sleep(.01)
+        self.channel.send(dict(poses=initial,manifest=manifest,links=links))
+        self.metadata=self.receive(-1,True,on_wait=self.on_wait)
+        self.on_wait=None
+
     def send(self,seq,state,audit=False):
-        self.channel.send(dict(seq=seq,poses=state['poses'],reset=bool(state['restart']),audit=audit))
+        request=dict(seq=seq,poses=state['poses'],reset=bool(state['restart']),audit=audit)
+        if 'secondary_mode' in state:request['secondary_mode']=state['secondary_mode']
+        self.channel.send(request)
 
     def receive(self,seq,startup=False,on_wait=None):
         deadline=time.perf_counter()+120;ui_tick=0.

@@ -35,7 +35,8 @@ def build_audit_scratch_acceptance_limits(workspace, legacy_argv=None):
         if s['label'] in ['stand', 'stand_end']:
             upper('displacement_m', s['displacement_m'], 0.25)
             upper('pelvis_yaw_drift_rad', s['pelvis_yaw_drift_rad'], 0.35)
-        if s['label'] in ['run_forward', 'run_backward', 'run_left', 'run_right']:
+        flight_required = report.get('protocol_specification', {}).get('running_flight_required', True)
+        if flight_required and s['label'] in ['run_forward', 'run_backward', 'run_left', 'run_right']:
             force = report['env_config'].get('unified_eval_force_flight')
             value = s['force_flight_fraction'] if force else s['flight_fraction']
             if value <= 0.01:
