@@ -7,6 +7,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 import numpy as np
+from source.train_workflow.utils.motion.robot_fk import robot_fk
 
 PROTOCOL="reference-motion-v1"
 CHATTER_RAD=.035
@@ -98,12 +99,11 @@ class KinematicMotionAnalyzer:
     def __init__(self,env,report,buf):
         import torch
         from scipy.spatial.transform import Rotation
-        from source.train_workflow.utils.motion.self_collision import G1CollisionModel
         robot=env.scene["robot"]
         self.names=list(robot.joint_names);self.report=report;self.hz=1/env.step_dt
         self.joints=[i for i,n in enumerate(self.names) if any(p in n for p in ("hip_yaw","hip_roll","ankle_pitch","ankle_roll"))]
         self.sides=[0 if self.names[i].startswith("left_") else 1 for i in self.joints]
-        self.model=G1CollisionModel(Path(env.cfg.scene.robot.spawn.usd_path),self.names,"cpu")
+        self.robot_usd=Path(env.cfg.scene.robot.spawn.usd_path)
         steps=torch.arange(buf.num_steps+1,device=env.device)
         self.reference_q=buf.q_ref_abs(steps).detach().cpu().numpy()
         default=robot.data.default_root_state.torch[0,:7].detach().cpu().numpy()
@@ -113,15 +113,14 @@ class KinematicMotionAnalyzer:
         self.reference_feet,self.reference_yaw=self.feet(self.reference_q,root)
 
     def feet(self,q,root):
-        import torch
         from scipy.spatial.transform import Rotation
-        with torch.no_grad():rotations,positions=self.model.fk(torch.as_tensor(q,dtype=torch.float32))
+        ankles=("left_ankle_roll_link", "right_ankle_roll_link")
+        rotations,positions=robot_fk(self.robot_usd,self.names,q,links=ankles)
         base=Rotation.from_quat(root[:,3:7]).as_matrix()
         feet=[];yaw=[]
-        for side in ("left","right"):
-            name=side+"_ankle_roll_link"
-            feet.append(np.einsum("nij,nj->ni",base,positions[name].numpy())+root[:,:3])
-            orientation=base@rotations[name].numpy()
+        for name in ankles:
+            feet.append(np.einsum("nij,nj->ni",base,positions[name])+root[:,:3])
+            orientation=base@rotations[name]
             yaw.append(np.arctan2(orientation[:,1,0],orientation[:,0,0]))
         return np.stack(feet,axis=1),np.stack(yaw,axis=1)
 

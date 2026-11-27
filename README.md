@@ -9,7 +9,7 @@
 
 
 <p align="center">
-  <img src="assets/demo/jile_10-30s.gif" alt="G1 回放《极乐净土》片段" width="640">
+  <img src="image/jile_10-30s.gif" alt="G1 回放《极乐净土》片段" width="640">
 </p>
 
 （借物表：动作 by Yurie， 参考模型 by Bushiroad Games/BungleScrungle/海新_/小麦弥望）
@@ -95,7 +95,7 @@ G1 链路围绕三个入口脚本组织（见下节），由环境注册、重�
 ## 核心脚本（三步工作流）
 
 日常从 `sim_main.py` 按顺序调用以下三个模式。原入口也可直接运行。
-训练、续训和验证默认使用 G1 舞蹈跟踪（`Isaac-G1-Dance-Tracking-v0`），`--task` 可以省略。训练回合由自动课程管理。
+训练、续训和验证默认使用舞蹈跟踪任务（`Isaac-G1-Dance-Tracking-v0`）和带蓝灯的 G1+ O6 本体。加 `--robot g1` 可切回原版 G1 O6。`--task` 可以省略，训练回合由自动课程管理。
 新训练和续训写入 `logs/rsl_rl/g1_dance_tracking/<舞蹈>/<运行>/`。验证和续训也会查找原 `g1_auto_jump_conditional` 目录中的检查点。
 
 | 步骤 | 模式 | 原入口 | 作用 |

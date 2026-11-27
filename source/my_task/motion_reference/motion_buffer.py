@@ -173,6 +173,18 @@ class DanceMotionReferenceBuffer:
             d_interp = d0 + (d1 - d0) * alpha[:, None]
             delta[:, valid] = d_interp.astype(np.float32, copy=False)
 
+        from source.train_workflow.utils.motion.neck_reference import NECK_JOINTS, verified_neck_reference
+        if all(name in self._runtime_joint_names for name in NECK_JOINTS):
+            neck_ids = [self._runtime_joint_names.index(name) for name in NECK_JOINTS]
+            if not valid[neck_ids].any():
+                neck = verified_neck_reference(self._h5_path, h5_fps, h5_total_frames)
+                if neck is not None:
+                    delta[:, neck_ids] = neck[f0] + (neck[f1] - neck[f0]) * alpha[:, None]
+                label = "matched Deep Blue Town track" if neck is not None else "neutral (no neck track)"
+            else:
+                label = "H5 channels"
+            print(f"[G1+] Neck reference: {label}", flush=True)
+
         # q_ref_abs[t, j] = default_joint_pos[j] + delta[t, j]
         q_ref_abs_np = self._default_joint_pos_np[None, :] + delta
         # q_ref_rel[t, j] = delta[t, j]

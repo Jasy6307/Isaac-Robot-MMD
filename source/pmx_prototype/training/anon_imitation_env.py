@@ -34,6 +34,7 @@ def quat_multiply(a,b):
 
 class AnonImitationEnv(AnonLocomotionEnv):
     def __init__(self,num_envs=2048,seed=42,app=None,evaluation=False,config=None):
+        self.push_recovery = None
         device=config.get('simulation_device','cuda:0')
         self.motion=FullMotionReference(config['full_motion_path'],device)
         if config.get('unified_walk_run'):
@@ -135,6 +136,9 @@ class AnonImitationEnv(AnonLocomotionEnv):
                 from lateral_symmetry import AnatomicalMirror,paired_reference_std
                 mirror=self.amp.mirror if hasattr(self,'amp') else AnatomicalMirror.from_env(self)
                 self.amp_reference_std=paired_reference_std(reference_q[:,self.q_order],mirror,self.cfg.get('amp_phase_std_floor',.04))
+        if not self.evaluation and self.cfg.get('train_push_recovery'):
+            from anon_push_recovery import PushRecovery
+            self.push_recovery = PushRecovery(self,self.cfg['train_push_recovery'],seed)
         self.imitation_ready=True
         self.reset(self.ids);self.refresh()
 
@@ -157,7 +161,10 @@ class AnonImitationEnv(AnonLocomotionEnv):
         self._pending_command_delta=None
         if self.cfg.get('unified_walk_run'):
             from unified_walk_run_reference import sample_commands
-            return sample_commands(self,ids,on_reset)
+            sample_commands(self,ids,on_reset)
+            if self.push_recovery is not None:
+                self.push_recovery.resample_weak_commands(ids,on_reset)
+            return
         if self.cfg.get('continuous_commands'):
             n=len(ids);angle=torch.rand(n,device=self.device)*2*torch.pi
             speed=torch.rand(n,device=self.device)*.4
@@ -288,6 +295,8 @@ class AnonImitationEnv(AnonLocomotionEnv):
     def reset(self,ids,*,heading=None,root_xy=None,command=None,phase=None):
         if not self.imitation_ready:return super().reset(ids)
         if not len(ids):return
+        if self.push_recovery is not None:
+            self.push_recovery.reset(ids)
         self.sample_commands(ids,on_reset=True)
         if command is not None:
             if len(ids)!=self.num_envs:raise ValueError('Explicit reset command requires all environments')
@@ -433,6 +442,12 @@ class AnonImitationEnv(AnonLocomotionEnv):
         self.robot.set_dof_position_targets(self._step_position_target,self.ids)
         if self._step_velocity_target is not None:
             self.robot.set_dof_velocity_targets(self._step_velocity_target,self.ids)
+        if self.push_recovery is not None:
+            self.push_recovery.apply()
+
+    def _apply_disturbance_substep(self):
+        if self.push_recovery is not None:
+            self.push_recovery.apply_substep()
 
     def _begin_substeps(self):
         self._measure_step_forces=self.evaluation and self.cfg.get('unified_substep_support_forces',False)
@@ -478,7 +493,8 @@ class AnonImitationEnv(AnonLocomotionEnv):
         height_error=(pelvis[:,2]-ref['positions'][:,self.pelvis_reference_id,2]).square()
         dot=(pelvis[:,3:]*ref['rotations'][:,self.pelvis_reference_id]).sum(-1).abs().clamp(0,1)
         orientation_error=(2*torch.acos(dot.clamp(max=1.-1e-7))).square()
-        base_velocity_error=(self.root_vel[:,:3]-self.reference_root_velocity(ref)[:,:3]).square().sum(-1)
+        reference_velocity = self.reference_root_velocity(ref)
+        base_velocity_error=(self.root_vel[:,:3]-reference_velocity[:,:3]).square().sum(-1)
         feet=self.poses[:,self.foot_ids]
         quat=feet[:,:,None,3:].expand(-1,-1,8,-1)
         conjugate=torch.cat([-quat[...,:3],quat[...,3:]],-1)
@@ -504,10 +520,14 @@ class AnonImitationEnv(AnonLocomotionEnv):
             near=(heights<bottom[:,:,None]+.003)&(contact[:,:,None]>.5)
             weight=near.float()*ref['contacts'][:,:,None].clamp(0,1)
             slip_square=(velocity[...,:2].square().sum(-1).clamp(max=1.)*weight).sum((1,2))/weight.sum((1,2)).clamp_min(1)
-        reward=(3.*torch.exp(-pose_error/.065)+.7*torch.exp(-velocity_error/12.)
-                +self.cfg.get('imitation_keypoint_weight',2.)*torch.exp(-key_error/.008)+self.cfg.get('imitation_height_weight',1.)*torch.exp(-height_error/self.cfg.get('imitation_height_error_scale',.0025))
-                +.7*torch.exp(-orientation_error/self.cfg.get('imitation_orientation_error_scale',.12))+self.cfg.get('imitation_velocity_weight',1.)*torch.exp(-base_velocity_error/self.cfg.get('imitation_velocity_error_scale',.12))
-                +self.cfg.get('imitation_contact_weight',.8)*(1-contact_error)-.003*(self.actions-self.previous_actions).square().sum(-1)
+        recovery = self.push_recovery
+        style_scale = 1. if recovery is None else recovery.style_scale()
+        tracking_scale = 1. if recovery is None else recovery.tracking_scale()
+        motion_style = (3.*torch.exp(-pose_error/.065)+.7*torch.exp(-velocity_error/12.)
+                        +self.cfg.get('imitation_keypoint_weight',2.)*torch.exp(-key_error/.008))
+        reward=(style_scale*motion_style+self.cfg.get('imitation_height_weight',1.)*torch.exp(-height_error/self.cfg.get('imitation_height_error_scale',.0025))
+                +.7*torch.exp(-orientation_error/self.cfg.get('imitation_orientation_error_scale',.12))+tracking_scale*self.cfg.get('imitation_velocity_weight',1.)*torch.exp(-base_velocity_error/self.cfg.get('imitation_velocity_error_scale',.12))
+                +style_scale*self.cfg.get('imitation_contact_weight',.8)*(1-contact_error)-.003*(self.actions-self.previous_actions).square().sum(-1)
                 -.005*self.actions.square().mean(-1))
         if self.cfg.get('imitation_angular_velocity_weight',0.):
             angular_error=(self.root_vel[:,3:]-ref['velocities'][:,self.base_reference_id,3:]).square().sum(-1)
@@ -570,7 +590,7 @@ class AnonImitationEnv(AnonLocomotionEnv):
         if self.cfg.get('continuous_tracking_weight',0.):
             speed=self.continuous_ref_commands[:,:2].norm(dim=-1)
             scale=self.cfg.get('continuous_tracking_error_base',.003)+self.cfg.get('continuous_tracking_error_speed_scale',.05)*speed.square()
-            reward+=self.cfg['continuous_tracking_weight']*torch.exp(-base_velocity_error/scale)
+            reward+=tracking_scale*self.cfg['continuous_tracking_weight']*torch.exp(-base_velocity_error/scale)
             if self.cfg.get('continuous_low_speed_pose_weight',0.):
                 low=(speed>.02)&(speed<.16)
                 reward+=self.cfg['continuous_low_speed_pose_weight']*(torch.exp(-key_error/.004)+torch.exp(-orientation_error/.03))*low
@@ -614,7 +634,7 @@ class AnonImitationEnv(AnonLocomotionEnv):
             reward += skirt_rate
         if hasattr(self,'amp'):
             style=self.amp.observe()
-            reward+=self.cfg.get('amp_style_weight',5.)*style*(self.commands[:,:2].norm(dim=-1)>.05)
+            reward+=self.cfg.get('amp_style_weight',5.)*style*(self.commands[:,:2].norm(dim=-1)>.05)*style_scale
         if self.cfg.get('hand_orientation_weight',0.):
             hands=[self.links.index(s+'_hand') for s in ['left','right']]
             refs=[self.motion.links.index(s+'_hand') for s in ['left','right']]
@@ -633,7 +653,7 @@ class AnonImitationEnv(AnonLocomotionEnv):
             normalized=(self.q[:,self.upper_ids]-qref[:,self.upper_ids])/self.amp_reference_std[self.upper_ids]
             phase_pose=torch.exp(-normalized.square().mean(-1))
             phase_velocity=torch.exp(-(self.qd[:,self.upper_ids]-qdref[:,self.upper_ids]).square().mean(-1)/.3)
-            reward+=(self.cfg['amp_phase_upper_weight']*phase_pose+self.cfg.get('amp_phase_velocity_weight',0.)*phase_velocity)*(self.commands[:,:2].norm(dim=-1)>.05)
+            reward+=(self.cfg['amp_phase_upper_weight']*phase_pose+self.cfg.get('amp_phase_velocity_weight',0.)*phase_velocity)*(self.commands[:,:2].norm(dim=-1)>.05)*style_scale
         if self.cfg.get('idle_yaw_weight',0.):
             idle=self.commands.abs().sum(-1)<.01
             quiet_yaw=torch.exp(-self.root_vel[:,5].square()/.0036)
@@ -643,9 +663,11 @@ class AnonImitationEnv(AnonLocomotionEnv):
             idle=self.commands.abs().sum(-1)<.001
             reward+=self.cfg['unified_idle_velocity_weight']*torch.exp(-self.root_vel[:,:2].square().sum(-1)/.0025)*idle
         fallen=(pelvis[:,2]<.65)|(self.gravity[:,2]>-.5)|~torch.isfinite(self.q).all(-1)
-        # Early termination teaches recovery around the reference manifold.
         if not self.evaluation:
-            fallen|=(key_error>.09)|(height_error>.035)
+            reference_failed = (key_error > .09) | (height_error > .035)
+            if recovery is not None:
+                reference_failed = recovery.reference_failure(reference_failed, fallen)
+            fallen |= reference_failed
         head_weight=self.cfg.get('idle_head_reward_weight',0.)
         measure_head=self.evaluation and self.cfg.get('unified_idle_head_acceptance',False)
         measure_alignment = head_weight or self.idle_neck_pitch_weight or self.idle_neck_yaw_weight or measure_head
@@ -692,7 +714,13 @@ class AnonImitationEnv(AnonLocomotionEnv):
                 head_error, backward_walk & ~fallen, self.backward_head_alignment_weight)
             reward += backward_head_rate
         done,timeout=self._episode_outcome(fallen)
+        if recovery is not None:
+            recovery.record_falls(fallen)
         reward=(reward-5*fallen)*self.dt
+        if recovery is not None:
+            reward = recovery.adjust_reward(reward, fallen)
+            if recovery.steps is not None:
+                reward += recovery.corrective_step_reward(pelvis, feet, bottom, contact, reference_velocity, fallen)
         self.episode_returns+=reward;self.episode_errors+=torch.sqrt(pose_error)
         extras={'time_outs':timeout,'log':{
             'Imitation/joint_rmse_rad':pose_error.sqrt().mean(),

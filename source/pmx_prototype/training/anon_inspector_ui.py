@@ -15,6 +15,7 @@ import os
 import time
 from collections import deque
 from pathlib import Path
+from anon_character_push import MANUAL_PUSH_MAX, MANUAL_PUSH_MIN
 from anon_inspector_acceptance import acceptance_requests, demo_requests
 from anon_inspector_controls import InspectorCommands,keyboard_event_names,keys_for_command
 
@@ -134,8 +135,26 @@ class PolicyInspector:
                                     style={'background_color':0xff594836,'color':self.TEXT,'border_radius':6,
                                            'font_size':self.BUTTON_FONT,**self.font_style})
                                 self.reset_button=ui.Button('RESET  [R]',clicked_fn=self.reset,width=ui.Fraction(1))
-                            self.push_button=ui.Button('Push Character',clicked_fn=self.push_character,height=38,
-                                tooltip='A small random horizontal push to knock the character off balance. Press R to reset.')
+                            with ui.HStack(height=24,spacing=6):
+                                self.label('Push (m/s)',width=98,size=14)
+                                self.push_strength=ui.SimpleFloatModel(.525)
+                                ui.FloatSlider(model=self.push_strength,min=MANUAL_PUSH_MIN,max=MANUAL_PUSH_MAX,
+                                               width=ui.Fraction(1))
+                            with ui.HStack(height=22,spacing=4):
+                                for strength in (.20,.525,.70,.80,1.00):
+                                    ui.Button(f'{strength:g}',width=ui.Fraction(1),style={'font_size':13},
+                                              clicked_fn=lambda value=strength:self.push_strength.set_value(value))
+                            with ui.HStack(height=24,spacing=4):
+                                self.push_random=ui.SimpleBoolModel(True)
+                                ui.CheckBox(model=self.push_random,width=22)
+                                self.label('Random',width=62,size=13)
+                                self.push_angle=ui.SimpleFloatModel(0.)
+                                angle=ui.FloatSlider(model=self.push_angle,min=-180.,max=180.,width=ui.Fraction(1),
+                                                     tooltip='0° forward, +90° left, -90° right, ±180° back, relative to the character')
+                                angle.enabled=False
+                                self.push_random.add_value_changed_fn(lambda model:setattr(angle,'enabled',not model.get_value_as_bool()))
+                            self.push_button=ui.Button('Push once [P]',clicked_fn=self.push_from_controls,height=31,
+                                tooltip='One horizontal impulse. Hold a movement key and press P to push mid-stride.')
                         with ui.VStack(spacing=4,width=ui.Fraction(1)):
                             with ui.HStack(height=24):
                                 self.label('Speed [-/+]')
@@ -384,15 +403,24 @@ class PolicyInspector:
         self.finish_playback('stopped')
         self.controls.request_reset()
 
-    def push_character(self):
+    def push_character(self, settings=None):
         self.finish_playback('interrupted by push')
-        self.controls.request_push()
+        self.controls.request_push(settings)
+
+    def push_from_controls(self):
+        strength=min(MANUAL_PUSH_MAX,max(MANUAL_PUSH_MIN,self.push_strength.get_value_as_float()))
+        angle=None if self.push_random.get_value_as_bool() else round(self.push_angle.get_value_as_float())
+        self.push_character(dict(delta_speed=round(strength,3),angle_degrees=angle))
 
     def on_key(self,event):
         names=keyboard_event_names(event)
         if names is None:return False
         key,kind=names
         if kind!='KEY_RELEASE' and not has_foreground():return False
+        if key == 'P':
+            if kind == 'KEY_PRESS' and self.controls.enabled:
+                self.push_from_controls()
+            return True
         if self.playback_frames is not None and key != 'V':
             if kind == 'KEY_PRESS' and self.controls.enabled:
                 if key == 'SPACE':
@@ -424,7 +452,8 @@ class PolicyInspector:
                 return request
             self.finish_playback('complete')
         request = dict(command=self.command(), reset=self.controls.consume_reset())
-        if self.controls.consume_push():request['push_character']=True
+        push=self.controls.consume_push()
+        if push:request['push_character']=push
         return request
 
     def camera_offset(self,heading):

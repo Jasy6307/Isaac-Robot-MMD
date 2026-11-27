@@ -45,10 +45,14 @@ from source.train_workflow.utils.motion.resolve import (  # noqa: E402
     infer_dance_name_from_motion_path,
     normalize_dance_stem,
     resolve_dance_h5_by_name,
+    resolve_training_motion,
 )
 from isaaclab.app import AppLauncher  # noqa: E402
 
 parser = argparse.ArgumentParser(description="Play a G1 dance tracking checkpoint.")
+parser.add_argument("--robot", choices=("g1plus", "g1"),
+                    help="Dance body: G1+ O6 (default) or original G1 O6. Bundles use their embedded body.")
+parser.add_argument("--motion_h5", help="Use an explicit reference H5, as in training.")
 parser.add_argument("--eval_motion_start", type=float, default=None,
                     help="Evaluate a 2.6s clip at this source time; default full motion.")
 parser.add_argument("--eval_motion_starts", type=float, nargs="+", default=None,
@@ -387,6 +391,7 @@ from isaaclab.assets import AssetBaseCfg  # noqa: E402
 from isaaclab.envs import ManagerBasedRLEnv, ManagerBasedRLEnvCfg  # noqa: E402
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry, parse_env_cfg  # noqa: E402
+from source.my_task.robots.dance_body import configure_dance_body  # noqa: E402
 
 import source.my_task  # noqa: F401, E402
 
@@ -1383,7 +1388,7 @@ def main() -> None:
         # A bundle fixes its policy, motion and timing; switching requires another bundle.
         for name in ("dance", "checkpoint", "checkpoint_dir", "load_run", "window_frames",
                      "physics_hz", "decimation", "residual_alpha", "use_reference_residual",
-                     "self_collisions", "pd_profile"):
+                     "self_collisions", "pd_profile", "robot", "motion_h5"):
             if getattr(args_cli, name, None) is not None:
                 raise ValueError(f"--{name} cannot override a deployment bundle")
         _DEPLOYMENT_BUNDLE = load_bundle(args_cli.deployment_bundle)
@@ -1412,6 +1417,11 @@ def main() -> None:
         MOTION_H5_PATH = os.path.abspath(args_cli.deployment_bundle)
         register_packaged_reference(MOTION_H5_PATH, _DEPLOYMENT_BUNDLE["reference"])
         dance_options = [DANCE_NAME]
+    elif args_cli.motion_h5:
+        MOTION_H5_PATH, DANCE_NAME = resolve_training_motion(args_cli.dance, args_cli.motion_h5)
+        if not DANCE_NAME:
+            raise ValueError("Use --dance to name the explicit --motion_h5 reference")
+        dance_options = [DANCE_NAME]
     elif args_cli.dance:
         dance_options = [normalize_dance_stem(args_cli.dance)]
         print(f"[INFO] Single-dance eval: {dance_options[0]} (other dance assets skipped).")
@@ -1422,7 +1432,7 @@ def main() -> None:
     selected_dance = normalize_dance_stem(DANCE_NAME or dance_options[0])
     if selected_dance not in dance_options:
         dance_options.insert(0, selected_dance)
-    if _DEPLOYMENT_BUNDLE is None:
+    if _DEPLOYMENT_BUNDLE is None and not args_cli.motion_h5:
         MOTION_H5_PATH, DANCE_NAME = resolve_dance_h5_by_name(selected_dance)
 
     env_cfg.scene.num_envs = int(args_cli.num_envs)
@@ -1435,6 +1445,7 @@ def main() -> None:
         env_cfg.scene.robot = apply_pd_profile_to_scene_robot(
             env_cfg.scene.robot, args_cli.pd_profile, o6_hands=True
         )
+        configure_dance_body(env_cfg, args_cli.robot or "g1plus")
         _apply_self_collision_override(env_cfg)
     if _DEPLOYMENT_BUNDLE is None:
         log_pd_profile_summary(args_cli.pd_profile, o6_hands=True)

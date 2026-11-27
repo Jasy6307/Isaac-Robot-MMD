@@ -1,0 +1,74 @@
+[
+  {
+    "name": "walk_run",
+    "iterations": 731,
+    "seed": 42,
+    "settings": {
+      "train_freeze_obs_normalization": true,
+      "train_push_recovery": {
+        "weak_command_probability": 0.46,
+        "weak_direction_bias": 0.22,
+        "light_m_s": [0.025, 0.175],
+        "challenge_m_s": [0.125, 0.40],
+        "extreme_m_s": [0.40, 0.55],
+        "extreme_probability": 0.20,
+        "corrective_steps": {
+          "minimum_impulse_m_s": 0.22
+        }
+      }
+    }
+  },
+  {
+    "name": "waist_legs",
+    "iterations": 1426,
+    "seed": 64,
+    "settings": {
+      "train_push_recovery": {
+        "challenge_m_s": [0.34, 0.59],
+        "extreme_m_s": [0.59, 0.75],
+        "extreme_probability": 0.28,
+        "learning_rate": 0.000015
+      }
+    }
+  },
+  {
+    "name": "standing_support",
+    "iterations": 595,
+    "seed": 101,
+    "settings": {
+      "train_retention_fore_aft_pushes": false,
+      "train_push_recovery": {
+        "challenge_m_s": [0.30, 0.58],
+        "extreme_m_s": [0.58, 0.76],
+        "extreme_probability": 0.40,
+        "standing_side_fraction": 0.45,
+        "standing_fore_aft_fraction": 0.45,
+        "learning_rate": 0.0000165
+      }
+    }
+  },
+  {
+    "name": "standing_lateral",
+    "iterations": 2350,
+    "seed": 337,
+    "settings": {
+      "train_push_recovery": {
+        "extreme_probability": 0.30,
+        "standing_side_bands": {
+          "left": {
+            "impulse": {"challenge_m_s": [0.45, 0.79], "extreme_probability": 0.24},
+            "sustained": {"challenge_m_s": [0.45, 0.79], "extreme_probability": 0.24},
+            "ramp": {"challenge_m_s": [0.45, 0.79], "extreme_probability": 0.24},
+            "double": {"challenge_m_s": [0.45, 0.79], "extreme_probability": 0.24}
+          },
+          "right": {
+            "impulse": {"challenge_m_s": [0.42, 0.812], "extreme_probability": 0.24},
+            "sustained": {"challenge_m_s": [0.42, 0.79], "extreme_probability": 0.24},
+            "ramp": {"challenge_m_s": [0.42, 0.79], "extreme_probability": 0.24},
+            "double": {"challenge_m_s": [0.42, 0.79], "extreme_probability": 0.24}
+          }
+        }
+      }
+    }
+  }
+]

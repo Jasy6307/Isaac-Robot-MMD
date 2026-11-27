@@ -17,8 +17,11 @@ def configure_jump_sensors(env_cfg):
     from isaaclab.sensors import ContactSensorCfg
     env_cfg.scene.robot.spawn.activate_contact_sensors = True
     for side in ("left", "right"):
+        ground_sensor = getattr(env_cfg.scene, f"jump_{side}_ground", None)
+        link_path = (ground_sensor.prim_path if ground_sensor is not None else
+                     f"{{ENV_REGEX_NS}}/Robot/{side}_ankle_roll_link")
         setattr(env_cfg.scene, f"jump_{side}_contact", ContactSensorCfg(
-            prim_path=f"{{ENV_REGEX_NS}}/Robot/{side}_ankle_roll_link",
+            prim_path=link_path,
             update_period=0.0, history_length=max(1, int(env_cfg.decimation)),
         ))
 

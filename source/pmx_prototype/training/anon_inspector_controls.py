@@ -94,10 +94,15 @@ class InspectorCommands:
     def consume_reset(self):
         value=self.reset_pending;self.reset_pending=False;return value
 
-    def request_push(self):
+    def request_push(self, settings=None):
         self.reset_pending=False
-        self.push_pending=True
-        self.notice='Random balance push requested. Press R to reset after falling.'
+        self.push_pending=True if settings is None else settings
+        if settings is None:
+            self.notice='Random balance push requested. Press R to reset after falling.'
+        else:
+            angle=settings['angle_degrees']
+            direction='random direction' if angle is None else f'{angle:+.0f}°'
+            self.notice=f'Push {settings["delta_speed"]:.3f} m/s, {direction}. Press R to reset.'
 
     def consume_push(self):
         value=self.push_pending;self.push_pending=False;return value

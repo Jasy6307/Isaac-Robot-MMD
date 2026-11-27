@@ -1,0 +1,1051 @@
+{
+  "higher": [
+    {
+      "name": "stage_01",
+      "iterations": 204,
+      "seed": 72,
+      "settings": {
+        "train_retention_weight": 5.0,
+        "train_retention_batch_size": 2048,
+        "train_push_recovery": {
+          "episode_probability": 0.6,
+          "challenge_probability": 0.53,
+          "weak_challenge_probability": 0.64,
+          "light_m_s": [
+            0.12,
+            0.235
+          ],
+          "challenge_m_s": [
+            0.44,
+            0.54
+          ],
+          "extreme_m_s": [
+            0.54,
+            0.65
+          ],
+          "extreme_probability": 0.48,
+          "recovery_window_seconds": 3.55,
+          "style_recovery_seconds": 2.0,
+          "corrective_steps": {
+            "reference_grace_seconds": 1.45,
+            "landing_bonus": 0.52
+          },
+          "learning_rate": 1.8e-05
+        },
+        "train_retention_mild_pushes": true
+      }
+    },
+    {
+      "name": "stage_02",
+      "iterations": 189,
+      "seed": 73,
+      "settings": {
+        "train_retention_weight": 5.5,
+        "train_push_recovery": {
+          "challenge_m_s": [
+            0.45,
+            0.55
+          ],
+          "extreme_m_s": [
+            0.55,
+            0.67
+          ],
+          "extreme_probability": 0.51,
+          "learning_rate": 1.7e-05
+        }
+      }
+    },
+    {
+      "name": "stage_03",
+      "iterations": 192,
+      "seed": 74,
+      "settings": {
+        "train_push_recovery": {
+          "challenge_m_s": [
+            0.48,
+            0.59
+          ],
+          "extreme_m_s": [
+            0.59,
+            0.73
+          ],
+          "extreme_probability": 0.52
+        }
+      }
+    },
+    {
+      "name": "stage_04",
+      "iterations": 192,
+      "seed": 75,
+      "settings": {
+        "train_retention_weight": 6.0,
+        "train_push_recovery": {
+          "challenge_m_s": [
+            0.49,
+            0.6
+          ],
+          "extreme_m_s": [
+            0.6,
+            0.75
+          ],
+          "extreme_probability": 0.55,
+          "learning_rate": 1.6e-05
+        }
+      }
+    },
+    {
+      "name": "stage_05",
+      "iterations": 186,
+      "seed": 76,
+      "settings": {
+        "train_push_recovery": {
+          "challenge_m_s": [
+            0.5,
+            0.62
+          ],
+          "extreme_m_s": [
+            0.62,
+            0.8
+          ],
+          "extreme_probability": 0.53,
+          "learning_rate": 1.55e-05
+        }
+      }
+    },
+    {
+      "name": "stage_06",
+      "iterations": 186,
+      "seed": 77,
+      "settings": {
+        "train_retention_weight": 7.5,
+        "train_push_recovery": {
+          "challenge_m_s": [
+            0.44,
+            0.54
+          ],
+          "extreme_m_s": [
+            0.54,
+            0.72
+          ],
+          "extreme_probability": 0.5,
+          "learning_rate": 1.35e-05
+        }
+      }
+    },
+    {
+      "name": "stage_07",
+      "iterations": 157,
+      "seed": 78,
+      "settings": {
+        "train_retention_weight": 8.0,
+        "train_push_recovery": {
+          "challenge_m_s": [
+            0.48,
+            0.59
+          ],
+          "extreme_m_s": [
+            0.59,
+            0.75
+          ],
+          "learning_rate": 1.25e-05
+        }
+      }
+    }
+  ],
+  "standing": [
+    {
+      "name": "first_support",
+      "iterations": 180,
+      "seed": 101,
+      "settings": {
+        "train_retention_weight": 9.0,
+        "train_push_recovery": {
+          "episode_probability": 0.86,
+          "weak_command_probability": 0.94,
+          "challenge_probability": 0.82,
+          "weak_challenge_probability": 0.66,
+          "weak_direction_bias": 0.0,
+          "vulnerable_phase_boost": 0.0,
+          "forward_focus_fraction": 0.01,
+          "stand_focus_fraction": 0.96,
+          "left_step_focus_fraction": 0.0,
+          "light_m_s": [
+            0.13,
+            0.235
+          ],
+          "challenge_m_s": [
+            0.43,
+            0.59
+          ],
+          "extreme_m_s": [
+            0.59,
+            0.735
+          ],
+          "extreme_probability": 0.59,
+          "initial_delay_seconds": [
+            1.35,
+            3.25
+          ],
+          "repeat_delay_seconds": [
+            4.45,
+            6.0
+          ],
+          "recovery_window_seconds": 3.6,
+          "style_recovery_seconds": 2.05,
+          "recovery_balance_weight": 6.5,
+          "recovery_speed_scale_m_s": 0.23,
+          "recovery_fall_penalty": 6.5,
+          "corrective_steps": {
+            "reference_grace_seconds": 1.65,
+            "style_floor": 0.17,
+            "landing_bonus": 1.0,
+            "trunk_weight": 1.7,
+            "standing_brake_weight": 3.1
+          },
+          "learning_rate": 1.95e-05
+        }
+      }
+    },
+    {
+      "name": "stronger_support",
+      "iterations": 180,
+      "seed": 102,
+      "settings": {
+        "train_push_recovery": {
+          "challenge_m_s": [
+            0.5,
+            0.62
+          ],
+          "extreme_m_s": [
+            0.62,
+            0.76
+          ],
+          "extreme_probability": 0.65,
+          "learning_rate": 1.65e-05
+        }
+      }
+    }
+  ],
+  "lateral": [
+    {
+      "name": "round_01",
+      "iterations": 235,
+      "seed": 323,
+      "settings": {
+        "train_retention_weight": 9.000000170948159,
+        "train_push_recovery": {
+          "challenge_m_s": [
+            0.35,
+            0.5600000153853344
+          ],
+          "extreme_m_s": [
+            0.5600000153853344,
+            0.7100000282064464
+          ],
+          "extreme_probability": 0.5200000102568896,
+          "initial_delay_seconds": [
+            1.75,
+            4.8
+          ],
+          "recovery_fall_penalty": 7.0,
+          "corrective_steps": {
+            "standing_brake_weight": 3.5000000854740794
+          },
+          "learning_rate": 1.9499999487155523e-05,
+          "standing_side_fraction": 0.8,
+          "standing_fore_aft_fraction": 0.14,
+          "standing_left_fraction": 0.5,
+          "standing_side_spread_deg": 8.000001282111192,
+          "standing_shaped_fraction": 0.0,
+          "standing_side_landing_weight": 1.0500000683792636
+        },
+        "train_retention_fore_aft_pushes": true
+      }
+    },
+    {
+      "name": "round_03",
+      "iterations": 235,
+      "seed": 325,
+      "settings": {
+        "train_retention_weight": 12.35503694141013,
+        "train_push_recovery": {
+          "challenge_m_s": [
+            0.265,
+            0.43
+          ],
+          "extreme_m_s": [
+            0.43,
+            0.5988759235352532
+          ],
+          "extreme_probability": 0.25597666236345584,
+          "corrective_steps": {
+            "minimum_impulse_m_s": 0.26,
+            "reference_grace_seconds": 1.78,
+            "standing_brake_weight": 3.6775184707050648
+          },
+          "learning_rate": 1.663488917576961e-05,
+          "standing_left_fraction": 0.36,
+          "standing_side_spread_deg": 10.662777060575975,
+          "standing_shaped_fraction": 0.08520886593843117,
+          "standing_side_landing_weight": 1.192014776564052
+        }
+      }
+    },
+    {
+      "name": "round_05",
+      "iterations": 235,
+      "seed": 327,
+      "settings": {
+        "train_retention_weight": 15.704051572950478,
+        "train_push_recovery": {
+          "extreme_m_s": [
+            0.43,
+            0.7046418050532668
+          ],
+          "extreme_probability": 0.27168232078277144,
+          "corrective_steps": {
+            "standing_brake_weight": 3.8520257864752385
+          },
+          "learning_rate": 1.3787845281148568e-05,
+          "standing_side_fraction": 0.72,
+          "standing_fore_aft_fraction": 0.16,
+          "standing_side_spread_deg": 13.280386797128578,
+          "standing_shaped_fraction": 0.4092836101065334,
+          "standing_side_landing_weight": 1.331620629180191,
+          "standing_waveform_mix": {
+            "sustained": 0.18,
+            "ramp": 0.64,
+            "double": 0.18
+          },
+          "standing_contact_reward": {
+            "reach_weight": 1.5,
+            "load_weight": 3.3
+          }
+        }
+      }
+    },
+    {
+      "name": "round_06",
+      "iterations": 235,
+      "seed": 328,
+      "settings": {
+        "train_retention_weight": 12.915529423840026,
+        "train_push_recovery": {
+          "challenge_m_s": [
+            0.365,
+            0.53
+          ],
+          "extreme_m_s": [
+            0.53,
+            0.7128882355960006
+          ],
+          "extreme_probability": 0.28119882407280117,
+          "corrective_steps": {
+            "standing_brake_weight": 3.957764711920013
+          },
+          "learning_rate": 1.4953411728479924e-05,
+          "standing_side_fraction": 0.8,
+          "standing_fore_aft_fraction": 0.14,
+          "standing_left_fraction": 0.64,
+          "standing_side_spread_deg": 14.86647067880019,
+          "standing_shaped_fraction": 0.4240870596688018,
+          "standing_side_landing_weight": 1.4162117695360104,
+          "standing_contact_reward": {
+            "reach_weight": 1.95,
+            "load_weight": 4.2
+          }
+        }
+      }
+    },
+    {
+      "name": "round_07",
+      "iterations": 235,
+      "seed": 329,
+      "settings": {
+        "train_retention_weight": 10.100948830547496,
+        "train_push_recovery": {
+          "challenge_m_s": [
+            0.43,
+            0.6590853947492746
+          ],
+          "extreme_m_s": [
+            0.6590853947492746,
+            0.8916565570403369
+          ],
+          "extreme_probability": 0.5860569298328497,
+          "corrective_steps": {
+            "minimum_impulse_m_s": 0.34,
+            "reference_grace_seconds": 1.65,
+            "standing_brake_weight": 4.050474415273748
+          },
+          "learning_rate": 1.6197153508357512e-05,
+          "standing_left_fraction": 0.38,
+          "standing_side_spread_deg": 16.257116229106217,
+          "standing_shaped_fraction": 0.4370664181383247,
+          "standing_side_landing_weight": 1.4903795322189983,
+          "standing_side_bands": {
+            "left": {
+              "impulse": {
+                "challenge_m_s": [
+                  0.5125,
+                  0.6155
+                ],
+                "extreme_m_s": [
+                  0.6155,
+                  0.7937
+                ],
+                "extreme_probability": 0.31578083699279363
+              },
+              "sustained": {
+                "challenge_m_s": [
+                  0.5375,
+                  0.6405
+                ],
+                "extreme_m_s": [
+                  0.6405,
+                  0.7937
+                ],
+                "extreme_probability": 0.31578083699279363
+              },
+              "ramp": {
+                "challenge_m_s": [
+                  0.5375,
+                  0.6405
+                ],
+                "extreme_m_s": [
+                  0.6405,
+                  0.7937
+                ],
+                "extreme_probability": 0.31578083699279363
+              },
+              "double": {
+                "challenge_m_s": [
+                  0.4825,
+                  0.5855
+                ],
+                "extreme_m_s": [
+                  0.5855,
+                  0.7937
+                ],
+                "extreme_probability": 0.31578083699279363
+              }
+            },
+            "right": {
+              "impulse": {
+                "challenge_m_s": [
+                  0.4825,
+                  0.5855
+                ],
+                "extreme_m_s": [
+                  0.5855,
+                  0.7937
+                ],
+                "extreme_probability": 0.31578083699279363
+              },
+              "sustained": {
+                "challenge_m_s": [
+                  0.5125,
+                  0.6155
+                ],
+                "extreme_m_s": [
+                  0.6155,
+                  0.7937
+                ],
+                "extreme_probability": 0.31578083699279363
+              },
+              "ramp": {
+                "challenge_m_s": [
+                  0.5125,
+                  0.6155
+                ],
+                "extreme_m_s": [
+                  0.6155,
+                  0.7937
+                ],
+                "extreme_probability": 0.31578083699279363
+              },
+              "double": {
+                "challenge_m_s": [
+                  0.4825,
+                  0.5855
+                ],
+                "extreme_m_s": [
+                  0.5855,
+                  0.7937
+                ],
+                "extreme_probability": 0.31578083699279363
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "round_08",
+      "iterations": 235,
+      "seed": 330,
+      "settings": {
+        "train_retention_weight": 10.285251543053196,
+        "train_push_recovery": {
+          "challenge_m_s": [
+            0.35,
+            0.5414100617221278
+          ],
+          "extreme_m_s": [
+            0.5414100617221278,
+            0.8163938657289896
+          ],
+          "extreme_probability": 0.5971150925831917,
+          "corrective_steps": {
+            "standing_brake_weight": 4.142625771526598
+          },
+          "learning_rate": 1.5644245370840414e-05,
+          "standing_left_fraction": 0.37,
+          "standing_side_spread_deg": 4.0,
+          "standing_shaped_fraction": 0.44996760801372365,
+          "standing_side_landing_weight": 1.564100617221278,
+          "standing_contact_reward": {
+            "early_capture_weight": 3.0
+          },
+          "standing_side_bands": {
+            "left": {
+              "impulse": {
+                "challenge_m_s": [
+                  0.5875,
+                  0.6905
+                ],
+                "extreme_m_s": [
+                  0.6905,
+                  0.8027
+                ],
+                "extreme_probability": 0.32177067514922886
+              },
+              "sustained": {
+                "challenge_m_s": [
+                  0.6125,
+                  0.7155
+                ],
+                "extreme_m_s": [
+                  0.7155,
+                  0.8205
+                ],
+                "extreme_probability": 0.32177067514922886
+              },
+              "ramp": {
+                "challenge_m_s": [
+                  0.6125,
+                  0.7155
+                ],
+                "extreme_m_s": [
+                  0.7155,
+                  0.8205
+                ],
+                "extreme_probability": 0.32177067514922886
+              },
+              "double": {
+                "challenge_m_s": [
+                  0.5875,
+                  0.6905
+                ],
+                "extreme_m_s": [
+                  0.6905,
+                  0.8027
+                ],
+                "extreme_probability": 0.32177067514922886
+              }
+            },
+            "right": {
+              "impulse": {
+                "challenge_m_s": [
+                  0.495,
+                  0.598
+                ],
+                "extreme_m_s": [
+                  0.598,
+                  0.8027
+                ],
+                "extreme_probability": 0.32177067514922886
+              },
+              "sustained": {
+                "extreme_m_s": [
+                  0.6155,
+                  0.8027
+                ],
+                "extreme_probability": 0.32177067514922886
+              },
+              "ramp": {
+                "challenge_m_s": [
+                  0.5375,
+                  0.6405
+                ],
+                "extreme_m_s": [
+                  0.6405,
+                  0.8027
+                ],
+                "extreme_probability": 0.32177067514922886
+              },
+              "double": {
+                "challenge_m_s": [
+                  0.5375,
+                  0.6405
+                ],
+                "extreme_m_s": [
+                  0.6405,
+                  0.8027
+                ],
+                "extreme_probability": 0.32177067514922886
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "round_10",
+      "iterations": 235,
+      "seed": 332,
+      "settings": {
+        "train_retention_weight": 10.657459822862576,
+        "train_push_recovery": {
+          "challenge_m_s": [
+            0.43,
+            0.7811713840576319
+          ],
+          "extreme_m_s": [
+            0.7811713840576319,
+            1.055480870772325
+          ],
+          "extreme_probability": 0.6194475893717546,
+          "corrective_steps": {
+            "standing_brake_weight": 4.328729911431288
+          },
+          "learning_rate": 1.452762053141227e-05,
+          "standing_left_fraction": 0.36,
+          "standing_side_spread_deg": 20.430948671469324,
+          "standing_shaped_fraction": 0.58,
+          "standing_side_landing_weight": 1.7129839291450306,
+          "standing_contact_reward": {
+            "followup_weight": 3.2
+          },
+          "standing_side_bands": {
+            "left": {
+              "impulse": {
+                "challenge_m_s": [
+                  0.66,
+                  0.79
+                ],
+                "extreme_m_s": [
+                  0.79,
+                  1.008
+                ],
+                "extreme_probability": 0.3338674442430338
+              },
+              "sustained": {
+                "challenge_m_s": [
+                  0.66,
+                  0.79
+                ],
+                "extreme_m_s": [
+                  0.79,
+                  1.008
+                ],
+                "extreme_probability": 0.3338674442430338
+              },
+              "ramp": {
+                "challenge_m_s": [
+                  0.66,
+                  0.79
+                ],
+                "extreme_m_s": [
+                  0.79,
+                  1.008
+                ],
+                "extreme_probability": 0.3338674442430338
+              },
+              "double": {
+                "challenge_m_s": [
+                  0.66,
+                  0.79
+                ],
+                "extreme_m_s": [
+                  0.79,
+                  1.008
+                ],
+                "extreme_probability": 0.3338674442430338
+              }
+            },
+            "right": {
+              "impulse": {
+                "challenge_m_s": [
+                  0.5125,
+                  0.6155
+                ],
+                "extreme_m_s": [
+                  0.6155,
+                  0.8208
+                ],
+                "extreme_probability": 0.3338674442430338
+              },
+              "sustained": {
+                "challenge_m_s": [
+                  0.5875,
+                  0.6905
+                ],
+                "extreme_m_s": [
+                  0.6905,
+                  0.8208
+                ],
+                "extreme_probability": 0.3338674442430338
+              },
+              "ramp": {
+                "challenge_m_s": [
+                  0.5875,
+                  0.6905
+                ],
+                "extreme_m_s": [
+                  0.6905,
+                  0.8208
+                ],
+                "extreme_probability": 0.3338674442430338
+              },
+              "double": {
+                "challenge_m_s": [
+                  0.6125,
+                  0.7155
+                ],
+                "extreme_m_s": [
+                  0.7155,
+                  0.8208
+                ],
+                "extreme_probability": 0.3338674442430338
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "round_11",
+      "iterations": 235,
+      "seed": 333,
+      "settings": {
+        "train_retention_weight": 10.862139831852708,
+        "train_push_recovery": {
+          "challenge_m_s": [
+            0.43,
+            0.7995925848667438
+          ],
+          "extreme_m_s": [
+            0.7995925848667438,
+            1.089253072255697
+          ],
+          "extreme_probability": 0.6317283899111625,
+          "corrective_steps": {
+            "standing_brake_weight": 4.431069915926354
+          },
+          "learning_rate": 1.3913580504441873e-05,
+          "standing_side_spread_deg": 21.966048738895317,
+          "standing_side_landing_weight": 1.7948559327410838,
+          "standing_side_bands": {
+            "left": {
+              "impulse": {
+                "extreme_m_s": [
+                  0.79,
+                  1.058
+                ],
+                "extreme_probability": 0.34051954453521305
+              },
+              "sustained": {
+                "extreme_m_s": [
+                  0.79,
+                  1.108
+                ],
+                "extreme_probability": 0.34051954453521305
+              },
+              "ramp": {
+                "extreme_m_s": [
+                  0.79,
+                  1.108
+                ],
+                "extreme_probability": 0.34051954453521305
+              },
+              "double": {
+                "extreme_m_s": [
+                  0.79,
+                  1.058
+                ],
+                "extreme_probability": 0.34051954453521305
+              }
+            },
+            "right": {
+              "impulse": {
+                "challenge_m_s": [
+                  0.6125,
+                  0.7155
+                ],
+                "extreme_m_s": [
+                  0.7155,
+                  0.8308
+                ],
+                "extreme_probability": 0.34051954453521305
+              },
+              "sustained": {
+                "challenge_m_s": [
+                  0.6625,
+                  0.7655
+                ],
+                "extreme_m_s": [
+                  0.7655,
+                  0.8705
+                ],
+                "extreme_probability": 0.34051954453521305
+              },
+              "ramp": {
+                "challenge_m_s": [
+                  0.6625,
+                  0.7655
+                ],
+                "extreme_m_s": [
+                  0.7655,
+                  0.8705
+                ],
+                "extreme_probability": 0.34051954453521305
+              },
+              "double": {
+                "challenge_m_s": [
+                  0.6375,
+                  0.7405
+                ],
+                "extreme_m_s": [
+                  0.7405,
+                  0.8455
+                ],
+                "extreme_probability": 0.34051954453521305
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "round_12",
+      "iterations": 235,
+      "seed": 334,
+      "settings": {
+        "train_retention_weight": 11.0,
+        "train_push_recovery": {
+          "challenge_m_s": [
+            0.43,
+            0.82
+          ],
+          "extreme_m_s": [
+            0.82,
+            1.1199999999999999
+          ],
+          "extreme_probability": 0.64,
+          "corrective_steps": {
+            "standing_brake_weight": 4.5
+          },
+          "learning_rate": 1.35e-05,
+          "standing_side_spread_deg": 23.0,
+          "standing_side_landing_weight": 1.85,
+          "standing_side_bands": {
+            "left": {
+              "impulse": {
+                "extreme_m_s": [
+                  0.79,
+                  1.108
+                ],
+                "extreme_probability": 0.34756197730832633
+              },
+              "sustained": {
+                "extreme_probability": 0.34756197730832633
+              },
+              "ramp": {
+                "extreme_probability": 0.34756197730832633
+              },
+              "double": {
+                "extreme_probability": 0.34756197730832633
+              }
+            },
+            "right": {
+              "impulse": {
+                "challenge_m_s": [
+                  0.6625,
+                  0.7655
+                ],
+                "extreme_m_s": [
+                  0.7655,
+                  0.8705
+                ],
+                "extreme_probability": 0.34756197730832633
+              },
+              "sustained": {
+                "challenge_m_s": [
+                  0.66,
+                  0.79
+                ],
+                "extreme_m_s": [
+                  0.79,
+                  0.908
+                ],
+                "extreme_probability": 0.34756197730832633
+              },
+              "ramp": {
+                "challenge_m_s": [
+                  0.66,
+                  0.79
+                ],
+                "extreme_m_s": [
+                  0.79,
+                  0.908
+                ],
+                "extreme_probability": 0.34756197730832633
+              },
+              "double": {
+                "challenge_m_s": [
+                  0.6625,
+                  0.7655
+                ],
+                "extreme_m_s": [
+                  0.7655,
+                  0.8705
+                ],
+                "extreme_probability": 0.34756197730832633
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "round_13",
+      "iterations": 235,
+      "seed": 335,
+      "settings": {
+        "train_push_recovery": {
+          "standing_left_fraction": 0.37,
+          "standing_side_bands": {
+            "left": {
+              "impulse": {
+                "extreme_probability": 0.35306188487940365
+              },
+              "sustained": {
+                "extreme_probability": 0.35306188487940365
+              },
+              "ramp": {
+                "extreme_probability": 0.35306188487940365
+              },
+              "double": {
+                "extreme_probability": 0.35306188487940365
+              }
+            },
+            "right": {
+              "impulse": {
+                "challenge_m_s": [
+                  0.66,
+                  0.79
+                ],
+                "extreme_m_s": [
+                  0.79,
+                  0.908
+                ],
+                "extreme_probability": 0.35306188487940365
+              },
+              "sustained": {
+                "extreme_m_s": [
+                  0.79,
+                  0.958
+                ],
+                "extreme_probability": 0.35306188487940365
+              },
+              "ramp": {
+                "extreme_m_s": [
+                  0.79,
+                  0.958
+                ],
+                "extreme_probability": 0.35306188487940365
+              },
+              "double": {
+                "challenge_m_s": [
+                  0.66,
+                  0.79
+                ],
+                "extreme_m_s": [
+                  0.79,
+                  0.958
+                ],
+                "extreme_probability": 0.35306188487940365
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "round_15",
+      "iterations": 235,
+      "seed": 337,
+      "settings": {
+        "train_push_recovery": {
+          "standing_left_fraction": 0.36,
+          "standing_shaped_fraction": 0.52,
+          "standing_side_bands": {
+            "left": {
+              "impulse": {
+                "extreme_m_s": [
+                  0.79,
+                  1.115
+                ],
+                "extreme_probability": 0.36000000000000004
+              },
+              "sustained": {
+                "extreme_m_s": [
+                  0.79,
+                  1.115
+                ],
+                "extreme_probability": 0.36000000000000004
+              },
+              "ramp": {
+                "extreme_m_s": [
+                  0.79,
+                  1.115
+                ],
+                "extreme_probability": 0.36000000000000004
+              },
+              "double": {
+                "extreme_probability": 0.36000000000000004
+              }
+            },
+            "right": {
+              "impulse": {
+                "challenge_m_s": [
+                  0.71,
+                  0.812
+                ],
+                "extreme_m_s": [
+                  0.812,
+                  0.908
+                ],
+                "extreme_probability": 0.36000000000000004
+              },
+              "sustained": {
+                "extreme_probability": 0.36000000000000004
+              },
+              "ramp": {
+                "extreme_probability": 0.36000000000000004
+              },
+              "double": {
+                "extreme_m_s": [
+                  0.79,
+                  0.908
+                ],
+                "extreme_probability": 0.36000000000000004
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

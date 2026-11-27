@@ -1,0 +1,56 @@
+#usda 1.0
+(
+    defaultPrim = "g1_plus_o6"
+    endTimeCode = 1000000
+    kilogramsPerUnit = 1
+    metersPerUnit = 1
+    startTimeCode = 0
+    subLayers = [
+        @./g1_plus_o6_head_look_closed.usda@
+    ]
+    upAxis = "Z"
+)
+
+over "g1_plus_o6"
+{
+    over "Materials"
+    {
+        over "HeadLook"
+        {
+            def Material "CameraBarBlue"
+            {
+                token outputs:surface.connect = </g1_plus_o6/Materials/HeadLook/CameraBarBlue/Surface.outputs:surface>
+
+                def Shader "Surface"
+                {
+                    uniform token info:id = "UsdPreviewSurface"
+                    color3f inputs:diffuseColor = (0.019, 0.12, 0.26)
+                    color3f inputs:emissiveColor = (0.065, 1.04, 3.34)
+                    float inputs:metallic = 0
+                    float inputs:roughness = 0.24
+                    token outputs:surface
+                }
+            }
+        }
+    }
+
+    over "Geometry"
+    {
+        over "head_link"
+        {
+            over "head_link_with_2dof_head"
+            {
+                def GeomSubset "CameraBarDiffuser" (
+                    prepend apiSchemas = ["MaterialBindingAPI"]
+                )
+                {
+                    uniform token elementType = "face"
+                    uniform token familyName = "materialBind"
+                    int[] indices = [4697, 4698, 4699, 4700, 4701, 4702, 4703, 4704, 4705, 4706, 4707, 4708, 4709, 4710, 4711, 4712, 4713, 4714, 4715, 4716, 4717, 4718, 4719, 4720, 4721, 4722, 4723, 4724, 4725, 4726, 4727, 4728, 4729, 4730, 4731, 4732, 4733, 4734, 4735, 4736, 4737, 4738, 4739, 4740, 4741, 4742, 4743, 4744, 4745, 4746, 4747, 4748, 4749, 4750, 4751, 4752, 4753, 4754, 4755, 4756, 4757, 4758, 4815, 4816, 4817, 4818, 4819, 4820, 4821, 4822, 4823, 4824, 4825, 4826, 4827, 4828, 4829, 4830, 4831, 4832, 4833, 4834, 4835, 4836, 4837, 4838, 4839, 4840, 4841, 4842, 4843, 4844, 4845, 4846, 4847, 4848, 4849, 4850, 4851, 4852, 4853, 4854, 4855, 4856, 4857, 4858, 4859, 4860, 4861, 4862, 4863, 4864, 4865, 4866, 4867, 4868, 4869, 4870, 4871, 4872, 4873, 4874, 4875, 4876, 4877]
+                    rel material:binding = </g1_plus_o6/Materials/HeadLook/CameraBarBlue>
+                }
+            }
+        }
+    }
+}
+

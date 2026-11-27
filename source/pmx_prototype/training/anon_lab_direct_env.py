@@ -81,6 +81,14 @@ class _LabSceneBinding:
             patterns=[f'{path}/Robot/Bodies/{side}_ankle_roll' for path in contact_paths for side in ('left','right')]
             self.ground_contact_view=self.view.create_rigid_contact_view(
                 patterns,[['/World/Ground'] for _ in patterns],max_contact_data_count=2048)
+        if self.lab_owner.training_capture_support:
+            self.recovery_contact_view = self.view.create_rigid_contact_view(
+                '/World/envs/env_*/Robot/Bodies/*_ankle_roll', ['/World/Ground'],
+                max_contact_data_count=max(2048, num_envs * 16))
+            sensors = {str(path): i for i, path in enumerate(self.recovery_contact_view.sensor_paths)}
+            self.recovery_contact_indices = torch.tensor([
+                [sensors[f'{path}/Bodies/{side}_ankle_roll'] for side in ('left', 'right')]
+                for path in self.robot.prim_paths], device=self.device)
 
 
     def _environment_origins(self, initial_root):
@@ -113,6 +121,9 @@ class AnonDirectEnv(DirectRLEnv):
         self.controller_config=copy.deepcopy(config)
         self.controller_config['asset']=str(resolve_body_asset(PROJECT_ROOT,self.controller_config))
         self.controller_config['environment_backend']='lab-direct'
+        push_settings = config.get('train_push_recovery') or {}
+        corrective_steps = push_settings.get('corrective_steps') or {}
+        self.training_capture_support = not evaluation and bool(corrective_steps.get('capture_support'))
         self.task=None
         self._step_context=None
         self._reset_reference=None
@@ -168,7 +179,7 @@ class AnonDirectEnv(DirectRLEnv):
                     if drive and drive.GetStiffnessAttr().Get() is not None:
                         drive.GetStiffnessAttr().Set(drive.GetStiffnessAttr().Get()*config['upper_drive_scale'])
                         drive.GetDampingAttr().Set(drive.GetDampingAttr().Get()*config.get('upper_damping_scale',1.))
-        if config.get('measure_ground_contact',False):
+        if config.get('measure_ground_contact',False) or self.training_capture_support:
             # Match Lab ContactSensor: CPU contact reports require processing.
             # A raw tensor contact view does not enable this setting itself.
             self.sim.set_setting('/physics/disableContactProcessing',False)
@@ -207,6 +218,7 @@ class AnonDirectEnv(DirectRLEnv):
             self.task._record_substep()
         else:
             self.task._apply_step_targets()
+        self.task._apply_disturbance_substep()
         self._applied_substeps+=1
 
     def _get_dones(self):

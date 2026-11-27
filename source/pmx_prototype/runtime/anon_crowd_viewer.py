@@ -285,7 +285,7 @@ def run(argv):
                 requested[controlled]=manual['command']
                 if manual['reset']:reset_ids=[controlled]
             request=dict(seq=sequence,commands=requested,reset=reset,reset_ids=reset_ids,controlled_actor=controlled,
-                push_character=bool(manual and manual.get('push_character')),
+                push_character=manual.get('push_character',False) if manual is not None else False,
                 acceptance_inputs=bool(manual and manual.get('acceptance_inputs')),background_paused=paused)
             if a.mixed_secondary:
                 request['secondary_modes']=crowd_secondary_modes(a.characters,controlled,a.secondary_mode,True,controlled_mode)

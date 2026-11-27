@@ -49,6 +49,8 @@ from isaaclab.app import AppLauncher  # noqa: E402
 from source import sim_compat
 
 parser = argparse.ArgumentParser(description="Train G1 dance tracking PPO with RSL-RL.")
+parser.add_argument("--robot", choices=("g1plus", "g1"), default="g1plus",
+                    help="Dance body: G1+ O6 (default) or original G1 O6.")
 parser.add_argument(
     "--task",
     type=normalize_g1_train_task_id,
@@ -274,6 +276,7 @@ from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry, parse_env_cfg
 import source.my_task  # noqa: F401, E402  -- register Isaac-G1-* tasks
 from source.my_task.g1_train_env_cfg import C1_FULL_WINDOW_HOLD_SECONDS  # noqa: E402
 from source.my_task.mdp.jump import validate_ground_contacts  # noqa: E402
+from source.my_task.robots.dance_body import configure_dance_body  # noqa: E402
 from source.my_task.robots.actuator_pd import (  # noqa: E402
     apply_pd_profile_to_scene_robot,
     log_pd_profile_summary,
@@ -360,6 +363,7 @@ def main() -> None:
     env_cfg.scene.robot = apply_pd_profile_to_scene_robot(
         env_cfg.scene.robot, args_cli.pd_profile, o6_hands=True
     )
+    configure_dance_body(env_cfg, args_cli.robot)
     _apply_self_collision_override(env_cfg)
     log_pd_profile_summary(args_cli.pd_profile, o6_hands=True)
 
@@ -385,6 +389,7 @@ def main() -> None:
         tail_only=args_cli.auto_jump_tail_only,
         tail_start_seconds=args_cli.auto_jump_tail_start_seconds,
     )
+    auto_report["robot_variant"] = args_cli.robot
     print(
         f"[AUTO HOLD] Motion {auto_report['duration_s']:.2f}s + last-frame hold "
         f"{auto_report['end_hold_seconds']:.2f}s = full episode {auto_report['episode_duration_s']:.2f}s"

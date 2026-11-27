@@ -1,0 +1,36 @@
+{
+  "train_retention_weight": 3.75,
+  "train_retention_steps": 3,
+  "train_retention_batch_size": 1536,
+  "train_retention_clean_only": true,
+  "train_retention_lateral_weight": 4.0,
+  "train_leg_std": 0.088,
+  "train_push_recovery": {
+    "episode_probability": 0.5,
+    "weak_command_probability": 0.42,
+    "challenge_probability": 0.46,
+    "weak_challenge_probability": 0.65,
+    "weak_direction_bias": 0.18,
+    "left_step_focus_fraction": 0.22,
+    "light_m_s": [0.075, 0.18],
+    "challenge_m_s": [0.22, 0.4],
+    "extreme_m_s": [0.4, 0.55],
+    "extreme_probability": 0.14,
+    "initial_delay_seconds": [2.0, 4.0],
+    "repeat_delay_seconds": [4.25, 6.5],
+    "recovery_window_seconds": 3.15,
+    "style_recovery_seconds": 1.8,
+    "style_floor": 0.55,
+    "recovery_balance_weight": 4.5,
+    "recovery_speed_scale_m_s": 0.2,
+    "recovery_fall_penalty": 5.5,
+    "corrective_steps": {
+      "minimum_impulse_m_s": 0.24,
+      "reference_grace_seconds": 1.2,
+      "style_floor": 0.25,
+      "landing_bonus": 0.38,
+      "trunk_weight": 1.6
+    },
+    "learning_rate": 0.000018
+  }
+}

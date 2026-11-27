@@ -1,0 +1,22 @@
+{
+  "train_retention_weight": 1.5,
+  "train_retention_steps": 2,
+  "train_retention_batch_size": 1536,
+  "train_retention_clean_only": true,
+  "train_push_recovery": {
+    "episode_probability": 0.5,
+    "weak_command_probability": 0.45,
+    "challenge_probability": 0.3,
+    "weak_challenge_probability": 0.62,
+    "light_m_s": [0.05, 0.13],
+    "challenge_m_s": [0.15, 0.225],
+    "initial_delay_seconds": [2.0, 4.0],
+    "repeat_delay_seconds": [3.5, 6.0],
+    "recovery_window_seconds": 2.5,
+    "style_recovery_seconds": 1.2,
+    "style_floor": 0.55,
+    "recovery_balance_weight": 4.0,
+    "recovery_fall_penalty": 4.0,
+    "learning_rate": 0.000022
+  }
+}

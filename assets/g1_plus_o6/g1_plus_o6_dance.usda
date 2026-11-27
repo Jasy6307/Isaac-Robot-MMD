@@ -1,0 +1,21 @@
+#usda 1.0
+(
+    defaultPrim = "g1_plus_o6"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "g1_plus_o6" (
+    prepend references = @./g1_plus_o6_head_look_camera_bar.usda@
+)
+{
+    over "Geometry"
+    {
+        over "neck_pitch_link" (
+            prepend apiSchemas = ["PhysicsFilteredPairsAPI"]
+        )
+        {
+            rel physics:filteredPairs = </g1_plus_o6/Geometry/torso_link>
+        }
+    }
+}

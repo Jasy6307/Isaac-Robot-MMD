@@ -147,10 +147,12 @@ def apply_review(report, review):
 def analyze_h5(path, robot_usd, frames=None, *, ground_z=0., root_anchor_z=None):
     """USD FK uses the reference's recorded baseline, not a learned policy."""
     import h5py
-    import torch
     from scipy.spatial.transform import Rotation
     from source.train_workflow.utils.grounding.visible import visible_hull
-    from .self_collision import G1CollisionModel, playback_baseline
+    from source.train_workflow.utils.retarget.upper_body_ik import read_joints
+    from .neck_reference import NECK_JOINTS
+    from .robot_fk import robot_fk
+    from .self_collision import playback_baseline
 
     path = Path(path).resolve()
     robot_usd = Path(robot_usd).resolve()
@@ -175,17 +177,26 @@ def analyze_h5(path, robot_usd, frames=None, *, ground_z=0., root_anchor_z=None)
     if not np.isfinite([ground_z, root_anchor_z]).all():
         raise ValueError("Non-finite reference ground or root height")
     ankle_links = ("left_ankle_roll_link", "right_ankle_roll_link")
-    model = G1CollisionModel(robot_usd, names, "cpu")
-    with torch.no_grad():
-        rotations, positions = model.fk(torch.tensor(q + baseline, dtype=torch.float32))
-        feet = torch.stack([positions[link] for link in ankle_links], 1).numpy()
+    if set(NECK_JOINTS).issubset(joint.name for joint in read_joints(robot_usd)):
+        rotations, positions = robot_fk(robot_usd, names, q + baseline, links=ankle_links)
+    else:
+        # Existing G1 quality profiles fingerprint the original float32 analysis.
+        import torch
+        from .self_collision import G1CollisionModel
+
+        model = G1CollisionModel(robot_usd, names, "cpu")
+        with torch.no_grad():
+            old_rotations, old_positions = model.fk(torch.tensor(q + baseline, dtype=torch.float32))
+        rotations = {link: old_rotations[link].numpy() for link in ankle_links}
+        positions = {link: old_positions[link].numpy() for link in ankle_links}
+    feet = np.stack([positions[link] for link in ankle_links], axis=1)
     rotation = (Rotation.from_quat(quat[:, [1, 2, 3, 0]]) *
                 Rotation.from_quat(anchor[[1, 2, 3, 0]])).as_matrix()
     feet = np.einsum("nij,nkj->nki", rotation, feet) + pos[:, None]
     sole_heights = []
     for side, link in enumerate(ankle_links):
         vertices = visible_hull(robot_usd, link)[0]
-        vertical = np.einsum("ni,nij->nj", rotation[:, 2], rotations[link].numpy())
+        vertical = np.einsum("ni,nij->nj", rotation[:, 2], rotations[link])
         bottom = (vertical @ vertices.T).min(axis=1) + feet[:, side, 2]
         sole_heights.append(bottom + root_anchor_z - ground_z)
     report = analyze_signals(pos[:, 2], feet, fps, valid)

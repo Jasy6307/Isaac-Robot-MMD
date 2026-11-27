@@ -315,6 +315,7 @@ class AutoJumpController:
 
     def state_dict(self):
         return dict(version=1, source_sha256=self.report["source_sha256"],
+                    robot_variant=self.report.get("robot_variant", "g1"),
                     reward_contract=self.report.get("reward_contract"),
                     duration_s=self.duration, end_hold_seconds=self.report.get("end_hold_seconds", 0.), control_hz=self.report.get("control_hz"),
                     difficulty=self.difficulty.cpu().tolist(), progress=self.progress,
@@ -330,6 +331,8 @@ class AutoJumpController:
             raise ValueError("Auto curriculum reference differs from resumed checkpoint")
         if state.get("duration_s") != self.duration or state.get("control_hz") != self.report.get("control_hz"):
             raise ValueError("Auto curriculum window/control frequency differs from checkpoint")
+        if state.get("robot_variant", "g1") != self.report.get("robot_variant", "g1"):
+            return
         value = torch.tensor(state["difficulty"], device=self.device)
         if value.shape != self.difficulty.shape or not torch.isfinite(value).all():
             raise ValueError("Invalid auto curriculum difficulty state")
@@ -669,6 +672,9 @@ def _train_auto_impl(runner, wrapped, cfg, agent_cfg, report, log_dir, args, res
     if state:
         controller.load_state_dict(state)
     saved_selection=(state or {}).get("quality_selection")
+    if state and state.get("robot_variant", "g1") != report.get("robot_variant", "g1"):
+        saved_selection = None
+        print("[本体切换] 续训保留策略和迭代进度，重新累计动作反馈与验收。", flush=True)
     if state and state.get("end_hold_seconds", 0.) != report.get("end_hold_seconds", 0.):
         # Preserve policy, optimizer and sampler, but do not reuse acceptance
         # under a shorter/different hold requirement.

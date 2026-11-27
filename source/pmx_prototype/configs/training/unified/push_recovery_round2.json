@@ -1,0 +1,15 @@
+{
+  "train_push_recovery": {
+    "episode_probability": 0.5,
+    "weak_command_probability": 0.4,
+    "challenge_probability": 0.2,
+    "weak_challenge_probability": 0.5,
+    "light_m_s": [0.025, 0.1],
+    "challenge_m_s": [0.125, 0.175],
+    "initial_delay_seconds": [2.0, 4.0],
+    "repeat_delay_seconds": [4.0, 7.0],
+    "recovery_window_seconds": 1.2,
+    "style_floor": 0.55,
+    "learning_rate": 0.000015
+  }
+}

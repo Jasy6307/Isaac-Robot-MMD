@@ -76,6 +76,19 @@ python source/pmx_prototype/physx_dance.py --secondary-profile source/pmx_protot
 录像使用共享第 8 版外观和头发、裙摆物理。完整验收按顺序录制全部准备和计分段，保留每段原时长和独立角色的轨迹边界。
 从零训练、续训和单独训练默认每完成 1000 个迭代执行一次完整验收。
 训练自然结束的 checkpoint 若未在间隔边界验收，结束时补一次完整验收。可通过 `--acceptance-interval` 调整训练间隔。
+
+### 爱音抗扰续训
+
+`training/unified/push_recovery_pilot.json` 用于从统一走跑 checkpoint 开新 run。用
+`--checkpoint`、`--config-override` 和新的 `--run-dir` 启动 `train_anon_locomotion.py`。
+约一半训练回合启用扰动。角色进入稳定指令后，腰部在随机方向受力一个 PhysX 子步，
+两次受力间隔至少 4 秒。受力后的 1.2 秒内逐步恢复对动作风格与参考接触的奖励权重。
+训练记录在 `status.json` 的 `push_recovery` 字段。后续从该 run 的 checkpoint
+继续训练时自动读入同目录的课程配置，环境复位后重新采样受力时机。
+所有普通验收和预览默认无扰动，可另用固定幅度、方向和步态相位的施力矩阵做独立验收。
+第二轮配置 `training/unified/push_recovery_round2.json` 将挑战档提高到 0.125–0.175 m/s，并在后退和前走左转时提高该档的采样概率。
+大推力补步配置 `training/unified/push_recovery_corrective_steps.json` 将主挑战档设为 0.22–0.40 m/s，并混入少量 0.40–0.55 m/s 样本。
+较强受推后短暂放宽参考动作终止条件，奖励向补偿方向落脚，并在最初的失衡响应之后降低躯干倾斜与滚转俯仰速度。该配置沿用原跌倒线和无扰动走跑验收。
 数值验收和录像期间暂停训练，失败的录像在训练进程退出后重试。
 录像中保留通过和失败的实测动作。完整录像位于验收目录的 `video_full/`，诊断片段位于 `video_preview/`。
 `acceptance_timing.json` 分别记录数值验收与录像耗时，从零训练的每个训练目录另存 `acceptance_videos.json`。

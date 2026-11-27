@@ -1,0 +1,16 @@
+{
+  "train_audit_resume_identity": true,
+  "train_freeze_obs_normalization": true,
+  "train_push_recovery": {
+    "episode_probability": 0.5,
+    "weak_command_probability": 0.25,
+    "challenge_probability": 0.2,
+    "light_m_s": [0.025, 0.075],
+    "challenge_m_s": [0.08, 0.125],
+    "initial_delay_seconds": [2.0, 4.0],
+    "repeat_delay_seconds": [4.0, 7.0],
+    "recovery_window_seconds": 1.2,
+    "style_floor": 0.55,
+    "learning_rate": 0.000015
+  }
+}

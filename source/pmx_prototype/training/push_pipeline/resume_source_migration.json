@@ -1,0 +1,14 @@
+{
+  "before": {
+    "train_anon_push_recovery.py": "4b70b82a5e1d268dcf5ce6f2d076a9acb5881817971d83a79902e646324245a5",
+    "train_anon_push_full.py": "e0ce86ac7e0c3cb9a76069e0a2ea7f9b0c9acae3c2809f0f1d3cdee6b579ce51",
+    "training/push_pipeline/fit_lateral_demonstrations.py": "9d2cd74c253554cc7ab7f2a92fab94f3e85f4cfbaaffcbc915ce7f83e522613e",
+    "training/push_pipeline/pack_standing.py": "f661f1ad2db415c0ae9676cf4a1917361a2be9b2085125682124a078997a76bc"
+  },
+  "after": {
+    "training/push_pipeline/campaign.py": "1f32c233af9d214f49c584e0405c133e86320e08f7c686c6bce22135bd3d132b",
+    "train_anon_push_full.py": "ab268d544eaa337e4398ed19f3479e9210488b2177fa1566af6aa7c18cc48c57",
+    "training/push_pipeline/fit_lateral_demonstrations.py": "bf6037cbb0c40837a21a42a35d320608aac9fb82ad5770011bc1c3bc2954eab0",
+    "training/push_pipeline/pack_standing.py": "16e279f6890b78eeef0d6a0420be7d19deecb4c5b6408336c66e27efc48fbc6b"
+  }
+}

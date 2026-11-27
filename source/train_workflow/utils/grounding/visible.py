@@ -22,18 +22,24 @@ def _stage(usd):
 
 @lru_cache(maxsize=64)
 def visible_hull(usd, link):
-    from pxr import Usd, UsdGeom
+    from pxr import Usd, UsdGeom, UsdPhysics
 
     stage, cache, paths = _stage(usd)
     body = stage.GetPrimAtPath(paths[link])
     inverse = np.linalg.inv(np.asarray(cache.GetLocalToWorldTransform(body)).T)
     pieces = []
-    for prim in Usd.PrimRange(body, Usd.TraverseInstanceProxies()):
-        if (prim.IsA(UsdGeom.Mesh) and '/visuals/' in str(prim.GetPath()) and
-                UsdGeom.Imageable(prim).ComputeVisibility() != UsdGeom.Tokens.invisible):
-            points = np.asarray(UsdGeom.Mesh(prim).GetPointsAttr().Get(), dtype=float)
-            matrix = inverse @ np.asarray(cache.GetLocalToWorldTransform(prim)).T
-            pieces.append(points @ matrix[:3, :3].T + matrix[:3, 3])
+    visible = [prim for prim in Usd.PrimRange(body, Usd.TraverseInstanceProxies())
+               if prim.IsA(UsdGeom.Mesh)
+               and UsdGeom.Imageable(prim).ComputeVisibility() != UsdGeom.Tokens.invisible]
+    meshes = [prim for prim in visible if '/visuals/' in str(prim.GetPath())]
+    if not meshes:
+        # The G1+ importer puts its display mesh directly below the link.
+        meshes = [prim for prim in visible if prim.GetParent() == body
+                  and not prim.HasAPI(UsdPhysics.CollisionAPI)]
+    for prim in meshes:
+        points = np.asarray(UsdGeom.Mesh(prim).GetPointsAttr().Get(), dtype=float)
+        matrix = inverse @ np.asarray(cache.GetLocalToWorldTransform(prim)).T
+        pieces.append(points @ matrix[:3, :3].T + matrix[:3, 3])
     if not pieces:
         raise ValueError(f'No visible geometry for {link}')
     points = np.unique(np.concatenate(pieces), axis=0)

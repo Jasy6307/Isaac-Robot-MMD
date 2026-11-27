@@ -71,7 +71,10 @@ try:
     env.max_episode_length=round(3600/env.dt)
     startup.mark('network',path.name)
     runner=OnPolicyRunner(env,agent,log_dir=None,device=args.body_device)
-    runner.load(str(path),map_location=args.body_device)
+    if config.get('guarded_recovery_actor',False):
+        runner.load(str(path),load_cfg={'actor':True},map_location=args.body_device)
+    else:
+        runner.load(str(path),map_location=args.body_device)
     policy=runner.get_inference_policy()
     catalog={active:dict(label=label_for(active,config,path),checkpoint=checkpoint,available=True)}
     startup.mark('reset')
@@ -155,8 +158,8 @@ try:
             reason=('acceptance_group' if acceptance_inputs else 'user') if reset else ''
             if reset:env.reset(env.ids)
             if data.get('push_character'):
-                from anon_character_push import push_character
-                print('CHARACTER_PUSH',json.dumps(push_character(env)),flush=True)
+                from anon_character_push import apply_requested_push
+                print('CHARACTER_PUSH',json.dumps(apply_requested_push(env,data['push_character'])),flush=True)
             requested = data['command']
             planar_limit = (inspector_planar_speed_limit(requested, config) if use_inspector_limits and not acceptance_inputs
                             else config.get('max_speed', .4))

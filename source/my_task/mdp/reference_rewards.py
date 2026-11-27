@@ -20,18 +20,16 @@ def _tables(env):
     cache = getattr(env, "_reference_reward_tables", None)
     if cache is not None:
         return cache
-    from source.train_workflow.utils.motion.self_collision import G1CollisionModel
+    from source.train_workflow.utils.motion.robot_fk import robot_fk
     robot = env.scene["robot"]
     action = env.cfg.actions.joint_pos
     buf = get_or_create_motion_buffer(env, action.motion_h5_path, action.motion_window_seconds)
     steps = torch.arange(buf.num_steps, device=env.device)
-    q = buf.q_ref_abs(steps).detach().cpu()
-    model = G1CollisionModel(Path(env.cfg.scene.robot.spawn.usd_path), list(robot.joint_names), "cpu")
-    with torch.no_grad():
-        rotations, positions = model.fk(q)
-    pos = np.stack([positions[f"{side}_ankle_roll_link"].numpy() for side in ("left", "right")], axis=1)
-    quat = np.stack([Rotation.from_matrix(rotations[f"{side}_ankle_roll_link"].numpy()).as_quat()
-                     for side in ("left", "right")], axis=1)
+    q = buf.q_ref_abs(steps).detach().cpu().numpy()
+    ankles = ("left_ankle_roll_link", "right_ankle_roll_link")
+    rotations, positions = robot_fk(Path(env.cfg.scene.robot.spawn.usd_path), robot.joint_names, q, links=ankles)
+    pos = np.stack([positions[link] for link in ankles], axis=1)
+    quat = np.stack([Rotation.from_matrix(rotations[link]).as_quat() for link in ankles], axis=1)
     # Append an identical last frame: held targets have exactly zero velocity.
     velocity = np.diff(np.concatenate((pos, pos[-1:]), axis=0), axis=0) / env.step_dt
     weights = torch.zeros(len(robot.joint_names), device=env.device)

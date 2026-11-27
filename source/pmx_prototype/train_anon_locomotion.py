@@ -17,7 +17,8 @@ ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--mode', choices=['train', 'eval', 'smoke', 'reference'], default='train')
-parser.add_argument('--num-envs',type=int,help='Default: 2048 for training, 1 for evaluation')
+parser.add_argument('--num-envs', type=int,
+                    help='Default: 8192 for push recovery, 2048 for regular training, 1 for evaluation')
 parser.add_argument('--iterations', type=int, default=1800)
 parser.add_argument('--ppo-mini-batches', type=int, help='Set PPO mini-batches per epoch for this training run')
 parser.add_argument('--checkpoint', type=Path)
@@ -94,6 +95,9 @@ def agent_config():
 def load_policy(runner, env, checkpoint):
     state = torch.load(checkpoint, map_location=env.device, weights_only=False)
     if hasattr(env,'amp') and 'amp_state' in state and not env.cfg.get('amp_reset_discriminator',False):env.amp.load_state_dict(state['amp_state'])
+    if env.cfg.get('guarded_recovery_actor',False):
+        runner.load(str(checkpoint),load_cfg={'actor':True,'critic':True,'iteration':True},map_location=env.device)
+        return None
     old_inputs=state['actor_state_dict']['mlp.0.weight'].shape[1]
     new_inputs=env.get_observations()['policy'].shape[1]
     if env.cfg.get('migration_old_dof_names') and state['actor_state_dict']['mlp.6.bias'].numel()!=env.num_actions:
@@ -405,13 +409,25 @@ def main():
     if args.curriculum_iterations is not None: config['curriculum_iterations'] = args.curriculum_iterations
     override=json.loads(args.config_override.read_text(encoding='utf-8')) if args.config_override else {}
     config.update(override)
+    push_config = config.get('train_push_recovery') if args.mode == 'train' else None
+    if push_config:
+        if not (args.checkpoint and config.get('full_motion_path') and config.get('unified_walk_run')):
+            raise ValueError('Push recovery training requires a unified walk/run checkpoint')
+        push_learning_rate = float(push_config['learning_rate'])
+        if not np.isfinite(push_learning_rate) or push_learning_rate <= 0.:
+            raise ValueError('Push recovery learning_rate must be finite and positive')
     if config.get('unified_walk_run'):
         from locomotion_acceptance import CURRENT_PROTOCOL,PROTOCOL
         if args.scratch_continuation:
             config.setdefault('unified_acceptance_protocol',PROTOCOL)
         else:
             config['unified_acceptance_protocol']=override.get('unified_acceptance_protocol',CURRENT_PROTOCOL)
-    num_envs = args.num_envs if args.num_envs is not None else (1 if args.mode=='eval' else 2048)
+    num_envs = args.num_envs
+    if num_envs is None:
+        if push_config:
+            num_envs = 8192
+        else:
+            num_envs = 1 if args.mode == 'eval' else 2048
     if args.mode=='eval' and config.get('unified_walk_run'):
         for key in ['measure_ground_contact','unified_eval_force_flight','unified_substep_support_forces','unified_command_frame_metrics']:
             config.setdefault(key,True)
@@ -447,8 +463,16 @@ def main():
     elif args.mode == 'reference':
         export_reference(env)
     elif args.mode == 'eval':
-        runner = OnPolicyRunner(env, agent_config(), log_dir=None, device=env.device) if args.checkpoint else None
-        if runner: load_policy(runner, env, args.checkpoint)
+        runner = None
+        if args.checkpoint:
+            recovery_actor = env.cfg.get('guarded_recovery_actor',False)
+            cfg = (json.loads((args.checkpoint.parent/'agent_config.json').read_text(encoding='utf-8'))
+                   if recovery_actor else agent_config())
+            runner = OnPolicyRunner(env,cfg,log_dir=None,device=env.device)
+            if recovery_actor:
+                runner.load(str(args.checkpoint),load_cfg={'actor':True},map_location=env.device)
+            else:
+                load_policy(runner,env,args.checkpoint)
         evaluate(env, runner)
         if runner: runner.export_policy_to_jit(str(args.output), 'policy_jit.pt')
     else:
@@ -456,6 +480,12 @@ def main():
         run.mkdir(parents=True, exist_ok=True)
         (run/'env_config.json').write_text(json.dumps(env.cfg, indent=2), encoding='utf-8')
         cfg = agent_config()
+        if env.cfg.get('guarded_recovery_actor',False):
+            if args.checkpoint is None:
+                raise ValueError('The recovery actor requires its frozen source checkpoint')
+            cfg = json.loads((args.checkpoint.parent/'agent_config.json').read_text(encoding='utf-8'))
+            cfg['actor']['recovery']['freeze_gate'] = True
+            copy_sources(run,['anon_recovery_actor.py'])
         if args.ppo_mini_batches is not None:
             samples = env.num_envs * cfg['num_steps_per_env']
             if samples % args.ppo_mini_batches:
@@ -466,6 +496,8 @@ def main():
             cfg['algorithm']['entropy_coef']=.003
         if 'train_entropy_coef' in env.cfg:
             cfg['algorithm']['entropy_coef']=env.cfg['train_entropy_coef']
+        if push_config:
+            cfg['algorithm'].update(learning_rate=push_learning_rate, schedule='fixed')
         if env.cfg.get('train_lateral_mirror',False):
             from lateral_symmetry import configure
             configure(cfg,env)
@@ -558,6 +590,10 @@ def main():
             runner.alg.optimizer.state.clear()
             runner.alg.learning_rate=env.cfg.get('train_learning_rate',.0003)
             for group in runner.alg.optimizer.param_groups:group['lr']=runner.alg.learning_rate
+        if push_config:
+            runner.alg.learning_rate = push_learning_rate
+            for group in runner.alg.optimizer.param_groups:
+                group['lr'] = push_learning_rate
         if env.cfg.get('train_freeze_obs_normalization'):
             if not args.checkpoint:raise ValueError('Freezing observation normalization requires a trained checkpoint')
             for model in [runner.alg.actor,runner.alg.critic]:model.obs_normalizer.until=0
@@ -615,6 +651,8 @@ def main():
                           height=float(env.root[:, 2].mean()), run_dir=str(run))
             if hasattr(env,'learned_clearance_deficit'):status['clearance_deficit_m']=float(env.learned_clearance_deficit)
             if hasattr(env,'amp'):status.update(env.amp.stats)
+            if push_config:
+                status['push_recovery'] = env.push_recovery.summary()
             (run/'status.json').write_text(json.dumps(status, indent=2), encoding='utf-8')
             if kwargs['it'] % 10 == 0: print('爱音训练 '+json.dumps(status, ensure_ascii=False), flush=True)
             if scratch_training:

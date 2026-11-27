@@ -57,17 +57,14 @@ def reference_camera_track(reference,frames):
 
 def motion_bounds(recordings,usd_path,offsets,ground_z,camera_track=None):
     """USD joint FK gives full-motion arm/head/foot bounds, not just root bounds."""
-    import torch
     from scipy.spatial.transform import Rotation
-    from source.train_workflow.utils.motion.self_collision import G1CollisionModel
-    from pathlib import Path
+    from source.train_workflow.utils.motion.robot_fk import robot_fk
     names=recordings[0][1]["joint_names"]
-    model=G1CollisionModel(Path(usd_path),names,"cpu")
     low=np.full(3,np.inf);high=np.full(3,-np.inf)
     for (poses,meta),offset in zip(recordings,offsets):
         if meta["joint_names"]!=names:raise ValueError("Replay joint ordering differs")
-        with torch.no_grad():_,positions=model.fk(torch.as_tensor(poses[:,7:],dtype=torch.float32))
-        local=np.stack([position.numpy() for position in positions.values()],axis=1)
+        _,positions=robot_fk(usd_path,names,poses[:,7:])
+        local=np.stack(list(positions.values()),axis=1)
         base=Rotation.from_quat(poses[:,3:7]).as_matrix()
         points=np.einsum("nij,nkj->nki",base,local)+poses[:,None,:3]+offset
         if camera_track is not None:points-=camera_track[:len(poses),None,:]

@@ -82,7 +82,10 @@ try:
     journal.mark('network')
     agent=json.loads((a.checkpoint.parent/'agent_config.json').read_text(encoding='utf-8'))
     runner=OnPolicyRunner(env,agent,log_dir=None,device=a.body_device)
-    runner.load(str(a.checkpoint),map_location=a.body_device)
+    if config.get('guarded_recovery_actor',False):
+        runner.load(str(a.checkpoint),load_cfg={'actor':True},map_location=a.body_device)
+    else:
+        runner.load(str(a.checkpoint),map_location=a.body_device)
     policy=runner.get_inference_policy()
     journal.mark('reset');env.reset(env.ids);env.refresh()
     connection=connect_worker(a.address,a.authkey)
@@ -139,8 +142,8 @@ try:
         env.commands.copy_(torch.as_tensor(requested,device=env.device));env._pending_command_delta=None
         with torch.inference_mode():
             if request.get('push_character') and controlled>=0:
-                from anon_character_push import push_character
-                print('CHARACTER_PUSH',json.dumps(push_character(env,controlled)),flush=True)
+                from anon_character_push import apply_requested_push
+                print('CHARACTER_PUSH',json.dumps(apply_requested_push(env,request['push_character'],controlled)),flush=True)
             _,_,done,extras=env.step(policy(env.get_observations()))
         env.refresh()
         ended=done.cpu().numpy().astype(bool)

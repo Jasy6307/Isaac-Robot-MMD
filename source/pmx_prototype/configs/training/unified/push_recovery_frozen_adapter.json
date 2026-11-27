@@ -1,0 +1,65 @@
+{
+  "train_teacher_anchor_path": "",
+  "train_teacher_anchor_groups": [
+    0,
+    1,
+    2
+  ],
+  "train_teacher_anchor_lr": 4e-05,
+  "train_teacher_anchor_steps": 4,
+  "train_retention_weight": 0.0,
+  "train_retention_steps": 2,
+  "train_retention_batch_size": 1536,
+  "train_retention_clean_only": true,
+  "train_retention_lateral_weight": 4.0,
+  "train_leg_std": 0.0,
+  "train_push_recovery": {
+    "episode_probability": 0.58,
+    "weak_command_probability": 0.59,
+    "challenge_probability": 0.55,
+    "weak_challenge_probability": 0.67,
+    "weak_direction_bias": 0.27,
+    "vulnerable_phase_boost": 0.18,
+    "forward_focus_fraction": 0.22,
+    "stand_focus_fraction": 0.2,
+    "left_step_focus_fraction": 0.12,
+    "light_m_s": [
+      0.12,
+      0.23
+    ],
+    "challenge_m_s": [
+      0.38,
+      0.47
+    ],
+    "extreme_m_s": [
+      0.47,
+      0.55
+    ],
+    "extreme_probability": 0.53,
+    "initial_delay_seconds": [
+      1.8,
+      3.6
+    ],
+    "repeat_delay_seconds": [
+      4.15,
+      6.4
+    ],
+    "recovery_window_seconds": 3.15,
+    "style_recovery_seconds": 1.8,
+    "style_floor": 0.55,
+    "recovery_balance_weight": 4.8,
+    "recovery_speed_scale_m_s": 0.18,
+    "recovery_fall_penalty": 5.5,
+    "corrective_steps": {
+      "minimum_impulse_m_s": 0.34,
+      "reference_grace_seconds": 1.25,
+      "style_floor": 0.28,
+      "landing_bonus": 0.46,
+      "trunk_weight": 1.6,
+      "capture_support": true
+    },
+    "learning_rate": 2.1e-05
+  },
+  "train_freeze_obs_normalization": true,
+  "train_upper_std_cap": 0.0
+}

@@ -12,7 +12,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import source_layout
-from anon_character_push import push_character
+from anon_character_push import apply_requested_push, push_character
 from anon_inspector_controls import InspectorCommands
 from anon_inspector_ui import PolicyInspector
 
@@ -49,6 +49,30 @@ class CharacterPushTests(unittest.TestCase):
         forces = [push_character(env,rng=rng)['force'] for _ in range(50)]
         self.assertEqual({(math.copysign(1,x),math.copysign(1,y)) for x,y,_ in forces},
                          {(-1.,-1.),(-1.,1.),(1.,-1.),(1.,1.)})
+
+    def test_manual_direction_follows_the_character_heading(self):
+        robot = SimpleNamespace(max_links=1, get_masses=lambda:torch.full((1,1), 50.),
+                                apply_forces_and_torques_at_position=Mock())
+        env = SimpleNamespace(evaluation=True, num_envs=1, robot=robot, device='cpu', links=['waist_pitch'],
+                              pelvis_id=0, ids=torch.tensor([0]), cfg=dict(physics_hz=120),
+                              root=torch.tensor([[0.,0.,0.,0.,0.,math.sqrt(.5),math.sqrt(.5)]]))
+        result = apply_requested_push(env, dict(delta_speed=.8, angle_degrees=-90))
+        force = robot.apply_forces_and_torques_at_position.call_args.args[0][0,0]
+        torch.testing.assert_close(force,torch.tensor([0.,-4800.,0.]),atol=.002,rtol=0.)
+        self.assertEqual(result['impulse_ns'],40.)
+        self.assertEqual(result['angle_degrees'],-90)
+
+    def test_configured_push_keeps_the_current_manual_command(self):
+        inspector = PolicyInspector.__new__(PolicyInspector)
+        inspector.controls=InspectorCommands(dict(max_speed=1.2))
+        inspector.controls.set_speed(1.2)
+        inspector.controls.event('W','KEY_PRESS')
+        inspector.playback_frames=None
+        settings=dict(delta_speed=.8,angle_degrees=90)
+        inspector.push_character(settings)
+        with patch('anon_inspector_ui.has_foreground',return_value=True):
+            self.assertEqual(inspector.next_request(),dict(command=[1.2,0.,0.],reset=False,push_character=settings))
+            self.assertNotIn('push_character',inspector.next_request())
 
     def test_push_exits_acceptance_and_is_sent_once_without_automatic_reset(self):
         ui = PolicyInspector.__new__(PolicyInspector)
